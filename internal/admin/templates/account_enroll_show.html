@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{T .Lang "enroll.title"}} · {{T .Lang "app.name"}}</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.bm-btn{
+  display:inline-flex;align-items:center;gap:8px;padding:10px 18px;
+  background:linear-gradient(135deg,#0a84ff,#bf5af2);color:#fff;
+  border-radius:14px;text-decoration:none;font-weight:600;
+  cursor:grab;font-size:14px;box-shadow:var(--shadow-2);
+}
+.bm-btn:hover{transform:translateY(-1px);text-decoration:none}
+.bm-hint{font-size:12px;color:var(--fg-muted);margin-top:8px}
+.step-card{background:var(--bg);border:1px solid var(--hairline);border-radius:12px;padding:14px 18px;margin-bottom:10px}
+.step-card h3{margin:0 0 6px;font-size:14px;font-weight:600}
+.step-card.done{border-color:var(--ok);background:rgba(48,209,88,0.06)}
+.status-banner{padding:14px 18px;border-radius:12px;font-weight:600;text-align:center;margin-bottom:14px}
+.status-pending{background:rgba(10,132,255,0.10);color:var(--accent)}
+.status-completed{background:rgba(48,209,88,0.15);color:var(--ok)}
+.status-failed{background:rgba(255,69,58,0.15);color:var(--err)}
+.status-expired{background:rgba(255,159,10,0.15);color:var(--warn)}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--accent);border-right-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.copy-row{display:flex;gap:8px;margin-top:8px;align-items:center}
+.copy-row textarea{flex:1;font-family:"SF Mono",Menlo,monospace;font-size:11px;padding:8px;border-radius:8px;border:1px solid var(--hairline);background:var(--bg);color:var(--fg)}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="title">{{T .Lang "enroll.title"}}</div>
+      <div class="actions">
+        <a href="/accounts" class="btn ghost">← {{T .Lang "nav.accounts"}}</a>
+      </div>
+    </header>
+    <div class="content">
+
+      <div id="status-banner" class="status-banner status-pending">
+        <span class="spin"></span><span id="status-text">{{T .Lang "enroll.waiting"}}</span>
+      </div>
+
+      <div class="grid grid-2">
+        <div class="card section">
+          <div class="card-title">{{T .Lang "enroll.title"}} ({{.Pending.Provider}})</div>
+          <div class="step-card">
+            <h3>{{T .Lang "enroll.step1"}}</h3>
+            {{if eq .Pending.Provider "chatgpt"}}
+              <a href="https://chatgpt.com" target="_blank" class="btn ghost">→ chatgpt.com</a>
+            {{else if eq .Pending.Provider "claude"}}
+              <a href="https://claude.ai" target="_blank" class="btn ghost">→ claude.ai</a>
+            {{else if eq .Pending.Provider "gemini"}}
+              <a href="https://gemini.google.com" target="_blank" class="btn ghost">→ gemini.google.com</a>
+            {{end}}
+          </div>
+          <div class="step-card">
+            <h3>{{T .Lang "enroll.step2"}}</h3>
+            <a href='{{.Bookmarklet | safeHTML}}' class="bm-btn" draggable="true" onclick="event.preventDefault();alert('请把这个按钮拖到浏览器收藏栏 / Drag this button to your bookmarks bar.')">⚡ {{T .Lang "enroll.bookmarklet_short"}}</a>
+            <div class="bm-hint">{{T .Lang "enroll.bookmarklet"}}</div>
+            <div class="copy-row">
+              <textarea readonly id="bm-raw" rows="3">{{.Bookmarklet}}</textarea>
+              <button class="btn ghost small" onclick="copyText(document.getElementById('bm-raw').value,'书签代码');this.textContent='✓'">复制</button>
+            </div>
+          </div>
+          <div class="step-card">
+            <h3>{{T .Lang "enroll.step3"}}</h3>
+            <p class="muted small">点击收藏栏的 ⚡ 按钮后，本页会自动跳转到新账号详情。</p>
+          </div>
+        </div>
+
+        <div class="card section">
+          <div class="card-title">技术细节</div>
+          <pre style="font-size:11px;background:var(--bg);padding:10px;border-radius:8px;overflow:auto;border:1px solid var(--hairline)"><b>Enrollment ID:</b> {{.Pending.ID}}
+<b>Provider:</b> {{.Pending.Provider}}
+<b>Tenant:</b>   {{.Pending.TenantID}}
+<b>Expires:</b>  {{.Pending.ExpiresAt.Format "15:04:05"}}
+<b>POST URL:</b> {{.PostURL}}
+<b>State:</b>    <span id="state-text">{{.Pending.State}}</span></pre>
+          <p class="muted small">书签代码会以你登录的 chatgpt.com 凭证身份执行，从浏览器抓取 cookies + /api/auth/session 并 POST 到本网关。CORS 允许 chatgpt.com 直接请求。</p>
+          <p class="muted small">⚠️ 部分 Chrome 版本（124+ 强 Private Network Access）可能拦截书签 → 内网地址的请求。如失败请把网关挂到公网域名 + HTTPS 后再试。</p>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const id = "{{.Pending.ID}}";
+const banner = document.getElementById('status-banner');
+const text = document.getElementById('status-text');
+const stateText = document.getElementById('state-text');
+async function poll() {
+  try {
+    const r = await fetch('/accounts/enroll/' + id + '/status');
+    const j = await r.json();
+    stateText.textContent = j.state;
+    if (j.state === 'completed') {
+      banner.className = 'status-banner status-completed';
+      text.textContent = '{{T .Lang "enroll.completed"}}';
+      setTimeout(() => location.href = '/accounts/' + j.account_id, 1500);
+      return false;
+    }
+    if (j.state === 'failed') {
+      banner.className = 'status-banner status-failed';
+      text.textContent = '{{T .Lang "enroll.failed"}} ' + (j.error || '');
+      return false;
+    }
+    if (j.state === 'expired') {
+      banner.className = 'status-banner status-expired';
+      text.textContent = '{{T .Lang "enroll.expired"}}';
+      return false;
+    }
+  } catch(e) {}
+  return true;
+}
+(async () => {
+  while (await poll()) {
+    await new Promise(r => setTimeout(r, 2000));
+  }
+})();
+</script>
+{{template "_copy_script" .}}
+</body>
+</html>

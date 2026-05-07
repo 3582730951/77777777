@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>注册统计 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.stats-kpi{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:20px}
+.kpi-card{padding:14px 16px}
+.kpi-card .kpi-label{font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.12em;color:var(--fg-muted)}
+.kpi-card .kpi-val{font-size:26px;font-weight:700;letter-spacing:-0.03em;line-height:1;
+  color:var(--fg);margin-top:6px}
+.kpi-card .kpi-icon{position:absolute;top:14px;right:14px;width:36px;height:36px;
+  border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;
+  font-size:16px;background:var(--sep)}
+.kpi-card{position:relative;overflow:hidden}
+
+/* ── Rate bar ── */
+.rate-track{height:8px;background:var(--sep);border-radius:4px;overflow:hidden;margin-top:8px}
+.rate-fill{height:100%;border-radius:4px;transition:width 0.5s var(--ease)}
+
+/* ── Distribution ── */
+.dist-layout{display:grid;gap:16px;grid-template-columns:minmax(0,1.45fr) minmax(280px,0.55fr)}
+@media(max-width:900px){.dist-layout{grid-template-columns:1fr}}
+.dist-row{display:flex;align-items:center;justify-content:space-between;
+  padding:10px 14px;border-radius:var(--r-sm);border:1px solid var(--hairline);
+  background:var(--bg);margin-bottom:6px}
+.dist-row .dr-label{font-size:13px;font-weight:500}
+.dist-row .dr-count{font-size:14px;font-weight:600;color:var(--fg)}
+.dist-section-title{font-size:13px;font-weight:600;color:var(--fg);margin-bottom:10px}
+.dist-3col{display:grid;gap:16px;grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.dist-3col{grid-template-columns:1fr}}
+
+/* ── Platform bars ── */
+.plat-bar-row{padding:10px 14px;border-radius:var(--r-sm);border:1px solid var(--hairline);
+  background:var(--bg);margin-bottom:8px}
+.plat-bar-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.plat-bar-name{font-size:13px;font-weight:600}
+.plat-bar-meta{font-size:11px;color:var(--fg-muted)}
+</style>
+<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">注册统计</div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="loadStats()">刷新</button>
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/autoreg/stats")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- KPI cards -->
+      <div class="stats-kpi" id="kpi-row">
+        <div class="card kpi-card"><div class="kpi-label">加载中...</div></div>
+      </div>
+
+      <!-- Platform distribution + status -->
+      <div class="dist-layout">
+        <!-- Left: platform distribution -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">平台分布</div>
+            <button class="btn ghost sm" onclick="loadStats()">刷新</button>
+          </div>
+          <div class="card-body" id="plat-dist">
+            <div style="text-align:center;color:var(--fg-muted);padding:20px">加载中...</div>
+          </div>
+        </div>
+
+        <!-- Right: desktop status -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">桌面应用状态</div></div>
+          <div class="card-body" id="desktop-status">
+            <div style="text-align:center;color:var(--fg-muted);padding:20px">加载中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status distribution -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-header"><div class="card-title">状态分布</div></div>
+        <div class="card-body">
+          <div class="dist-3col" id="status-dist">
+            <div style="text-align:center;color:var(--fg-muted);padding:20px">加载中...</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script>
+const BASE = '/api/autoreg';
+
+const STATUS_LABELS = {
+  registered:'已注册', trial:'试用', subscribed:'订阅', expired:'过期',
+  invalid:'失效', free:'空闲', eligible:'可用', unknown:'未知',
+  valid:'有效', active:'活跃', inactive:'未激活', pending:'待处理'
+};
+const STATUS_BADGE = {
+  registered:'gray', trial:'ok', subscribed:'ok', expired:'warn',
+  invalid:'err', free:'gray', eligible:'gray', unknown:'gray',
+  valid:'ok', active:'ok', inactive:'warn', pending:'gray'
+};
+
+async function safeFetch(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const text = await r.text();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch { return null; }
+}
+
+async function loadStats() {
+  const stats = await safeFetch(BASE + '/accounts/stats');
+  if (!stats) {
+    document.getElementById('kpi-row').innerHTML =
+      '<div class="card" style="grid-column:1/-1;padding:24px;text-align:center">' +
+      '<div class="empty"><div class="empty-icon">◔</div>' +
+      '<div class="empty-title">无法加载统计数据</div>' +
+      '<div class="empty-sub">AutoReg 服务可能未运行</div></div></div>';
+    return;
+  }
+
+  const total = stats.total ?? 0;
+  const trial = stats.by_plan_state?.trial ?? 0;
+  const subscribed = stats.by_plan_state?.subscribed ?? 0;
+  const expired = (stats.by_display_status?.expired ?? 0) + (stats.by_validity_status?.invalid ?? 0);
+
+  // KPI cards
+  document.getElementById('kpi-row').innerHTML = [
+    {label:'总账号数', val:total, icon:'⊙', color:'var(--accent)'},
+    {label:'试用中', val:trial, icon:'◔', color:'var(--orange)'},
+    {label:'已订阅', val:subscribed, icon:'✓', color:'var(--ok)'},
+    {label:'已失效', val:expired, icon:'✗', color:'var(--err)'},
+  ].map(k =>
+    '<div class="card kpi-card">' +
+    '<div class="kpi-icon" style="color:'+k.color+'">'+k.icon+'</div>' +
+    '<div class="kpi-label">'+k.label+'</div>' +
+    '<div class="kpi-val" style="color:'+k.color+'">'+k.val+'</div></div>'
+  ).join('');
+
+  // Platform distribution
+  const byPlatform = stats.by_platform || {};
+  const platEntries = Object.entries(byPlatform);
+  const platDiv = document.getElementById('plat-dist');
+  if (platEntries.length) {
+    platDiv.innerHTML = platEntries.map(([plat, count]) => {
+      const countVal = Number(count) || 0;
+      const ratio = total > 0 ? Math.round(countVal/total*100) : 0;
+      return '<div class="plat-bar-row">' +
+        '<div class="plat-bar-header">' +
+        '<span class="plat-bar-name">' + plat + '</span>' +
+        '<span class="plat-bar-meta">' + countVal + ' / ' + ratio + '%</span></div>' +
+        '<div class="progress-track"><div class="progress-fill" style="width:'+ratio+'%"></div></div></div>';
+    }).join('');
+  } else {
+    platDiv.innerHTML = '<div style="text-align:center;color:var(--fg-muted);padding:20px;' +
+      'border:1px dashed var(--hairline);border-radius:var(--r-md)">暂无平台分布数据</div>';
+  }
+
+  // Status distribution
+  const distDiv = document.getElementById('status-dist');
+  const renderGroup = (title, values) => {
+    if (!values || !Object.keys(values).length) {
+      return '<div><div class="dist-section-title">' + title + '</div>' +
+        '<div style="text-align:center;color:var(--fg-muted);padding:16px;font-size:12px;' +
+        'border:1px dashed var(--hairline);border-radius:var(--r-md)">暂无数据</div></div>';
+    }
+    return '<div><div class="dist-section-title">' + title + '</div>' +
+      Object.entries(values).map(([s, c]) =>
+        '<div class="dist-row">' +
+        '<span class="badge ' + (STATUS_BADGE[s]||'gray') + '">' + (STATUS_LABELS[s]||s) + '</span>' +
+        '<span class="dr-count">' + c + '</span></div>'
+      ).join('') + '</div>';
+  };
+  distDiv.innerHTML =
+    renderGroup('套餐', stats.by_plan_state) +
+    renderGroup('生命周期', stats.by_lifecycle_status) +
+    renderGroup('有效性', stats.by_validity_status);
+
+  // Desktop status
+  loadDesktop();
+}
+
+async function loadDesktop() {
+  const grid = document.getElementById('desktop-status');
+  const platforms = await safeFetch(BASE + '/platforms');
+  const list = Array.isArray(platforms) ? platforms : (platforms?.data || []);
+  const desktopNames = ['cursor', 'kiro', 'chatgpt'];
+  const desktopPlatforms = list.filter(p => desktopNames.includes(p.name));
+
+  if (!desktopPlatforms.length) {
+    grid.innerHTML = '<div style="text-align:center;color:var(--fg-muted);padding:20px;font-size:12px;' +
+      'border:1px dashed var(--hairline);border-radius:var(--r-md)">无桌面应用数据</div>';
+    return;
+  }
+
+  const cards = await Promise.all(desktopPlatforms.map(async p => {
+    const state = await safeFetch(BASE + '/platforms/' + p.name + '/desktop-state') || {};
+    const label = state.app_name || p.display_name || p.name;
+    const desc = state.available === false
+      ? (state.message || '暂未接入')
+      : (state.ready_label || '桌面就绪状态');
+    const badges = state.available !== false ? [
+      {l: state.installed?'已安装':'未安装', ok: state.installed},
+      {l: state.configured?'已配置':'未配置', ok: state.configured},
+      {l: state.running?'已打开':'未打开', ok: state.running},
+      {l: state.ready?'已就绪':'未就绪', ok: state.ready},
+    ] : [];
+
+    return '<div style="padding:12px 0;border-bottom:1px solid var(--sep)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">' +
+      '<div><div style="font-size:13px;font-weight:600">' + label + '</div>' +
+      '<div style="font-size:11px;color:var(--fg-muted);margin-top:2px">' + desc + '</div></div>' +
+      '<span class="badge ' + (state.ready?'ok':'gray') + '">' + (state.ready?'就绪':'待命') + '</span></div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:5px">' +
+      badges.map(b => '<span class="badge ' + (b.ok?'ok':'gray') + '">' + b.l + '</span>').join('') +
+      '</div></div>';
+  }));
+
+  grid.innerHTML = cards.join('');
+}
+
+document.addEventListener('DOMContentLoaded', loadStats);
+</script>
+</body>
+</html>

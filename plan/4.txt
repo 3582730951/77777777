@@ -1,0 +1,888 @@
+# 合并 any-auto-register 到 llm-pool 完整实施计划
+
+## Context
+
+llm-pool 是 Go+Vue 多 LLM 账号池网关，现有三个 Group（openai/claude/gemini），每个 API key 绑定一个 Group。any-auto-register 是 Python 自动注册系统支持 11 个平台。目标：合并后实现自动注册→自动入池→统一调度的闭环。
+
+---
+
+## 现有架构关键约束（必须兼容）
+
+1. **Provider 接口**（`internal/provider/provider.go`）：
+   ```go
+   type Provider interface {
+       Name() string
+       Invoke(ctx context.Context, account *domain.Account, req *ir.Request) (<-chan ir.Event, error)
+       Probe(ctx context.Context, account *domain.Account) error
+       Discover(ctx context.Context, account *domain.Account) (*domain.QuotaState, error)
+   }
+   ```
+
+2. **调度器 PickRequest**（`internal/scheduler/scheduler.go:255`）：
+   ```go
+   type PickRequest struct {
+       GroupID    string
+       TenantID   string
+       Provider   string      // 必须匹配 account.Provider
+       Model      string      // 通过 slotSupportsModel 检查
+       ConvHash   string
+       SystemHash string
+       AccountIDs []string    // 空=允许所有，非空=只从这些中选
+   }
+   ```
+
+3. **请求流程**（`internal/server/server.go:353`）：
+   ```
+   API key → auth.Resolve() → Resolved{Group} → PickRequest{Group.Provider, Group.AccountIDs}
+   → scheduler.Pick() → Slot → provider.Invoke()
+   ```
+   - API key 绑定唯一 Group
+   - Group.Provider 决定用哪个 provider 发请求
+   - Group.AccountIDs 决定候选账号范围
+
+4. **凭证存储**（`internal/store/store.go`）：
+   ```go
+   type AccountSecret struct {
+       Cookies      []byte
+       SessionToken string
+       RefreshToken string
+   }
+   // AES-GCM 加密，key = POOL_MASTER_KEY
+   ```
+
+5. **Account 结构**（`internal/domain/types.go`）：
+   ```go
+   type Account struct {
+       ID, TenantID, Provider string
+       CredentialBlob []byte
+       StealthProfile, UA, Proxy string
+       State AccountState
+       PlanTier string
+       Quota QuotaState  // 含 DiscoveredModels []ModelCapability
+       Health HealthState
+   }
+   ```
+
+6. **Python 端 Account API**（`GET /api/accounts`）：
+   ```json
+   {"total": N, "page": 1, "items": [{
+     "id": int, "platform": str, "email": str, "password": str,
+     "user_id": str, "primary_token": str,
+     "lifecycle_status": str, "validity_status": str,
+     "credentials": [{"scope":str, "key":str, "value":str, ...}],
+     "overview": dict, ...
+   }]}
+   ```
+   **注意：Python 端没有 synced 字段**，需在 Go 端追踪已同步的 ID。
+
+---
+
+## 核心设计决策
+
+### 决策1：跨组统一调度
+
+**问题**：现有架构 1 API key → 1 Group → 1 Provider。跨组调度需要一个请求能从多个 Group（不同 Provider）中选账号。
+
+**方案：Group Federation（组联盟）**
+
+新增配置概念 `federation`（联盟），将多个 Group 聚合：
+
+```yaml
+federations:
+  - id: all-claude-models
+    description: "所有能提供 Claude 模型的组"
+    member_groups: [claude, cursor, kiro, windsurf, trae]
+    api_keys: ["sk-pool-unified-claude"]
+
+  - id: all-openai-models  
+    description: "所有能提供 OpenAI 模型的组"
+    member_groups: [openai, cursor, windsurf]
+    api_keys: ["sk-pool-unified-openai"]
+```
+
+**实现**：
+- `auth.Resolved` 新增 `Federation *domain.Federation` 字段
+- 当 API key 属于 federation 时，构建 PickRequest 不再限定单一 Provider
+- 修改 `scheduler.candidates()` 的 Provider 过滤：如果 PickRequest.Provider 为空，允许所有 Provider
+- 修改 PickRequest 新增 `Providers []string` 替代单一 Provider（向后兼容：空=不限）
+- 合并所有 member_groups 的 AccountIDs 作为候选
+
+**影响范围**：
+- `internal/auth/auth.go` — Resolver 支持 federation key
+- `internal/scheduler/scheduler.go:310-341` — candidates() 支持多 provider
+- `internal/server/server.go:353` — 构建 PickRequest 支持 federation
+- `internal/domain/types.go` — 新增 Federation struct
+- `internal/config/config.go` — 解析 federations 配置
+
+### 决策2：每个注册平台 = 独立 Provider + Group
+
+每个平台需要独立 Provider（因为调用协议不同），对应独立 Group。
+
+### 决策3：Python synced 追踪
+
+在 Go 端 SQLite 新增 `autoreg_synced` 表，记录已同步的 Python account ID，避免重复导入。
+
+---
+
+## 完整平台映射
+
+| 注册平台 | Go Provider | 调用方式 | 凭证字段映射 |
+|---------|------------|---------|------------|
+| chatgpt | `chatgpt`（已有）| 逆向 ChatGPT API | token→SessionToken, refresh_token→RefreshToken |
+| cursor | `cursor`（新）| 逆向 Cursor API | WorkosCursorSessionToken→SessionToken |
+| kiro | `kiro`（新）| 逆向 Kiro/AWS API | access_token→SessionToken, refresh_token→RefreshToken |
+| windsurf | `windsurf`（新）| 逆向 Windsurf API | session_token→SessionToken, auth_token→RefreshToken |
+| grok | `grok`（新）| 逆向 xAI API | OAuth token→SessionToken |
+| trae | `trae`（新）| 逆向 Trae API | token→SessionToken |
+| blink | `blink`（新）| 逆向 blink.new API | firebase_token→SessionToken, access_token→RefreshToken |
+| cerebras | `cerebras`（新）| 标准 OpenAI 兼容 API | api_key→SessionToken |
+| tavily | `tavily`（新）| Tavily Search API | api_key→SessionToken |
+| openblocklabs | `openblocklabs`（新）| 逆向 OBL API | wos_session→SessionToken |
+
+---
+
+## Phase 1: 项目结构整理
+
+### 1.1 整理源码目录
+```bash
+mkdir -p services/autoreg/
+# 将 AutoReg 服务源码放入 services/autoreg/，并移除嵌套仓库元数据。
+rm -rf services/autoreg/.git/
+```
+
+### 1.2 添加 synced 支持到 Python 端
+
+修改 `services/autoreg/domain/accounts.py` 和 `services/autoreg/infrastructure/accounts_repo.py`：
+
+在 `AccountOverviewModel` 新增字段：
+```python
+synced_to_pool: bool = Field(default=False, index=True)
+synced_at: datetime | None = Field(default=None)
+```
+
+新增 API 端点：
+```python
+# GET /api/accounts?synced=false — 返回未同步账号
+# PATCH /api/accounts/{id}/synced — 标记已同步
+```
+
+### 1.3 Python 端端口配置
+
+修改 `services/autoreg/main.py`，支持通过环境变量配置端口：
+```python
+port = int(os.getenv("AUTOREG_PORT", "9900"))
+```
+
+---
+
+## Phase 2: Go 集成层 (`internal/autoreg/`)
+
+### 2.1 config.go
+
+```go
+type Config struct {
+    Enabled                bool          `yaml:"enabled"`
+    PythonPath             string        `yaml:"python_path"`
+    WorkDir                string        `yaml:"work_dir"`
+    Listen                 string        `yaml:"listen"` // "127.0.0.1:9900"
+    SyncInterval           time.Duration `yaml:"sync_interval"`
+    AutoActivate           bool          `yaml:"auto_activate"`
+    AutoDiscovery          bool          `yaml:"auto_discovery"`
+    DiscoveryRefreshInterval time.Duration `yaml:"discovery_refresh_interval"`
+    PlatformGroupMapping   map[string]string `yaml:"platform_group_mapping"`
+}
+```
+
+### 2.2 manager.go — Python 进程管理
+
+```go
+type Manager struct {
+    cfg     Config
+    cmd     *exec.Cmd
+    healthy atomic.Bool
+    mu      sync.Mutex
+}
+
+func (m *Manager) Start(ctx context.Context) error
+// 1. 启动: python -m uvicorn main:app --host 127.0.0.1 --port 9900
+// 2. 等待健康（GET /api/health，最多30s）
+// 3. 后台 goroutine：每10s健康检查，失败则重启
+// 4. 重启策略：指数退避 1s→2s→4s→...→60s，连续成功60s后重置
+
+func (m *Manager) Stop() error
+// SIGTERM → 等10s → SIGKILL
+
+func (m *Manager) IsHealthy() bool
+```
+
+### 2.3 client.go — Python API 客户端
+
+```go
+type Client struct {
+    baseURL    string // "http://127.0.0.1:9900"
+    httpClient *http.Client
+}
+
+// 关键方法：
+func (c *Client) ListUnsyncedAccounts(ctx context.Context, page, pageSize int) (*AccountListResponse, error)
+// GET /api/accounts?synced=false&page=X&page_size=Y
+
+func (c *Client) MarkSynced(ctx context.Context, accountID int) error
+// PATCH /api/accounts/{id}/synced
+
+func (c *Client) Health(ctx context.Context) error
+// GET /api/health
+
+// Go 端解析结构（对应 Python API 响应）：
+type PyAccount struct {
+    ID              int                    `json:"id"`
+    Platform        string                 `json:"platform"`
+    Email           string                 `json:"email"`
+    Password        string                 `json:"password"`
+    UserID          string                 `json:"user_id"`
+    PrimaryToken    string                 `json:"primary_token"`
+    LifecycleStatus string                 `json:"lifecycle_status"`
+    ValidityStatus  string                 `json:"validity_status"`
+    PlanName        string                 `json:"plan_name"`
+    Credentials     []PyCredential         `json:"credentials"`
+    Overview        map[string]interface{} `json:"overview"`
+    CreatedAt       *string                `json:"created_at"`
+}
+
+type PyCredential struct {
+    Scope          string `json:"scope"`
+    Key            string `json:"key"`
+    Value          string `json:"value"`
+    CredentialType string `json:"credential_type"`
+    IsPrimary      bool   `json:"is_primary"`
+}
+```
+
+### 2.4 bridge.go — 账号同步
+
+```go
+type Bridge struct {
+    client   *Client
+    store    *store.Store
+    cfg      Config
+    registry *provider.Registry
+    sched    *scheduler.Scheduler
+}
+
+func (b *Bridge) Run(ctx context.Context)
+// 每 sync_interval (30s) 执行一次：
+
+func (b *Bridge) syncOnce(ctx context.Context) error
+// 1. client.ListUnsyncedAccounts(page=1, pageSize=50)
+// 2. 对每个 PyAccount:
+//    a. 确定目标 group: cfg.PlatformGroupMapping[pyAcc.Platform]
+//    b. 构建凭证:
+//       secret := store.AccountSecret{
+//           SessionToken: pyAcc.PrimaryToken,
+//           RefreshToken: extractRefreshToken(pyAcc.Credentials),
+//       }
+//    c. 构建 domain.Account:
+//       acc := &domain.Account{
+//           ID:        fmt.Sprintf("autoreg-%s-%d", pyAcc.Platform, pyAcc.ID),
+//           TenantID:  "default",
+//           Provider:  platformToProvider(pyAcc.Platform),
+//           State:     domain.StateActive,
+//           PlanTier:  pyAcc.PlanName,
+//       }
+//    d. store.UpsertAccount(acc, secret)
+//    e. 将 acc.ID 加入对应 Group.AccountIDs
+//    f. sched.Register(acc)
+//    g. 如果 auto_discovery: 异步触发 provider.Discover(acc)
+//    h. client.MarkSynced(pyAcc.ID)
+// 3. 如果有下一页，继续翻页
+
+func extractRefreshToken(creds []PyCredential) string
+// 从 credentials 数组中找 key="refresh_token" 或 key="auth_token" 的 value
+
+func platformToProvider(platform string) string
+// chatgpt→chatgpt, cursor→cursor, kiro→kiro, ...（直接映射）
+```
+
+### 2.5 routes.go — API 代理
+
+```go
+func MountRoutes(r chi.Router, proxyTarget string) {
+    proxy := httputil.NewSingleHostReverseProxy(url)
+    
+    r.Route("/api/autoreg", func(r chi.Router) {
+        // 全部代理到 Python
+        r.HandleFunc("/*", proxy.ServeHTTP)
+    })
+}
+```
+
+SSE 代理需要特殊处理（禁用缓冲）：
+```go
+func proxySSE(w http.ResponseWriter, r *http.Request, target string) {
+    // Flush headers immediately
+    // Copy body with flusher
+}
+```
+
+### 2.6 synced_store.go — 已同步记录（备用方案）
+
+如果不修改 Python 端，Go 端自行追踪：
+```go
+// CREATE TABLE autoreg_synced (py_account_id INTEGER PRIMARY KEY, synced_at TEXT)
+func (s *Store) IsSynced(pyID int) bool
+func (s *Store) MarkSynced(pyID int) error
+```
+
+---
+
+## Phase 3: Domain 扩展
+
+### 3.1 `internal/domain/types.go` 新增
+
+```go
+// Federation 将多个 Group 聚合，允许一个 API key 跨组调度
+type Federation struct {
+    ID           string
+    Description  string
+    MemberGroups []string // group IDs
+    APIKeys      []string
+}
+
+// Group 新增字段
+type Group struct {
+    // ... 现有字段 ...
+    SourcePlatform string // 来源平台："cursor","kiro"... 空=官方
+    AutoRegister   bool   // 是否由自动注册管理
+}
+```
+
+### 3.2 `internal/config/config.go` 新增解析
+
+```go
+type Config struct {
+    // ... 现有 ...
+    Federations []FederationConfig `yaml:"federations"`
+    AutoReg     autoreg.Config     `yaml:"autoreg"`
+}
+
+type FederationConfig struct {
+    ID           string   `yaml:"id"`
+    Description  string   `yaml:"description"`
+    MemberGroups []string `yaml:"member_groups"`
+    APIKeys      []string `yaml:"api_keys"`
+}
+```
+
+---
+
+## Phase 4: 调度器跨组支持
+
+### 4.1 修改 `internal/scheduler/scheduler.go`
+
+**PickRequest 扩展**（向后兼容）：
+```go
+type PickRequest struct {
+    GroupID     string
+    TenantID    string
+    Provider    string     // 单一 provider（现有逻辑）
+    Providers   []string   // 多 provider（federation 模式），Provider 为空时使用
+    Model       string
+    ConvHash    string
+    SystemHash  string
+    AccountIDs  []string
+}
+```
+
+**修改 `candidates()`（第310行）**：
+```go
+func (s *Scheduler) candidates(req PickRequest) []*Slot {
+    // ...
+    providerMatch := func(accProvider string) bool {
+        if req.Provider != "" {
+            return accProvider == req.Provider
+        }
+        if len(req.Providers) > 0 {
+            for _, p := range req.Providers {
+                if p == accProvider { return true }
+            }
+            return false
+        }
+        return true // 都为空=不限制
+    }
+    
+    for _, sl := range s.accounts {
+        if !allow(sl.Account.ID) { continue }
+        if req.TenantID != "" && sl.Account.TenantID != req.TenantID { continue }
+        if !providerMatch(sl.Account.Provider) { continue }
+        if req.Model != "" && !slotSupportsModel(sl, req.Model) { continue }
+        out = append(out, sl)
+    }
+}
+```
+
+### 4.2 修改 `internal/server/server.go`（第353行附近）
+
+```go
+// 构建 PickRequest
+var pickReq scheduler.PickRequest
+if res.Federation != nil {
+    // Federation 模式：跨组调度
+    var allAccountIDs []string
+    var providers []string
+    for _, gid := range res.Federation.MemberGroups {
+        g := findGroup(gid)
+        allAccountIDs = append(allAccountIDs, g.AccountIDs...)
+        providers = appendUnique(providers, g.Provider)
+    }
+    pickReq = scheduler.PickRequest{
+        TenantID:   res.Tenant.ID,
+        Providers:  providers,
+        Model:      effective,
+        ConvHash:   convHash,
+        SystemHash: normalize.HashSystemPrefix(req),
+        AccountIDs: allAccountIDs,
+    }
+} else {
+    // 原有单组模式
+    pickReq = scheduler.PickRequest{
+        GroupID:    res.Group.ID,
+        TenantID:   res.Group.TenantID,
+        Provider:   res.Group.Provider,
+        Model:      effective,
+        ConvHash:   convHash,
+        SystemHash: normalize.HashSystemPrefix(req),
+        AccountIDs: res.Group.AccountIDs,
+    }
+}
+```
+
+**关键问题**：Federation 模式下选出的 Slot 可能属于不同 Provider，需要动态获取 provider：
+```go
+slot, err := g.sched.Pick(ctx, pickReq)
+// 根据 slot.Account.Provider 获取对应 provider
+prov := g.providers.Get(slot.Account.Provider)
+events, err := prov.Invoke(ctx, slot.Account, req)
+```
+
+现有代码中 provider 的获取逻辑（确认修改位置）：
+
+```go
+// 现有：provider 通过 res.Group.Provider 确定
+// 修改为：provider 通过 slot.Account.Provider 确定（slot 选出后才知道）
+```
+
+### 4.3 修改 `internal/auth/auth.go`
+
+```go
+type Resolved struct {
+    Tenant         *domain.Tenant
+    Group          *domain.Group          // 单组模式
+    Federation     *domain.Federation     // 联盟模式（二选一）
+    APIKey         string
+    APIKeyOverride domain.APIKeyOverride
+}
+
+func (r *Resolver) Resolve(...) (Resolved, bool) {
+    // 先检查 federation keys
+    if fed, ok := r.byFedKey[key]; ok {
+        return Resolved{Tenant: fed.Tenant, Federation: fed.Federation, APIKey: key}, true
+    }
+    // 再检查 group keys（现有逻辑）
+    if res, ok := r.byKey[key]; ok {
+        return res, true
+    }
+    return Resolved{}, false
+}
+```
+
+---
+
+## Phase 5: 新增 Provider 实现
+
+### 5.1 Provider 目录结构（每个平台）
+
+```
+internal/provider/cursor/
+├── cursor.go       # Provider 接口实现
+├── session.go      # 凭证解析和 token 刷新
+└── models.go       # 已知模型列表（Discover 探测更新）
+```
+
+### 5.2 Cursor Provider 示例（最重要的新 Provider）
+
+```go
+// internal/provider/cursor/cursor.go
+
+type Provider struct {
+    Mode       string
+    store      *store.Store
+    httpClient *http.Client
+}
+
+func (p *Provider) Name() string { return "cursor" }
+
+func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
+    // 1. 从 store 获取凭证
+    secret, err := p.store.GetAccountSecret(ctx, acc.ID)
+    // 2. 构建 Cursor API 请求（逆向其 /v1/chat/completions 或内部 API）
+    // 3. 发送请求，解析 SSE 流
+    // 4. 将响应转为 ir.Event 发送到 channel
+}
+
+func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
+    // 轻量级请求验证账号有效（如 GET /api/user 或类似）
+}
+
+func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.QuotaState, error) {
+    // 调用 Cursor API 获取可用模型列表和用量
+    // 返回 QuotaState{DiscoveredModels: [...]}
+}
+```
+
+### 5.3 Cerebras Provider（最简单，标准 OpenAI 兼容 API）
+
+```go
+// internal/provider/cerebras/cerebras.go
+
+func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
+    // 直接用 api_key 调用 https://api.cerebras.ai/v1/chat/completions
+    // 响应格式与 OpenAI 兼容，解析逻辑可复用
+}
+```
+
+### 5.4 注册所有 Provider（`cmd/gateway/main.go`）
+
+```go
+// 现有
+chatgptProv := chatgpt.New(mode); chatgptProv.SetStore(st); providers.Register(chatgptProv)
+claudeProv := claude.New(mode); claudeProv.SetStore(st); providers.Register(claudeProv)
+geminiProv := gemini.New(mode); geminiProv.SetStore(st); providers.Register(geminiProv)
+
+// 新增
+cursorProv := cursor.New(mode); cursorProv.SetStore(st); providers.Register(cursorProv)
+kiroProv := kiro.New(mode); kiroProv.SetStore(st); providers.Register(kiroProv)
+windsurfProv := windsurf.New(mode); windsurfProv.SetStore(st); providers.Register(windsurfProv)
+grokProv := grok.New(mode); grokProv.SetStore(st); providers.Register(grokProv)
+traeProv := trae.New(mode); traeProv.SetStore(st); providers.Register(traeProv)
+blinkProv := blink.New(mode); blinkProv.SetStore(st); providers.Register(blinkProv)
+cerebrasProv := cerebras.New(mode); cerebrasProv.SetStore(st); providers.Register(cerebrasProv)
+tavilyProv := tavily.New(mode); tavilyProv.SetStore(st); providers.Register(tavilyProv)
+oblProv := openblocklabs.New(mode); oblProv.SetStore(st); providers.Register(oblProv)
+
+// 启动自动注册管理器（如果 enabled）
+if cfg.AutoReg.Enabled {
+    mgr := autoreg.NewManager(cfg.AutoReg)
+    mgr.Start(ctx)
+    bridge := autoreg.NewBridge(autoreg.BridgeConfig{...}, st, providers, sched)
+    go bridge.Run(ctx)
+    autoreg.MountRoutes(adminRouter, cfg.AutoReg.Listen)
+}
+```
+
+---
+
+## Phase 6: Vue 前端集成
+
+### 6.1 新增路由（`frontend/src/router/index.ts`）
+
+```typescript
+{
+  path: '/autoreg',
+  children: [
+    { path: 'tasks', component: () => import('@/views/autoreg/TaskList.vue') },
+    { path: 'tasks/create', component: () => import('@/views/autoreg/TaskCreate.vue') },
+    { path: 'tasks/:id', component: () => import('@/views/autoreg/TaskDetail.vue') },
+    { path: 'providers', component: () => import('@/views/autoreg/Providers.vue') },
+    { path: 'platforms', component: () => import('@/views/autoreg/Platforms.vue') },
+    { path: 'stats', component: () => import('@/views/autoreg/Stats.vue') },
+  ]
+}
+```
+
+### 6.2 页面功能
+
+| 页面 | API 调用 | 功能 |
+|------|---------|------|
+| TaskCreate | POST /api/autoreg/tasks/register | 选平台、数量、并发、邮箱提供商、验证码服务、代理 |
+| TaskList | GET /api/autoreg/tasks | 任务列表+状态+进度 |
+| TaskDetail | GET /api/autoreg/tasks/{id}/logs/stream (SSE) | 实时日志流 |
+| Providers | GET/POST /api/autoreg/providers/* | CRUD 邮箱/验证码/短信/代理配置 |
+| Platforms | GET /api/autoreg/platforms | 各平台状态、支持模型、账号数 |
+| Stats | GET /api/autoreg/stats/* | 注册成功率、按平台/天统计 |
+
+### 6.3 现有页面修改
+
+- **账号列表** (`views/accounts/`)：新增"来源"列（source_platform），筛选器
+- **分组管理** (`views/groups/`)：标记 auto_register 的组，显示探测到的模型
+- **仪表盘**：新增注册任务摘要卡片
+
+---
+
+## Phase 7: 配置完整示例
+
+```yaml
+server:
+  gateway_addr: ":8787"
+  admin_addr: ":8788"
+
+tenants:
+  - id: default
+    name: "Default Tenant"
+
+groups:
+  # 官方直连池
+  - id: openai
+    tenant_id: default
+    provider: chatgpt
+    api_keys: ["sk-pool-openai"]
+    models: [gpt-5.2, gpt-4o, o1-mini]
+    account_ids: []
+
+  - id: claude
+    tenant_id: default
+    provider: claude
+    api_keys: ["sk-pool-claude"]
+    models: [claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001]
+    account_ids: []
+
+  - id: gemini
+    tenant_id: default
+    provider: gemini
+    api_keys: ["sk-pool-gemini"]
+    models: [gemini-2.0-pro, gemini-2.0-flash]
+    account_ids: []
+
+  # 自动注册平台池
+  - id: cursor
+    tenant_id: default
+    provider: cursor
+    source_platform: cursor
+    auto_register: true
+    api_keys: ["sk-pool-cursor"]
+    models: []  # 自动探测
+    account_ids: []
+
+  - id: kiro
+    tenant_id: default
+    provider: kiro
+    source_platform: kiro
+    auto_register: true
+    api_keys: ["sk-pool-kiro"]
+    models: []
+    account_ids: []
+
+  - id: windsurf
+    tenant_id: default
+    provider: windsurf
+    source_platform: windsurf
+    auto_register: true
+    api_keys: ["sk-pool-windsurf"]
+    models: []
+    account_ids: []
+
+  - id: grok
+    tenant_id: default
+    provider: grok
+    source_platform: grok
+    auto_register: true
+    api_keys: ["sk-pool-grok"]
+    models: []
+    account_ids: []
+
+  - id: trae
+    tenant_id: default
+    provider: trae
+    source_platform: trae
+    auto_register: true
+    api_keys: ["sk-pool-trae"]
+    models: []
+    account_ids: []
+
+  - id: blink
+    tenant_id: default
+    provider: blink
+    source_platform: blink
+    auto_register: true
+    api_keys: ["sk-pool-blink"]
+    models: []
+    account_ids: []
+
+  - id: cerebras
+    tenant_id: default
+    provider: cerebras
+    source_platform: cerebras
+    auto_register: true
+    api_keys: ["sk-pool-cerebras"]
+    models: []
+    account_ids: []
+
+  - id: tavily
+    tenant_id: default
+    provider: tavily
+    source_platform: tavily
+    auto_register: true
+    api_keys: ["sk-pool-tavily"]
+    models: []
+    account_ids: []
+
+  - id: openblocklabs
+    tenant_id: default
+    provider: openblocklabs
+    source_platform: openblocklabs
+    auto_register: true
+    api_keys: ["sk-pool-openblocklabs"]
+    models: []
+    account_ids: []
+
+# 组联盟：跨组统一调度
+federations:
+  - id: unified-claude
+    description: "统一 Claude 模型调度（官方 + Cursor + Kiro + Windsurf + Trae）"
+    member_groups: [claude, cursor, kiro, windsurf, trae]
+    api_keys: ["sk-pool-unified-claude"]
+
+  - id: unified-openai
+    description: "统一 OpenAI 模型调度（官方 + Cursor + Windsurf）"
+    member_groups: [openai, cursor, windsurf]
+    api_keys: ["sk-pool-unified-openai"]
+
+  - id: unified-all
+    description: "全模型统一调度"
+    member_groups: [openai, claude, gemini, cursor, kiro, windsurf, grok, trae, blink, cerebras]
+    api_keys: ["sk-pool-unified-all"]
+
+autoreg:
+  enabled: true
+  python_path: "/opt/autoreg/venv/bin/python"
+  work_dir: "/opt/autoreg"
+  listen: "127.0.0.1:9900"
+  sync_interval: 30s
+  auto_activate: true
+  auto_discovery: true
+  discovery_refresh_interval: 6h
+  platform_group_mapping:
+    chatgpt: openai
+    cursor: cursor
+    kiro: kiro
+    windsurf: windsurf
+    grok: grok
+    trae: trae
+    blink: blink
+    cerebras: cerebras
+    tavily: tavily
+    openblocklabs: openblocklabs
+
+scheduler:
+  algorithm: p2c_ewma
+  # ... 现有配置不变 ...
+```
+
+---
+
+## Phase 8: 部署
+
+### Dockerfile
+
+```dockerfile
+# Stage 1: Go
+FROM golang:1.25-alpine AS go-builder
+RUN apk add --no-cache gcc musl-dev sqlite-dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -o /gateway ./cmd/gateway/
+
+# Stage 2: Python + Playwright
+FROM python:3.11-slim AS py-builder
+WORKDIR /autoreg
+COPY services/autoreg/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install --with-deps chromium
+COPY services/autoreg/ .
+
+# Stage 3: Vue frontend
+FROM node:20-alpine AS fe-builder
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build
+
+# Stage 4: Final
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsqlite3-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libdbus-1-3 libxkbcommon0 libx11-6 libxcomposite1 \
+    libxdamage1 libxext6 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libasound2 libatspi2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=go-builder /gateway /usr/local/bin/gateway
+COPY --from=py-builder /autoreg /opt/autoreg
+COPY --from=py-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/dist-packages
+COPY --from=py-builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+COPY --from=fe-builder /frontend/dist /opt/web
+
+EXPOSE 8787 8788
+ENV AUTOREG_PORT=9900
+ENTRYPOINT ["/usr/local/bin/gateway"]
+```
+
+---
+
+## Phase 9: 实施顺序与依赖关系
+
+```
+Phase 1 (结构整理)
+    ↓
+Phase 2 (Go autoreg 集成层: manager + client + bridge)
+    ↓ 同时
+Phase 3 (Domain 扩展: Federation, Group 新字段)
+    ↓
+Phase 4 (调度器跨组支持: PickRequest.Providers, auth Federation)
+    ↓
+Phase 5.1 (Cerebras Provider — 最简单，验证整个流程)
+    ↓
+Phase 5.2 (Cursor Provider — 最重要)
+    ↓
+Phase 5.3-5.9 (其余 Provider 逐步实现)
+    ↓ 同时
+Phase 6 (Vue 前端)
+    ↓
+Phase 7 (配置整合)
+    ↓
+Phase 8 (Docker 部署)
+```
+
+---
+
+## 风险与缓解
+
+| 风险 | 影响 | 缓解方案 |
+|------|------|---------|
+| Python 子进程崩溃 | 注册功能不可用 | manager 自动重启 + 告警 |
+| 跨组调度选出的账号 Provider 不支持该模型 | 请求失败 | 依赖 DiscoveredModels 精确过滤 |
+| Federation 模式下 model alias 冲突 | 模型解析错误 | Federation 不支持 alias，使用原始模型名 |
+| Cursor/Kiro 等逆向 API 变更 | Provider 失效 | 独立 Provider 实现，可快速修复不影响其他 |
+| 两 DB 一致性（重复导入） | 账号重复 | Go 端 `autoreg_synced` 表 + 幂等设计 |
+| Python 端无 synced 字段 | 无法高效查询 | 优先方案：修改 Python 加字段；备选：Go 端追踪全量 ID |
+| Provider 模式为 mock 时新 provider 未实现 | 开发期无法测试 | 所有新 Provider 默认 mock 模式返回测试响应 |
+
+---
+
+## 验证清单
+
+- [ ] `go build ./cmd/gateway/` 编译通过（新 Provider 均可编译）
+- [ ] 启动网关 → Python 子进程自动拉起 → 健康检查通过
+- [ ] `GET /api/autoreg/platforms` 返回 11 个平台
+- [ ] 创建 Cerebras 注册任务 → Python 执行 → 注册成功
+- [ ] Bridge 同步 → 账号出现在 `cerebras` Group
+- [ ] `provider.Discover()` → DiscoveredModels 填充
+- [ ] 用 `sk-pool-cerebras` 请求 → 通过 Cerebras API 转发成功
+- [ ] 创建 Cursor 注册任务 → 注册成功 → 入 `cursor` Group
+- [ ] Cursor Discover → 探测到 claude-sonnet, gpt-4o 等模型
+- [ ] 用 `sk-pool-unified-claude` 请求 `claude-sonnet-4-6` → 可调度到 cursor 组账号
+- [ ] 用 `sk-pool-cursor` 请求 → 只走 cursor 池
+- [ ] 前端全部页面可访问，创建任务→查看日志→查看统计 流程通
+- [ ] Docker 单镜像构建成功，运行正常

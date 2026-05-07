@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>审计日志 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">审计日志</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/audit")}}
+      </div>
+    </header>
+    <div class="content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title flex items-center gap-8">
+            实时日志流
+            <span class="flex items-center gap-4 tiny muted"><span class="spin"></span>SSE</span>
+          </div>
+          <div class="flex gap-4" style="flex-wrap:wrap">
+            <span class="filter-chip active" onclick="filterLive('all',this)">全部</span>
+            <span class="filter-chip" onclick="filterLive('info',this)">Info</span>
+            <span class="filter-chip" onclick="filterLive('warn',this)">Warn</span>
+            <span class="filter-chip" onclick="filterLive('error',this)">Error</span>
+          </div>
+        </div>
+        <div class="card-body" style="padding:0 20px 16px">
+          <div id="audit-live" class="audit-log" style="max-height:400px"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">历史记录</div>
+          <form method="get" action="/audit" class="flex gap-8 items-center">
+            <input type="text" name="q" value="{{.Q}}" placeholder="过滤关键词" style="width:180px"/>
+            <select name="level">
+              <option value="">全部级别</option>
+              <option value="info" {{if eq .Level "info"}}selected{{end}}>info</option>
+              <option value="warn" {{if eq .Level "warn"}}selected{{end}}>warn</option>
+              <option value="error" {{if eq .Level "error"}}selected{{end}}>error</option>
+            </select>
+            <button class="btn ghost sm">筛选</button>
+          </form>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>时间</th><th>级别</th><th>类型</th><th>账号</th><th>消息</th></tr>
+            </thead>
+            <tbody>
+            {{range .Entries}}
+              <tr>
+                <td class="tiny mono muted">{{.At.Format "01-02 15:04:05"}}</td>
+                <td><span class="badge {{if eq .Level "error"}}err{{else if eq .Level "warn"}}warn{{else}}blue{{end}}">{{.Level}}</span></td>
+                <td class="tiny muted">{{.Category}}</td>
+                <td class="tiny mono">{{or .AccountID "—"}}</td>
+                <td class="small">{{.Message}}</td>
+              </tr>
+            {{end}}
+            {{if empty .Entries}}
+              <tr><td colspan="5"><div class="empty" style="padding:32px">
+                <div class="empty-icon">≡</div>
+                <div class="empty-sub">暂无日志记录</div>
+              </div></td></tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{if .HasMore}}
+        <div class="card-footer center">
+          <a href="/audit?offset={{.NextOffset}}&q={{.Q}}&level={{.Level}}" class="btn ghost sm">加载更多</a>
+        </div>
+        {{end}}
+      </div>
+    </div>
+  </main>
+</div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+let _liveFilter='all';
+const sse=new EventSource('/api/admin/audit/stream');
+sse.onmessage=(e)=>{try{appendAuditLive(JSON.parse(e.data))}catch{}};
+function appendAuditLive(e){
+  const el=document.getElementById('audit-live');
+  if(!el)return;
+  const row=document.createElement('div');
+  const lvl=e.level||'info';
+  row.className='audit-row';
+  row.dataset.level=lvl;
+  if(_liveFilter!=='all'&&lvl!==_liveFilter)row.style.display='none';
+  const ts=new Date(e.at||Date.now());
+  const hms=ts.toTimeString().slice(0,8);
+  row.innerHTML=`<span class="a-ts">${hms}</span><span class="a-lvl ${lvl}">${lvl}</span><span class="a-msg">${e.message||''}</span>`;
+  el.prepend(row);
+  while(el.children.length>200)el.lastChild.remove();
+}
+function filterLive(level,btn){
+  _liveFilter=level;
+  btn.parentElement.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#audit-live .audit-row').forEach(r=>{
+    r.style.display=(level==='all'||r.dataset.level===level)?'':'none';
+  });
+}
+</script>
+</body></html>

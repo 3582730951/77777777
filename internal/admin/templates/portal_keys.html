@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的 Key · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.key-full{font-family:"SF Mono",Menlo,monospace;font-size:12px;word-break:break-all;
+  background:var(--sep);padding:8px 12px;border-radius:var(--r-sm);border:1px solid var(--hairline);
+  display:block;margin-top:6px;line-height:1.6}
+.guide-block{background:var(--bg);border:1px solid var(--hairline);border-radius:var(--r-md);padding:14px 16px}
+.guide-title{font-size:12px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.guide-code{position:relative;background:var(--sep);border-radius:var(--r-sm);padding:10px 12px;
+  font-family:"SF Mono",Menlo,monospace;font-size:11px;color:var(--fg-2);line-height:1.8;
+  word-break:break-all;white-space:pre-wrap}
+.guide-copy{position:absolute;top:6px;right:6px}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_portal_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">我的 Key</div>
+      <div class="topbar-actions">
+        <button class="btn primary" onclick="showModal('modal-new-key')">+ 申请 Key</button>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      {{if .FlashKey}}
+      <div class="alert alert-ok">
+        <div class="flex-1">
+          <div class="bold small">✓ Key 已生成 — 请立即复制（仅显示一次）</div>
+          <code class="key-full">{{.FlashKey}}</code>
+        </div>
+        <button class="btn primary sm" style="flex-shrink:0"
+          onclick="copyText('{{.FlashKey}}','Key');this.textContent='✓ 已复制'">复制 Key</button>
+      </div>
+      {{end}}
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">API Keys ({{len .Keys}})</div>
+          <span class="tiny muted">使用 Pool Key 调用网关，等同于 OpenAI / Anthropic API Key</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>Key</th><th>分组</th><th>备注</th><th>创建时间</th><th class="right">操作</th></tr>
+            </thead>
+            <tbody>
+            {{range .Keys}}
+              <tr>
+                <td>
+                  <code class="mono" style="font-size:12px">{{truncate 16 .Value}}••••</code>
+                  <button class="btn ghost sm" style="margin-left:6px"
+                    onclick="copyText('{{.Value}}','Key')">复制</button>
+                </td>
+                <td><code class="tiny">{{.GroupID}}</code></td>
+                <td class="muted tiny">{{or .Label "—"}}</td>
+                <td class="tiny muted">{{.CreatedAt.Format "01-02 15:04"}}</td>
+                <td>
+                  <div class="actions-cell">
+                    <form method="post" action="/portal/keys/{{.Value}}/revoke" class="form-inline"
+                          onsubmit="return confirm('吊销此 Key?')">
+                      <button class="btn ghost sm danger" type="submit">吊销</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {{end}}
+            {{if empty .Keys}}
+              <tr><td colspan="5"><div class="empty" style="padding:32px">
+                <div class="empty-icon">⚿</div>
+                <div class="empty-title">还没有 Key</div>
+                <div class="empty-sub">点击右上角「申请 Key」创建第一个</div>
+              </div></td></tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Integration guide with dynamic URLs -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">接入指南</div></div>
+        <div class="card-body grid g3" style="gap:14px">
+          <div class="guide-block">
+            <div class="guide-title"><span style="color:var(--provider-openai)">●</span> OpenAI / Cursor / Codex</div>
+            <div class="guide-code" id="guide-openai">export OPENAI_BASE_URL={{.GatewayURL}}/v1
+export OPENAI_API_KEY={{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你的key{{end}}<button class="btn ghost sm guide-copy" onclick="copyBlock('guide-openai')">复制</button></div>
+          </div>
+          <div class="guide-block">
+            <div class="guide-title"><span style="color:var(--provider-claude)">●</span> Claude Code / Anthropic SDK</div>
+            <div class="guide-code" id="guide-claude">export ANTHROPIC_BASE_URL={{.GatewayURL}}/v1
+export ANTHROPIC_API_KEY={{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你的key{{end}}<button class="btn ghost sm guide-copy" onclick="copyBlock('guide-claude')">复制</button></div>
+          </div>
+          <div class="guide-block">
+            <div class="guide-title"><span style="color:var(--provider-gemini)">●</span> Gemini CLI / Google SDK</div>
+            <div class="guide-code" id="guide-gemini">export GEMINI_API_BASE={{.GatewayURL}}/v1
+export GOOGLE_API_KEY={{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你的key{{end}}<button class="btn ghost sm guide-copy" onclick="copyBlock('guide-gemini')">复制</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- New Key Modal -->
+<div id="modal-new-key" class="modal-overlay" style="display:none">
+  <div class="card" style="width:400px;border-radius:var(--r-xl);box-shadow:var(--s3)">
+    <div class="card-header">
+      <div class="card-title">申请 API Key</div>
+      <button class="btn-icon" onclick="hideModal('modal-new-key')">✕</button>
+    </div>
+    <div class="card-body">
+      <form method="post" action="/portal/keys" class="form">
+        <div class="field">
+          <label>分组 *</label>
+          <select name="group_id" required>
+            <option value="">— 选择分组 —</option>
+            {{range .Groups}}<option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>{{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label>备注（可选）</label>
+          <input name="label" placeholder="例如：Cursor 专用"/>
+        </div>
+        <div class="form-actions">
+          <button class="btn primary w-full" type="submit">生成</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div id="toast-ct"></div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+function showModal(id){const el=document.getElementById(id);if(el){el.style.display='flex';el.addEventListener('click',e=>{if(e.target===el)hideModal(id)},{ once:true });}}
+function hideModal(id){const el=document.getElementById(id);if(el)el.style.display='none';}
+function showToast(m){const c=document.getElementById('toast-ct');const t=document.createElement('div');t.className='toast';t.textContent='✓ '+m;c.appendChild(t);setTimeout(()=>t.remove(),2500)}
+</script>
+{{template "_copy_script" .}}
+</body></html>

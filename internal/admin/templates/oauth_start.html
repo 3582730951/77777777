@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OAuth 一键登录 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.provider-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.provider-card{display:flex;flex-direction:column;align-items:center;gap:8px;
+  padding:22px 14px;background:var(--bg);border:2px solid var(--hairline);
+  border-radius:var(--r-md);cursor:pointer;transition:all var(--dur) var(--ease);text-align:center;
+  position:relative}
+.provider-card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:var(--s2)}
+.provider-card input[type=radio]{position:absolute;opacity:0;width:0;height:0}
+.provider-card.selected{border-color:var(--accent);background:rgba(0,122,255,0.06);
+  box-shadow:0 0 0 1px var(--accent)}
+.provider-card .check{position:absolute;top:8px;right:8px;width:16px;height:16px;
+  border-radius:50%;background:var(--accent);color:#fff;display:none;
+  align-items:center;justify-content:center;font-size:10px}
+.provider-card.selected .check{display:flex}
+.prov-icon{font-size:30px;line-height:1}
+.prov-name{font-weight:600;font-size:13.5px}
+.prov-desc{font-size:11px;color:var(--fg-muted);text-align:center;line-height:1.4}
+.prov-meta{font-size:10px;color:var(--fg-muted);font-family:"SF Mono",Menlo,monospace}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">OAuth 一键登录</div>
+      <div class="topbar-actions">
+        <a href="/accounts" class="btn ghost">← 账号池</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+      <div class="grid g2" style="align-items:start">
+
+        <!-- 主操作 -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">选择服务商并开始登录</div>
+            <span class="tiny muted">完整复刻官方 CLI OAuth 流程</span>
+          </div>
+          <div class="card-body">
+            <form method="post" action="/accounts/oauth" class="form" id="oauth-form">
+              <div class="provider-grid">
+                {{range .Providers}}
+                <div class="provider-card {{if eq .ID "codex"}}selected{{end}}"
+                     onclick="selectProvider('{{.ID}}', this)">
+                  <input type="radio" name="provider" value="{{.ID}}"
+                    {{if eq .ID "codex"}}checked{{end}}>
+                  <div class="check">✓</div>
+                  <div class="prov-icon">
+                    {{if eq .ID "codex"}}🤖{{else if eq .ID "claude"}}🧠{{else if eq .ID "gemini"}}✨{{end}}
+                  </div>
+                  <div class="prov-name">{{.DisplayName}}</div>
+                  <div class="prov-desc">
+                    {{if eq .ID "codex"}}消耗 Codex 独立配额<br>Plus 账号即可{{end}}
+                    {{if eq .ID "claude"}}消耗 Claude Code 配额<br>Pro/Max 账号{{end}}
+                    {{if eq .ID "gemini"}}消耗 Code Assist 配额<br>Gemini Advanced{{end}}
+                  </div>
+                  <div class="prov-meta">port :{{.CallbackPort}}</div>
+                </div>
+                {{end}}
+                {{if empty .Providers}}
+                <!-- 兜底：OAuth manager 未初始化时显示 -->
+                <div class="provider-card selected" onclick="selectProvider('codex',this)">
+                  <input type="radio" name="provider" value="codex" checked>
+                  <div class="check">✓</div>
+                  <div class="prov-icon">🤖</div>
+                  <div class="prov-name">OpenAI Codex</div>
+                  <div class="prov-desc">消耗 Codex 独立配额</div>
+                  <div class="prov-meta">port :1455</div>
+                </div>
+                <div class="provider-card" onclick="selectProvider('claude',this)">
+                  <input type="radio" name="provider" value="claude">
+                  <div class="check">✓</div>
+                  <div class="prov-icon">🧠</div>
+                  <div class="prov-name">Anthropic Claude</div>
+                  <div class="prov-desc">消耗 Claude Code 配额</div>
+                  <div class="prov-meta">port :54545</div>
+                </div>
+                <div class="provider-card" onclick="selectProvider('gemini',this)">
+                  <input type="radio" name="provider" value="gemini">
+                  <div class="check">✓</div>
+                  <div class="prov-icon">✨</div>
+                  <div class="prov-name">Google Gemini</div>
+                  <div class="prov-desc">消耗 Code Assist 配额</div>
+                  <div class="prov-meta">port :8085</div>
+                </div>
+                {{end}}
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">绑定配置</div>
+                <div class="form-row c2">
+                  <div class="field">
+                    <label>租户</label>
+                    <select name="tenant_id">
+                      {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
+                      {{range .Tenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>账号备注（可选）</label>
+                    <input name="note" placeholder="例如：工作账号 A"/>
+                  </div>
+                </div>
+              </div>
+
+              <button class="btn primary lg w-full" type="submit">
+                开始 OAuth 登录 →
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- 说明 -->
+        <div class="flex-col gap-16">
+          <div class="card flat">
+            <div class="card-header"><div class="card-title">配额说明</div></div>
+            <div class="card-body flex-col gap-12">
+              <div class="flex items-start gap-12">
+                <span style="font-size:20px">🤖</span>
+                <div>
+                  <div class="bold small">OpenAI Codex</div>
+                  <div class="tiny muted mt-4">走 <code>/backend-api/codex/responses</code>，消耗 <b>Codex 独立配额</b>（5h/7d 窗口），与 ChatGPT 对话额度完全分离</div>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="flex items-start gap-12">
+                <span style="font-size:20px">🧠</span>
+                <div>
+                  <div class="bold small">Anthropic Claude</div>
+                  <div class="tiny muted mt-4">走 <code>api.anthropic.com/v1/messages</code>，OAuth token 携带完整 claude-code-20250219 beta header，消耗 <b>Claude Code 订阅配额</b>而非第三方额外用量</div>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="flex items-start gap-12">
+                <span style="font-size:20px">✨</span>
+                <div>
+                  <div class="bold small">Google Gemini</div>
+                  <div class="tiny muted mt-4">走 <code>cloudcode-pa.googleapis.com</code>，消耗 <b>Gemini Advanced / Code Assist 配额</b></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card flat">
+            <div class="card-header"><div class="card-title">回调方式</div></div>
+            <div class="card-body flex-col gap-10">
+              <div class="flex items-start gap-8">
+                <span>🖥️</span>
+                <div class="small"><b>本机直连</b>：网关已监听 :1455 / :54545 / :8085，浏览器登录后自动跳回，本页自动变绿</div>
+              </div>
+              <div class="flex items-start gap-8">
+                <span>🌐</span>
+                <div class="small"><b>跨机部署</b>：浏览器 localhost 报错时，从地址栏复制完整 URL 粘贴到下一页完成认证</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+function selectProvider(id, card) {
+  document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('selected'));
+  card.classList.add('selected');
+  const radio = card.querySelector('input[type=radio]');
+  if (radio) radio.checked = true;
+}
+</script>
+</body></html>

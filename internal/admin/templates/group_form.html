@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{or .Title "分组"}} · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.model-checklist{display:flex;flex-wrap:wrap;gap:6px;padding:10px 0}
+.model-check-item{display:flex;align-items:center;gap:6px;padding:5px 10px;
+  border:1px solid var(--hairline);border-radius:var(--r-sm);cursor:pointer;
+  font-size:12px;font-family:"SF Mono",Menlo,monospace;transition:all .15s}
+.model-check-item:hover{border-color:var(--accent);background:rgba(0,122,255,.05)}
+.model-check-item input{accent-color:var(--accent)}
+.model-check-item.checked{border-color:var(--accent);background:rgba(0,122,255,.08);color:var(--accent)}
+.model-section{display:none}.model-section.active{display:block}
+.select-all-row{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">{{or .Title "新建分组"}}</div>
+      <div class="topbar-actions">
+        <a href="/groups" class="btn ghost">← 分组列表</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+      <div class="grid g2" style="align-items:start">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">{{if .IsEdit}}编辑分组{{else}}新建分组{{end}}</div>
+          </div>
+          <div class="card-body">
+            <form method="post" action="{{or .FormAction "/groups/new"}}" class="form" id="group-form">
+              <div class="form-section-title">基础信息</div>
+              <div class="form-row c2">
+                <div class="field">
+                  <label>分组 ID *</label>
+                  <input name="id"
+                    value="{{if .Group}}{{.Group.ID}}{{end}}"
+                    placeholder="例如：openai-plus"
+                    {{if .IsEdit}}readonly style="background:var(--sep);cursor:not-allowed"{{else}}required{{end}}/>
+                </div>
+                <div class="field">
+                  <label>Provider *</label>
+                  <select name="provider" id="provider-sel" required onchange="onProviderChange(this.value)">
+                    <option value="chatgpt" {{if and .Group (eq .Group.Provider "chatgpt")}}selected{{end}}>🤖 chatgpt (OpenAI Codex)</option>
+                    <option value="claude"  {{if and .Group (eq .Group.Provider "claude")}}selected{{end}}>🧠 claude (Anthropic)</option>
+                    <option value="gemini"  {{if and .Group (eq .Group.Provider "gemini")}}selected{{end}}>✨ gemini (Google)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row c2">
+                <div class="field">
+                  <label>租户</label>
+                  <select name="tenant_id">
+                    <option value="default">default</option>
+                    {{range .YamlTenants}}
+                      <option value="{{.ID}}" {{if and $.Group (eq $.Group.TenantID .ID)}}selected{{end}}>{{.Name}} ({{.ID}})</option>
+                    {{end}}
+                    {{range .Tenants}}
+                      <option value="{{.ID}}" {{if and $.Group (eq $.Group.TenantID .ID)}}selected{{end}}>{{.Name}} ({{.ID}})</option>
+                    {{end}}
+                  </select>
+                </div>
+                <div class="field">
+                  <label>System Prompt 注入模式</label>
+                  <select name="system_prompt_mode">
+                    <option value="prepend" {{if and .Group (eq .Group.SystemPromptMode "prepend")}}selected{{end}}>prepend（前插）</option>
+                    <option value="append"  {{if and .Group (eq .Group.SystemPromptMode "append")}}selected{{end}}>append（后追）</option>
+                    <option value="replace" {{if and .Group (eq .Group.SystemPromptMode "replace")}}selected{{end}}>replace（全替换）</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- ── Model selection ── -->
+              <div class="form-section">
+                <div class="form-section-title">模型配置</div>
+                <div class="field">
+                  <label>允许模型 / 白名单 <span class="tiny muted">（勾选 = 开放给此分组；空=全部允许）</span></label>
+
+                  {{/* Build model data for JS */}}
+                  <script>
+                  const allModels = {
+                    {{range $prov,$models := .AllModelsByProv}}
+                    "{{$prov}}": [{{range $models}}"{{.}}",{{end}}],
+                    {{end}}
+                  };
+                  const checkedModels = new Set([{{if .Group}}{{range .Group.ModelWhitelist}}"{{.}}",{{end}}{{end}}]);
+                  </script>
+
+                  <div class="select-all-row">
+                    <button type="button" class="btn ghost sm" onclick="selectAll(true)">全选</button>
+                    <button type="button" class="btn ghost sm" onclick="selectAll(false)">清空</button>
+                    <span class="tiny muted" id="sel-count"></span>
+                  </div>
+                  <div class="model-checklist" id="model-checklist"></div>
+                  <!-- hidden input carrying comma-separated selected models -->
+                  <input type="hidden" name="model_whitelist" id="model-whitelist-val">
+                  <input type="hidden" name="models" id="models-val">
+                </div>
+                <div class="field">
+                  <label>模型别名 <span class="tiny muted">格式：原名=目标,原名=目标（下游请求 A 实际调 B）</span></label>
+                  <input name="model_aliases"
+                    value="{{if .Group}}{{range $k,$v := .Group.ModelAliases}}{{$k}}={{$v}},{{end}}{{end}}"
+                    placeholder="gpt-4o=gpt-5.2,gpt-4=gpt-5.2"/>
+                </div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">推理强度 / 强制模型</div>
+                <div class="form-row c2">
+                  <div class="field">
+                    <label>Reasoning Effort <span class="tiny muted">（覆盖客户端设置；空=客户端控制）</span></label>
+                    <select name="reasoning_effort" id="reasoning-effort-sel">
+                      <option value="" {{if and .Group (eq .Group.ReasoningEffort "")}}selected{{end}}>— 不覆盖（客户端控制）</option>
+                      <option value="none" {{if and .Group (eq .Group.ReasoningEffort "none")}}selected{{end}}>none（关闭思考）</option>
+                      <option value="low" {{if and .Group (eq .Group.ReasoningEffort "low")}}selected{{end}}>low</option>
+                      <option value="medium" {{if and .Group (eq .Group.ReasoningEffort "medium")}}selected{{end}}>medium</option>
+                      <option value="high" {{if and .Group (eq .Group.ReasoningEffort "high")}}selected{{end}}>high</option>
+                      <option value="max" {{if and .Group (eq .Group.ReasoningEffort "max")}}selected{{end}}>max / xhigh</option>
+                    </select>
+                    <div class="tiny muted" style="margin-top:4px">
+                      Claude: none→0 / low→1024 / medium→8000 / high→16000 / max→32000 budget_tokens<br>
+                      Codex (OpenAI): low / medium / high / xhigh
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label>Forced Model <span class="tiny muted">（强制使用指定模型；空=客户端选择）</span></label>
+                    <input name="forced_model"
+                      value="{{if .Group}}{{.Group.ForcedModel}}{{end}}"
+                      placeholder="例如：gpt-5.2 或 claude-sonnet-4-6"/>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">账号绑定 <span class="tiny muted">（逗号分隔账号 ID，空=不限制）</span></div>
+                <div class="field">
+                  <input name="account_ids"
+                    value="{{if .Group}}{{join .Group.AccountIDs ","}}{{end}}"
+                    placeholder="acc-xxxxxx,acc-yyyyyy"/>
+                </div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">System Prompt 注入（可选）</div>
+                <div class="field">
+                  <label>System Prompt <span class="tiny muted">—— 所有通过此分组的请求自动注入；空=不注入</span></label>
+                  <textarea name="system_prompt" rows="8"
+                    style="font-family:'SF Mono',Menlo,monospace;font-size:12px"
+                    placeholder="Enter system prompt here. Leave empty to disable injection."
+>{{if .Group}}{{.Group.SystemPrompt}}{{end}}</textarea>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn primary" type="submit">
+                  {{if .IsEdit}}保存修改{{else}}创建分组{{end}}
+                </button>
+                <a href="/groups" class="btn ghost">取消</a>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="flex-col gap-16">
+          <div class="card flat">
+            <div class="card-header"><div class="card-title">分组说明</div></div>
+            <div class="card-body flex-col gap-10">
+              <div class="kv">
+                <div class="kv-row"><span class="kv-key small">分组 ID</span>
+                  <span class="kv-val tiny muted">用于标识该路由规则，不可重复</span></div>
+                <div class="kv-row"><span class="kv-key small">Provider</span>
+                  <span class="kv-val tiny muted">请求最终路由到的上游服务商</span></div>
+                <div class="kv-row"><span class="kv-key small">模型白名单</span>
+                  <span class="kv-val tiny muted">勾选后限制此分组可使用的模型</span></div>
+                <div class="kv-row"><span class="kv-key small">模型别名</span>
+                  <span class="kv-val tiny muted">下游请求 A 模型时实际调用 B</span></div>
+                <div class="kv-row"><span class="kv-key small">System Prompt</span>
+                  <span class="kv-val tiny muted">自动注入，适合安全研究/专业场景</span></div>
+              </div>
+              <div class="divider"></div>
+              <div class="tiny muted">
+                创建分组后，在「API Keys」页面为此分组生成 Key 分配给下游客户端。
+              </div>
+            </div>
+          </div>
+
+          <div class="card flat">
+            <div class="card-header"><div class="card-title">协议互转示例</div></div>
+            <div class="card-body flex-col gap-8">
+              <div class="small muted">Claude Code 使用 OpenAI 后端：</div>
+              <code class="tiny" style="display:block;word-break:break-all">
+                Provider=chatgpt<br>
+                ANTHROPIC_BASE_URL=http://gateway:8787<br>
+                /model gpt-5.2  ← 选 OpenAI 模型</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+
+function getCurrentProvider(){
+  return document.getElementById('provider-sel').value;
+}
+
+function renderChecklist(provider){
+  const list = document.getElementById('model-checklist');
+  const models = allModels[provider] || [];
+  list.innerHTML = '';
+  models.forEach(m => {
+    const item = document.createElement('label');
+    item.className = 'model-check-item' + (checkedModels.has(m) ? ' checked' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = m;
+    cb.checked = checkedModels.has(m);
+    cb.onchange = () => {
+      if(cb.checked){ checkedModels.add(m); item.classList.add('checked'); }
+      else { checkedModels.delete(m); item.classList.remove('checked'); }
+      syncHidden();
+    };
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(m));
+    list.appendChild(item);
+  });
+  syncHidden();
+}
+
+function syncHidden(){
+  const vals = [...checkedModels].filter(m => {
+    const models = allModels[getCurrentProvider()] || [];
+    return models.includes(m);
+  });
+  document.getElementById('model-whitelist-val').value = vals.join(',');
+  document.getElementById('models-val').value = vals.join(',');
+  document.getElementById('sel-count').textContent = vals.length ? vals.length + ' 个已选' : '（空 = 全部允许）';
+}
+
+function selectAll(v){
+  const models = allModels[getCurrentProvider()] || [];
+  models.forEach(m => v ? checkedModels.add(m) : checkedModels.delete(m));
+  renderChecklist(getCurrentProvider());
+}
+
+function onProviderChange(provider){ renderChecklist(provider); }
+
+// Init on load
+renderChecklist(getCurrentProvider());
+</script>
+</body></html>

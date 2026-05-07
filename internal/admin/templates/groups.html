@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>分组路由 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.sys-prompt-preview{max-width:200px;font-size:10px;color:var(--fg-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">分组路由</div>
+      <div class="topbar-actions">
+        <a href="/groups/new" class="btn primary">+ 新建分组</a>
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/groups")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- Dynamic groups -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">动态分组 ({{len .Groups}})</div>
+          <span class="tiny muted">API Key → 分组 → Provider → 账号</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>分组 ID</th><th>Provider</th><th>租户</th>
+                <th>模型白名单</th><th>账号</th>
+                <th>推理强度</th><th>强制模型</th><th>系统提示</th>
+                <th class="right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+            {{range .Groups}}
+              <tr>
+                <td><code>{{.ID}}</code></td>
+                <td><span class="provider-tag provider-{{.Provider}}">{{.Provider}}</span></td>
+                <td class="muted tiny">{{.TenantID}}</td>
+                <td>
+                  {{range .Models}}<span class="chip" style="margin:2px">{{.}}</span>{{end}}
+                  {{if empty .Models}}<span class="muted tiny">全部</span>{{end}}
+                </td>
+                <td class="center">{{len .AccountIDs}}</td>
+                <td>
+                  {{if .ReasoningEffort}}<span class="badge blue">{{.ReasoningEffort}}</span>
+                  {{else}}<span class="muted tiny">—</span>{{end}}
+                </td>
+                <td>
+                  {{if .ForcedModel}}<span class="chip">{{.ForcedModel}}</span>
+                  {{else}}<span class="muted tiny">—</span>{{end}}
+                </td>
+                <td>
+                  {{if .SystemPrompt}}
+                    <span class="sys-prompt-preview" data-tip="{{truncate 100 .SystemPrompt}}">
+                      {{truncate 30 .SystemPrompt}}
+                    </span>
+                  {{else}}<span class="muted tiny">—</span>{{end}}
+                </td>
+                <td>
+                  <div class="actions-cell">
+                    <a href="/groups/{{.ID}}/edit" class="btn ghost sm">编辑</a>
+                    <form method="post" action="/groups/{{.ID}}/delete" class="form-inline"
+                          onsubmit="return confirm('删除分组 {{.ID}}?')">
+                      <button class="btn ghost sm danger" type="submit">删除</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {{end}}
+            {{if empty .Groups}}
+              <tr><td colspan="9">
+                <div class="empty" style="padding:32px">
+                  <div class="empty-icon">▦</div>
+                  <div class="empty-title">还没有动态分组</div>
+                  <div class="empty-sub">点击右上角「新建分组」来定义 API 路由规则</div>
+                  <a href="/groups/new" class="btn primary mt-8">新建分组</a>
+                </div>
+              </td></tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Config-based groups -->
+      {{if .Cfg.Groups}}
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">配置文件分组</div>
+          <span class="tiny muted">来自 config.yaml（只读，需修改文件后重启生效）</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>ID</th><th>Provider</th><th>租户</th><th>模型</th><th>Key 数</th></tr>
+            </thead>
+            <tbody>
+            {{range .Cfg.Groups}}
+              <tr>
+                <td><code>{{.ID}}</code></td>
+                <td><span class="provider-tag provider-{{.Provider}}">{{.Provider}}</span></td>
+                <td class="muted tiny">{{.TenantID}}</td>
+                <td>
+                  {{range .Models}}<span class="chip" style="margin:2px">{{.}}</span>{{end}}
+                  {{if empty .Models}}<span class="muted tiny">全部</span>{{end}}
+                </td>
+                <td class="center">{{len .APIKeys}}</td>
+              </tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{end}}
+
+      <!-- Routing mechanism -->
+      <div class="card flat">
+        <div class="card-header"><div class="card-title">路由机制说明</div></div>
+        <div class="card-body grid g3" style="gap:12px">
+          <div>
+            <div class="bold small mb-4">1. API Key 鉴权</div>
+            <div class="tiny muted">请求携带 API Key → 匹配到对应分组 → 获得 Provider 和模型白名单</div>
+          </div>
+          <div>
+            <div class="bold small mb-4">2. 协议自动检测</div>
+            <div class="tiny muted">/v1/messages → Anthropic，/v1/chat → OpenAI，/v1beta → Gemini<br>任意协议都可路由到任意 Provider</div>
+          </div>
+          <div>
+            <div class="bold small mb-4">3. 账号调度</div>
+            <div class="tiny muted">P2C+EWMA 算法选出最优账号，含 Head Buffer 故障转移和"绝不放弃"策略</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body></html>

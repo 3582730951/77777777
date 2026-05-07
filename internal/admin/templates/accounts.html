@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>账号池 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.acct-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.acct-card{padding:16px;cursor:pointer;transition:box-shadow 0.2s var(--ease)}
+.acct-card:hover{box-shadow:var(--s2)}
+.acct-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.acct-id{font-family:"SF Mono",Menlo,monospace;font-size:11px;font-weight:600;color:var(--fg)}
+.acct-meta{display:flex;gap:6px;align-items:center;margin-bottom:10px;font-size:11px}
+.conf-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.quota-row{margin-bottom:6px}
+.quota-hd{display:flex;justify-content:space-between;font-size:10px;color:var(--fg-muted);margin-bottom:2px}
+.quota-track{height:6px;background:rgba(127,127,127,0.18);border-radius:3px;overflow:hidden}
+.quota-fill{height:100%;border-radius:3px;transition:width 0.5s;min-width:2px}
+.model-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.model-chip{padding:2px 7px;background:var(--sep);border:1px solid var(--hairline);
+  border-radius:999px;font-size:10px;color:var(--fg-muted)}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">账号池</div>
+      <div class="topbar-actions">
+        <a href="/accounts/oauth" class="btn primary">⚡ OAuth 登录</a>
+        <a href="/accounts/enroll" class="btn ghost">Bookmarklet</a>
+        <a href="/accounts/new" class="btn ghost">+ 手动添加</a>
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/accounts")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- Filter bar + view toggle -->
+      <div class="flex items-center justify-between gap-8" style="flex-wrap:wrap">
+        <div class="flex gap-8 items-center" style="flex-wrap:wrap">
+          <div class="filter-bar" style="padding:8px 12px">
+            <span class="tiny bold muted">Provider:</span>
+            <span class="filter-chip active" data-filter="all" onclick="filterAccounts('provider','all',this)">全部</span>
+            {{range $p := providers .Slots}}
+            <span class="filter-chip" data-filter="{{$p}}" onclick="filterAccounts('provider','{{$p}}',this)">{{$p}}</span>
+            {{end}}
+          </div>
+          <div class="filter-bar" style="padding:8px 12px">
+            <span class="tiny bold muted">状态:</span>
+            <span class="filter-chip active" data-filter="all" onclick="filterAccounts('state','all',this)">全部</span>
+            <span class="filter-chip" data-filter="healthy" onclick="filterAccounts('state','healthy',this)">健康</span>
+            <span class="filter-chip" data-filter="issue" onclick="filterAccounts('state','issue',this)">异常</span>
+          </div>
+        </div>
+        <div class="view-toggle">
+          <button class="vt-btn active" onclick="setView('card',this)">卡片</button>
+          <button class="vt-btn" onclick="setView('table',this)">表格</button>
+        </div>
+      </div>
+
+      <!-- Card View -->
+      <div id="view-card">
+        {{if empty .Slots}}
+        <div class="card">
+          <div class="empty">
+            <div class="empty-icon">◯</div>
+            <div class="empty-title">还没有账号</div>
+            <div class="empty-sub">点击右上角「OAuth 登录」添加第一个订阅账号</div>
+            <a href="/accounts/oauth" class="btn primary mt-8">⚡ 开始添加</a>
+          </div>
+        </div>
+        {{else}}
+        <div class="acct-cards">
+          {{range .Slots}}
+          <div class="card acct-card" data-provider="{{.Provider}}" data-confidence="{{.Confidence}}" data-healthy="{{.Healthy}}"
+               onclick="location.href='/accounts/{{.AccountID}}'">
+            <div class="acct-hd">
+              <a href="/accounts/{{.AccountID}}" class="acct-id" onclick="event.stopPropagation()">{{.AccountID}}</a>
+              <span class="provider-tag provider-{{.Provider}}" style="font-size:9px">{{.Provider}}</span>
+            </div>
+            <div class="acct-meta">
+              <span class="conf-dot" style="background:{{if .Healthy}}{{confColor .Confidence}}{{else}}var(--err){{end}}"></span>
+              <span class="muted">{{confLabel .Confidence}}</span>
+              <span style="margin-left:auto;font-weight:600;color:{{latColor .EWMALatency}}">{{printf "%.0f" .EWMALatency}}ms</span>
+              <span class="muted">×{{.Inflight}}</span>
+            </div>
+            <!-- 5h quota (剩余) -->
+            <div class="quota-row">
+              <div class="quota-hd">
+                <span>5h 剩余</span>
+                <span style="color:{{remainColor .QuotaShortUsed .QuotaShortLimit}};font-weight:600">{{if .QuotaShortLimit}}{{fmtf (subf .QuotaShortLimit .QuotaShortUsed)}}%{{else}}—{{end}}</span>
+              </div>
+              <div class="quota-track">
+                <div class="quota-fill" style="width:{{remainPct .QuotaShortUsed .QuotaShortLimit}}%;background:{{remainColor .QuotaShortUsed .QuotaShortLimit}}"></div>
+              </div>
+            </div>
+            <!-- 7d quota (剩余) -->
+            <div class="quota-row">
+              <div class="quota-hd">
+                <span>7d 剩余</span>
+                <span style="color:{{remainColor .QuotaLongUsed .QuotaLongLimit}};font-weight:600">{{if .QuotaLongLimit}}{{fmtf (subf .QuotaLongLimit .QuotaLongUsed)}}%{{else}}—{{end}}</span>
+              </div>
+              <div class="quota-track">
+                <div class="quota-fill" style="width:{{remainPct .QuotaLongUsed .QuotaLongLimit}}%;background:{{remainColor .QuotaLongUsed .QuotaLongLimit}}"></div>
+              </div>
+            </div>
+            {{if .DiscoveredModels}}
+            <div class="model-chips">
+              {{range limitSlice .DiscoveredModels 4}}<span class="model-chip">{{.}}</span>{{end}}
+              {{if gt (len .DiscoveredModels) 4}}<span class="model-chip muted">+{{sub (len .DiscoveredModels) 4}}</span>{{end}}
+            </div>
+            {{end}}
+          </div>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+
+      <!-- Table View (hidden by default) -->
+      <div id="view-table" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">所有账号 ({{len .Slots}})</div>
+          </div>
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>账号 ID</th><th>Provider</th><th>租户</th><th>Plan</th>
+                  <th>状态</th><th>EWMA</th><th>5h 剩余</th><th>7d 剩余</th>
+                  <th>最近成功</th><th class="right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+              {{range .Slots}}
+                <tr data-provider="{{.Provider}}" data-confidence="{{.Confidence}}" data-healthy="{{.Healthy}}">
+                  <td><a href="/accounts/{{.AccountID}}" class="mono" style="font-size:12px">{{.AccountID}}</a></td>
+                  <td><span class="provider-tag provider-{{.Provider}}">{{.Provider}}</span></td>
+                  <td class="muted tiny">{{or .TenantID "—"}}</td>
+                  <td class="tiny muted">{{or .PlanTier "—"}}</td>
+                  <td>
+                    {{if and (not .Healthy) (or (eq .Confidence "confirmed_available") (eq .Confidence "likely_available"))}}<span class="badge err">额度不足</span>
+                    {{else if eq .Confidence "confirmed_available"}}<span class="badge ok">✓ 可用</span>
+                    {{else if eq .Confidence "likely_available"}}<span class="badge ok" style="opacity:.7">可用</span>
+                    {{else if eq .Confidence "suspected_issue"}}<span class="badge warn">疑问</span>
+                    {{else if eq .Confidence "probably_exhausted"}}<span class="badge err">耗尽</span>
+                    {{else if eq .Confidence "cooling"}}<span class="badge warn">冷却</span>
+                    {{else}}<span class="badge gray">{{.Confidence}}</span>
+                    {{end}}
+                  </td>
+                  <td class="mono tiny">{{printf "%.0f" .EWMALatency}}ms</td>
+                  <td class="tiny" style="color:{{remainColor .QuotaShortUsed .QuotaShortLimit}}">{{if .QuotaShortLimit}}{{fmtf (subf .QuotaShortLimit .QuotaShortUsed)}}%{{else}}—{{end}}</td>
+                  <td class="tiny" style="color:{{remainColor .QuotaLongUsed .QuotaLongLimit}}">{{if .QuotaLongLimit}}{{fmtf (subf .QuotaLongLimit .QuotaLongUsed)}}%{{else}}—{{end}}</td>
+                  <td class="muted tiny">{{if .LastSuccess.IsZero}}—{{else}}{{.LastSuccess.Format "15:04"}}{{end}}</td>
+                  <td>
+                    <div class="actions-cell">
+                      <form method="post" action="/accounts/{{.AccountID}}/probe" class="form-inline">
+                        <button class="btn ghost sm" type="submit">探测</button>
+                      </form>
+                      <a href="/accounts/{{.AccountID}}" class="btn ghost sm">详情</a>
+                      <form method="post" action="/accounts/{{.AccountID}}/delete" class="form-inline"
+                            onsubmit="return confirm('删除 {{.AccountID}}?')">
+                        <button class="btn ghost sm danger" type="submit">删除</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {{end}}
+              {{if empty .Slots}}
+                <tr><td colspan="10">
+                  <div class="empty">
+                    <div class="empty-icon">◯</div>
+                    <div class="empty-title">还没有账号</div>
+                    <div class="empty-sub">点击右上角「OAuth 登录」添加第一个订阅账号</div>
+                  </div>
+                </td></tr>
+              {{end}}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+
+let _provFilter='all',_stateFilter='all';
+
+function setView(view,btn){
+  document.querySelectorAll('.view-toggle .vt-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('view-card').style.display=view==='card'?'':'none';
+  document.getElementById('view-table').style.display=view==='table'?'':'none';
+}
+
+function filterAccounts(type,val,btn){
+  if(type==='provider')_provFilter=val;
+  if(type==='state')_stateFilter=val;
+  btn.parentElement.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function applyFilters(){
+  const items=document.querySelectorAll('[data-provider]');
+  items.forEach(el=>{
+    const prov=el.dataset.provider;
+    const conf=el.dataset.confidence;
+    const healthy=el.dataset.healthy==='true';
+    let show=true;
+    if(_provFilter!=='all'&&prov!==_provFilter)show=false;
+    if(_stateFilter==='healthy'&&!healthy)show=false;
+    if(_stateFilter==='issue'&&healthy)show=false;
+    el.style.display=show?'':'none';
+  });
+}
+</script>
+</body></html>

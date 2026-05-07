@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的概览 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.quickstart{display:grid;grid-template-columns:1fr;gap:14px}
+.qs-block{background:var(--bg);border:1px solid var(--hairline);border-radius:var(--r-md);padding:14px 16px}
+.qs-title{font-size:12px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.qs-code{position:relative;background:var(--sep);border-radius:var(--r-sm);padding:10px 12px;
+  font-family:"SF Mono",Menlo,monospace;font-size:11.5px;color:var(--fg-2);line-height:1.8;
+  word-break:break-all;white-space:pre-wrap}
+.qs-copy{position:absolute;top:6px;right:6px}
+.ep-box{display:flex;align-items:center;gap:10px;padding:12px 16px;
+  background:var(--sep);border-radius:var(--r-md);border:1px solid var(--hairline)}
+.ep-val{font-family:"SF Mono",Menlo,monospace;font-size:13px;font-weight:600;
+  color:var(--accent);flex:1;word-break:break-all;user-select:all}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_portal_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">我的概览</div>
+      <div class="topbar-actions">
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- KPI cards -->
+      <div class="grid g4">
+        <div class="card stat-card">
+          <div class="stat-icon">⚿</div>
+          <div class="stat-val">{{.KeyCount}}</div>
+          <div class="stat-label">我的 Key</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(0,122,255,0.10);color:var(--accent)">⚡</div>
+          <div class="stat-val">{{.RequestsToday}}</div>
+          <div class="stat-label">今日请求</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(191,90,242,0.10);color:var(--purple)">T</div>
+          <div class="stat-val">{{fmtTokens .TokensToday}}</div>
+          <div class="stat-label">今日 Tokens</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">▦</div>
+          <div class="stat-val">{{.GroupCount}}</div>
+          <div class="stat-label">可用分组</div>
+        </div>
+      </div>
+
+      <!-- API Endpoint -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">API 端点</div></div>
+        <div class="card-body flex-col gap-12">
+          <div class="ep-box">
+            <span class="ep-val" id="ep-url">{{.GatewayURL}}/v1</span>
+            <button class="btn primary sm" onclick="copyText('{{.GatewayURL}}/v1','API 地址')">复制</button>
+          </div>
+          <div class="small muted">此地址兼容 OpenAI / Anthropic / Gemini API 格式，配合下方的 Pool Key 即可接入所有客户端。</div>
+        </div>
+      </div>
+
+      <!-- Quick start guide -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">快速接入</div></div>
+        <div class="card-body">
+          <div class="quickstart">
+
+            <div class="qs-block">
+              <div class="qs-title"><span style="color:var(--provider-openai)">●</span> Cursor / Codex / OpenAI SDK</div>
+              <div class="qs-code" id="qs-openai">export OPENAI_BASE_URL={{.GatewayURL}}/v1
+export OPENAI_API_KEY=<span class="qs-key-placeholder">{{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你的key{{end}}</span><button class="btn ghost sm qs-copy" onclick="copyBlock('qs-openai')">复制</button></div>
+            </div>
+
+            <div class="qs-block">
+              <div class="qs-title"><span style="color:var(--provider-claude)">●</span> Claude Code / Anthropic SDK</div>
+              <div class="qs-code" id="qs-claude">export ANTHROPIC_BASE_URL={{.GatewayURL}}/v1
+export ANTHROPIC_API_KEY=<span class="qs-key-placeholder">{{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你的key{{end}}</span><button class="btn ghost sm qs-copy" onclick="copyBlock('qs-claude')">复制</button></div>
+            </div>
+
+            <div class="qs-block">
+              <div class="qs-title"><span style="color:var(--provider-gemini)">●</span> Gemini CLI / Google SDK</div>
+              <div class="qs-code" id="qs-gemini">export GEMINI_API_BASE={{.GatewayURL}}/v1
+export GOOGLE_API_KEY=<span class="qs-key-placeholder">{{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你的key{{end}}</span><button class="btn ghost sm qs-copy" onclick="copyBlock('qs-gemini')">复制</button></div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- Keys summary table -->
+      {{if .Keys}}
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">我的 Key（{{len .Keys}}）</div>
+          <a href="/portal/keys" class="btn ghost sm">管理 →</a>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>Key</th><th>分组</th><th>创建时间</th><th class="right">操作</th></tr></thead>
+            <tbody>
+            {{range .Keys}}
+              <tr>
+                <td><code class="mono" style="font-size:12px">{{truncate 16 .Value}}••••</code></td>
+                <td class="muted tiny">{{.GroupID}}</td>
+                <td class="muted tiny">{{.CreatedAt.Format "01-02 15:04"}}</td>
+                <td class="right">
+                  <button class="btn ghost sm" onclick="copyText('{{.Value}}','Key')">复制 Key</button>
+                </td>
+              </tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{else}}
+      <div class="card flat">
+        <div class="card-body">
+          <div class="empty" style="padding:32px">
+            <div class="empty-icon">⚿</div>
+            <div class="empty-title">还没有 API Key</div>
+            <div class="empty-sub">前往「<a href="/portal/keys">我的 Key</a>」页面生成第一个 Key</div>
+            <a href="/portal/keys" class="btn primary mt-8">申请 Key</a>
+          </div>
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </main>
+</div>
+<div id="toast-ct"></div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+function showToast(m){const c=document.getElementById('toast-ct');const t=document.createElement('div');t.className='toast';t.textContent='✓ '+m;c.appendChild(t);setTimeout(()=>t.remove(),2500)}
+</script>
+{{template "_copy_script" .}}
+</body></html>

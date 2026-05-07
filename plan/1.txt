@@ -1,0 +1,211 @@
+================================================================================
+  LLM Pool Gateway — Frontend UI Overhaul Plan
+  Created: 2026-05-02
+================================================================================
+
+## Current State
+
+Architecture: Go server-rendered templates + HTMX + vanilla JS + custom CSS
+Templates: 24 HTML files in internal/admin/templates/
+CSS: internal/admin/static/app.css (382 lines, Apple Design System)
+Charts: internal/admin/static/charts.js (556 lines, inline SVG)
+Reference: sub2api uses Vue 3 + TypeScript + Tailwind CSS (230+ components)
+
+Current design is functional but rough:
+- Apple-inspired glassmorphism, light/dark mode auto-switch
+- HTMX for dynamic chart updates (hx-get + hx-trigger)
+- SSE for real-time audit log streaming
+- Custom SVG charts (request series, donut, ring gauge, pool grid)
+
+## Problems to Fix
+
+1. Dashboard data not intuitive enough
+   - Missing: cache token statistics (cache_read / cache_creation)
+   - Missing: token consumption trend (input vs output over time)
+   - Missing: per-provider request breakdown pie/donut
+   - Missing: request success rate gauge
+   - Account pool grid cards need quota bars (5h/7d) + model list
+
+2. Accounts page too sparse
+   - Table-only layout, no visual health indicators
+   - Need card-based layout with quota progress bars
+   - Need per-account model capability chips
+   - Need latency sparkline per account
+
+3. User portal too basic
+   - portal_dashboard: only 3 metric cards + key table
+   - Missing: usage trend chart, token breakdown, cost estimation
+   - Missing: proper onboarding wizard for first-time users
+   - Missing: connection test button
+   - portal_usage: CSS bar chart is primitive, need SVG chart
+   - portal_register: exists but basic
+
+4. Groups page missing info
+   - No reasoning_effort / forced_model display in table
+   - No system_prompt preview/indicator
+   - No live request count per group
+
+5. Visual polish needed
+   - Sidebar icons are Unicode chars (should be SVG or better Unicode)
+   - Table row hover effects could be smoother
+   - Empty states could be more engaging
+   - Mobile responsiveness needs testing
+
+## Rewrite Plan (Ordered by Priority)
+
+### Phase 1: CSS Foundation (app.css rewrite)
+- Keep CSS variables system (already good)
+- Add: gradient mesh backgrounds for login/portal
+- Add: animated skeleton loading states
+- Add: better table styles (zebra, sticky header)
+- Add: stat-card variants (with sparkline, with progress, with icon)
+- Add: responsive sidebar collapse for tablet
+- Improve: card shadow depth system
+- Improve: form input focus animation
+- Improve: badge color palette (more provider colors)
+
+### Phase 2: Dashboard (highest impact)
+File: dashboard.html
+Changes:
+- Row 1 (KPI): 5 cards → Total accounts, Healthy, Requests/hr, Cache hit rate, Avg latency
+  - Each KPI card has a mini sparkline underneath
+- Row 2: Request trend chart (keep, improve with dual-axis: count + latency)
+- Row 3 (3-col):
+  - Left: Account health donut (keep, add legend with counts)
+  - Center: Cache statistics panel (NEW)
+    - Ring gauge: cache hit ratio
+    - KV: total requests, cache hits, cache_read_tokens, cache_creation_tokens, tokens saved
+    - Sparkline: cache hit ratio over 24h
+  - Right: Provider breakdown (NEW)
+    - Stacked bar: requests per provider (chatgpt/claude/gemini)
+    - Pie: token distribution by provider
+- Row 4: Account pool grid (keep, enhance cards)
+  - Each card: provider tag, state badge, quota bars (5h short + 7d long), EWMA, model chips
+- Row 5: Real-time audit log (keep SSE, add level filter buttons)
+
+### Phase 3: Accounts Page
+File: accounts.html
+Changes:
+- Toggle: table view / card view
+- Card view: 3-column grid, each card shows:
+  - Provider icon + account ID
+  - State badge + confidence indicator
+  - Quota bars (5h + 7d) with used/limit labels
+  - EWMA latency + inflight count
+  - Model chips (discovered models)
+  - Action buttons (probe, detail, delete)
+- Table view: keep current but add quota columns
+- Top: filter bar (by provider, by state)
+
+### Phase 4: User Portal
+Files: portal_dashboard.html, portal_keys.html, portal_usage.html, portal_login.html, portal_register.html
+
+portal_login.html:
+- Add mesh gradient background
+- Improve card layout (bigger logo, provider showcase)
+
+portal_dashboard.html:
+- 4 KPI cards: Keys, Requests today, Tokens today, Cache hit rate
+- Quick-start guide card with copy buttons for each CLI
+- Usage trend mini-chart (last 7 days)
+- Recent requests table (last 20)
+
+portal_keys.html:
+- Keep current structure (already decent with modal)
+- Add: per-key usage stats (requests count, last used time)
+- Add: connection test button per key
+
+portal_usage.html:
+- Replace CSS bar chart with SVG chart (reuse charts.js)
+- Add: token breakdown by model (table + bar chart)
+- Add: cache statistics section
+- Add: export CSV button
+
+### Phase 5: Groups Page
+File: groups.html, group_form.html
+Changes:
+- Table: add columns for reasoning_effort, forced_model, system_prompt indicator
+- Add: live request count badge per group
+- group_form.html: already has reasoning_effort/forced_model fields (added earlier)
+
+### Phase 6: Other Pages
+- keys.html: add per-key usage stats
+- tenants.html: add per-tenant usage summary
+- audit.html: add level filter, search, date range picker
+- cluster.html: add latency map visualization
+- guide.html: make more visual with provider-specific tabs
+
+### Phase 7: charts.js Enhancement
+Add renderers:
+- renderTokenTrend(host, data) — dual-line chart (input vs output tokens)
+- renderProviderPie(host, data) — pie chart with provider colors
+- renderQuotaBar(host, used, limit, label) — horizontal progress bar
+- renderSparkline(host, data) — tiny inline line chart for KPI cards
+- renderCacheTokenStats(host, data) — cache_read vs cache_creation stacked bar
+- renderLatencyHeatmap(host, data) — optional, for account comparison
+
+## Technical Notes
+
+- Keep Go template + HTMX architecture (no Node build chain needed)
+- All charts are inline SVG (no Chart.js/D3 dependency)
+- HTMX endpoints: /api/admin/charts/* already wired in handlers_crud.go
+- New endpoints needed for dashboard:
+  - /api/admin/charts/provider-breakdown (requests by provider)
+  - /api/admin/charts/token-trend (input/output/cache tokens over time)
+  - /api/admin/charts/cache-tokens (cache_read + cache_creation stats)
+- Template helpers available: truncate, join, dict, percent, empty
+- CSS variables for theming already comprehensive
+
+## Files to Modify
+
+Templates (14 files to rewrite):
+  internal/admin/templates/dashboard.html        — FULL REWRITE
+  internal/admin/templates/accounts.html         — FULL REWRITE
+  internal/admin/templates/account_detail.html   — ENHANCE
+  internal/admin/templates/groups.html           — ENHANCE
+  internal/admin/templates/keys.html             — ENHANCE
+  internal/admin/templates/tenants.html          — ENHANCE
+  internal/admin/templates/audit.html            — ENHANCE
+  internal/admin/templates/portal_dashboard.html — FULL REWRITE
+  internal/admin/templates/portal_keys.html      — ENHANCE
+  internal/admin/templates/portal_usage.html     — FULL REWRITE
+  internal/admin/templates/portal_login.html     — ENHANCE
+  internal/admin/templates/portal_register.html  — ENHANCE
+  internal/admin/templates/_partials.html         — ENHANCE (sidebar icons)
+  internal/admin/templates/guide.html            — FULL REWRITE
+
+Static assets (2 files):
+  internal/admin/static/app.css     — MAJOR UPDATE
+  internal/admin/static/charts.js   — ADD NEW RENDERERS
+
+Backend (for new API endpoints):
+  internal/admin/handlers_crud.go   — ADD chart endpoints
+  internal/admin/handlers_cache.go  — ENHANCE with token stats
+
+## Backend Changes Already Done (This Session)
+
+These backend fixes enable the frontend improvements:
+- crud.go: request_samples now stores cache_read_tokens, cache_creation_tokens
+- server.go: captures actual cache tokens from upstream responses
+- cacheopt.go: message-level cache injection (more cache hits = more data to show)
+- handlers_form.go: reasoning_effort + forced_model in group forms
+- group_form.html: already has reasoning_effort + forced_model UI
+
+## Reference Design (sub2api)
+
+sub2api's Vue frontend has these notable features to reference:
+- Glassmorphism with backdrop blur (already in our CSS)
+- Gradient mesh backgrounds on auth pages
+- Animated skeleton loading
+- Teal/cyan primary color palette
+- Per-account quota visualization (ring + bar)
+- Cache token breakdown (creation vs read, with cost)
+- Usage trend with per-model breakdown
+- Dark mode with smooth transitions
+- Toast notifications (already have)
+- Modal dialogs (already have)
+- Responsive sidebar (need improvement)
+
+================================================================================
+End of Plan
+================================================================================

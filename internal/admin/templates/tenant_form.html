@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>新建租户 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">新建租户</div>
+      <div class="topbar-actions">
+        <a href="/tenants" class="btn ghost">← 租户列表</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+      <div class="grid g2" style="align-items:start">
+        <div class="card">
+          <div class="card-header"><div class="card-title">租户信息</div></div>
+          <div class="card-body">
+            <form method="post" action="/tenants/new" class="form">
+              <div class="form-section-title">基础信息</div>
+              <div class="form-row c2">
+                <div class="field">
+                  <label>租户 ID *</label>
+                  <input name="id" placeholder="例如：team-alpha" required pattern="[a-z0-9_-]+"
+                    title="只允许小写字母、数字、_ 和 -"/>
+                </div>
+                <div class="field">
+                  <label>显示名称</label>
+                  <input name="name" placeholder="例如：Alpha 团队"/>
+                </div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">初始管理员账号</div>
+                <div class="form-row c2">
+                  <div class="field">
+                    <label>用户名</label>
+                    <input name="username" placeholder="留空则与租户 ID 相同"/>
+                  </div>
+                  <div class="field">
+                    <label>密码</label>
+                    <input type="password" name="password" placeholder="留空则自动生成随机密码"/>
+                  </div>
+                </div>
+                <div class="tiny muted mt-4">创建后密码将<b>明文显示一次</b>，请及时保存或修改。</div>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn primary" type="submit">创建租户</button>
+                <a href="/tenants" class="btn ghost">取消</a>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="card flat">
+          <div class="card-header"><div class="card-title">租户说明</div></div>
+          <div class="card-body flex-col gap-12">
+            <div class="alert alert-info small">
+              租户是资源隔离单元。不同租户的 API Key、分组、账号相互独立。
+            </div>
+            <div class="kv">
+              <div class="kv-row"><span class="kv-key small">隔离范围</span><span class="kv-val tiny">API Key、分组、用量统计</span></div>
+              <div class="kv-row"><span class="kv-key small">账号共享</span><span class="kv-val tiny">账号可跨租户复用（通过分组绑定）</span></div>
+              <div class="kv-row"><span class="kv-key small">用户门户</span><span class="kv-val tiny">租户用户可登录 /portal 管理自己的 Key</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body></html>

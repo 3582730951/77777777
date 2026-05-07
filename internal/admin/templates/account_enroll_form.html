@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{T .Lang "enroll.title"}} · {{T .Lang "app.name"}}</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="title">{{T .Lang "enroll.title"}}</div>
+      <div class="actions">
+        <a href="/accounts/new" class="btn ghost">{{T .Lang "acct.add_title"}} (manual)</a>
+        <a href="/set-lang?l=cn&back=/accounts/enroll" class="btn ghost {{if eq .Lang langCN}}primary{{end}}">中</a>
+        <a href="/set-lang?l=en&back=/accounts/enroll" class="btn ghost {{if eq .Lang langEN}}primary{{end}}">EN</a>
+      </div>
+    </header>
+    <div class="content">
+      <div class="card section">
+        <div class="card-title">{{T .Lang "enroll.title"}}</div>
+        <p class="muted small">{{T .Lang "enroll.expires_in"}}</p>
+        <form method="post" action="/accounts/enroll" class="form-grid" style="margin-top:12px">
+          <div class="form-row">
+            <label>{{T .Lang "label.tenant"}}
+              <select name="tenant_id">
+                {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                {{range .Tenants}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+              </select>
+            </label>
+            <label>{{T .Lang "label.provider"}}
+              <select name="provider" required>
+                <option value="chatgpt">chatgpt (chatgpt.com)</option>
+                <option value="claude">claude (claude.ai)</option>
+                <option value="gemini">gemini (gemini.google.com)</option>
+              </select>
+            </label>
+            <label>{{T .Lang "enroll.note"}}<input name="note" placeholder="账号 1 / 备用..." /></label>
+          </div>
+          <div class="form-row">
+            <button class="btn primary" type="submit">{{T .Lang "enroll.start"}}</button>
+            <a href="/accounts/new" class="btn ghost">{{T .Lang "enroll.alt_paste"}}</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

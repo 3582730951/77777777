@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kiro Gateway · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.kg-status{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.kg-status-card{padding:14px 18px;border-radius:var(--r-md);border:1px solid var(--hairline);
+  background:var(--bg-elev);min-width:140px}
+.kg-status-card .label{font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.1em;color:var(--fg-muted)}
+.kg-status-card .val{font-size:20px;font-weight:700;margin-top:4px}
+.token-table{width:100%;border-collapse:collapse;font-size:13px}
+.token-table th{text-align:left;padding:10px 14px;font-size:11px;font-weight:600;
+  text-transform:uppercase;color:var(--fg-muted);background:var(--sep);border-bottom:1px solid var(--hairline)}
+.token-table td{padding:10px 14px;border-bottom:1px solid var(--hairline)}
+.token-table tr:hover td{background:var(--hairline)}
+.token-mono{font-family:"SF Mono",Menlo,monospace;font-size:11px;color:var(--fg-muted)}
+.add-form{display:flex;flex-direction:column;gap:12px;max-width:600px}
+.add-form textarea{min-height:80px;font-family:"SF Mono",Menlo,monospace;font-size:12px}
+.help-box{padding:14px 18px;border-radius:var(--r-md);background:rgba(0,122,255,0.06);
+  border:1px solid rgba(0,122,255,0.15);font-size:12px;line-height:1.7;color:var(--fg-2)}
+.help-box b{color:var(--fg)}
+.help-box code{font-size:11px}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">Kiro Gateway 管理</div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="loadAll()">刷新</button>
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/kiro-gateway")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- Status cards -->
+      <div class="kg-status" id="status-row">
+        <div class="kg-status-card"><div class="label">加载中...</div></div>
+      </div>
+
+      <!-- Help -->
+      <div class="help-box" style="margin-bottom:20px">
+        <b>如何获取 Kiro refreshToken：</b><br>
+        1. 在桌面安装 <a href="https://kiro.dev" target="_blank">Kiro IDE</a><br>
+        2. 用注册好的邮箱密码登录 Kiro IDE<br>
+        3. 登录后在 <code>~/.aws/sso/cache/kiro-auth-token.json</code> 中找到 <code>refreshToken</code> 字段<br>
+        4. 复制粘贴到下方，点击"添加"<br>
+        5. 点击"重启 Gateway"使配置生效<br>
+        <br>
+        <b>支持的 Token 来源：</b>Kiro IDE（Google/GitHub 登录）、kiro-cli SQLite、AWS SSO OIDC refreshToken
+      </div>
+
+      <!-- Add token form -->
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header">
+          <div class="card-title">添加 Token</div>
+        </div>
+        <div class="card-body">
+          <div class="add-form">
+            <div class="field">
+              <label>refreshToken</label>
+              <textarea id="f-token" placeholder="粘贴 refreshToken（从 Kiro IDE 的 ~/.aws/sso/cache/kiro-auth-token.json 中获取）"></textarea>
+            </div>
+            <div class="form-row c2">
+              <div class="field">
+                <label>标签（可选，如邮箱）</label>
+                <input type="text" id="f-label" placeholder="例如: user@example.com">
+              </div>
+              <div class="field">
+                <label>区域</label>
+                <select id="f-region">
+                  <option value="us-east-1" selected>us-east-1（默认）</option>
+                  <option value="eu-central-1">eu-central-1</option>
+                  <option value="ap-southeast-1">ap-southeast-1</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn primary" onclick="addToken()">添加 Token</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Token list -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Token 列表</div>
+          <button class="btn primary sm" onclick="restartGateway()">重启 Gateway</button>
+        </div>
+        <div class="table-wrap">
+          <table class="token-table">
+            <thead>
+              <tr>
+                <th>#</th><th>标签</th><th>Token</th><th>区域</th><th>状态</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="token-body">
+              <tr><td colspan="6" style="text-align:center;color:var(--fg-muted);padding:30px">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script>
+const BASE = '/api/kiro-gateway';
+
+async function safeFetch(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    const text = await r.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch { return null; }
+}
+
+async function loadAll() {
+  loadStatus();
+  loadTokens();
+}
+
+async function loadStatus() {
+  const d = await safeFetch(BASE + '/status');
+  if (!d) {
+    document.getElementById('status-row').innerHTML = '<div class="kg-status-card"><div class="label">加载失败</div></div>';
+    return;
+  }
+  document.getElementById('status-row').innerHTML = [
+    {label:'Gateway', val: d.running ? '运行中' : '未运行', color: d.running ? 'var(--ok)' : 'var(--err)'},
+    {label:'健康状态', val: d.healthy ? '正常' : '异常', color: d.healthy ? 'var(--ok)' : 'var(--fg-muted)'},
+    {label:'账号数', val: d.enabled_accounts + '/' + d.accounts, color: 'var(--accent)'},
+    {label:'端口', val: d.port || '—', color: 'var(--fg)'},
+    {label:'模型数', val: d.models?.length || 0, color: 'var(--fg)'},
+  ].map(k => `<div class="kg-status-card"><div class="label">${k.label}</div><div class="val" style="color:${k.color}">${k.val}</div></div>`).join('');
+}
+
+async function loadTokens() {
+  const d = await safeFetch(BASE + '/tokens');
+  const body = document.getElementById('token-body');
+  if (!d || !d.items?.length) {
+    body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--fg-muted);padding:30px">暂无 Token，请在上方添加</td></tr>';
+    return;
+  }
+  body.innerHTML = d.items.map(t => `<tr>
+    <td>${t.index}</td>
+    <td>${t.label || '<span class="muted">-</span>'}</td>
+    <td class="token-mono">${t.token_preview || '-'}</td>
+    <td>${t.region}</td>
+    <td><span class="badge ${t.enabled?'ok':'gray'}">${t.enabled?'启用':'禁用'}</span></td>
+    <td class="actions-cell">
+      <button class="btn ghost sm" onclick="toggleToken(${t.index})">${t.enabled?'禁用':'启用'}</button>
+      <button class="btn ghost sm danger" onclick="deleteToken(${t.index})">删除</button>
+    </td>
+  </tr>`).join('');
+}
+
+async function addToken() {
+  const token = document.getElementById('f-token').value.trim();
+  if (!token) { alert('请填写 refreshToken'); return; }
+  const d = await safeFetch(BASE + '/tokens', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      refresh_token: token,
+      label: document.getElementById('f-label').value.trim(),
+      region: document.getElementById('f-region').value,
+    }),
+  });
+  if (d?.ok) {
+    document.getElementById('f-token').value = '';
+    document.getElementById('f-label').value = '';
+    loadAll();
+    alert('已添加！请点击"重启 Gateway"使配置生效。');
+  } else {
+    alert('添加失败: ' + (d?.detail || d?.message || '未知错误'));
+  }
+}
+
+async function deleteToken(idx) {
+  if (!confirm('确定删除该 Token？')) return;
+  await safeFetch(BASE + '/tokens/' + idx, {method: 'DELETE'});
+  loadAll();
+}
+
+async function toggleToken(idx) {
+  await safeFetch(BASE + '/tokens/' + idx + '/toggle', {method: 'POST'});
+  loadAll();
+}
+
+async function restartGateway() {
+  const d = await safeFetch(BASE + '/restart', {method: 'POST'});
+  alert(d?.message || '操作完成');
+  setTimeout(loadAll, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>

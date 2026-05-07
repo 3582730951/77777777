@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用量统计 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.usage-chart{width:100%;height:160px}
+.model-breakdown{display:flex;flex-direction:column;gap:6px}
+.model-row{display:flex;align-items:center;gap:8px;font-size:12px}
+.model-bar-track{flex:1;height:6px;background:var(--sep);border-radius:3px;overflow:hidden}
+.model-bar-fill{height:100%;border-radius:3px}
+.model-name{width:140px;font-family:"SF Mono",Menlo,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-count{width:50px;text-align:right;font-weight:600;font-size:11px}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_portal_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">用量统计</div>
+      <div class="topbar-actions">
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- KPI cards -->
+      <div class="grid g3">
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(0,122,255,0.10);color:var(--accent)">⚡</div>
+          <div class="stat-val">{{.RequestsTotal}}</div>
+          <div class="stat-label">总请求数（7天）</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(191,90,242,0.10);color:var(--purple)">T</div>
+          <div class="stat-val">{{fmtTokens .TokensTotal}}</div>
+          <div class="stat-label">总 Tokens（7天）</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">☀</div>
+          <div class="stat-val">{{.RequestsToday}}</div>
+          <div class="stat-label">今日请求</div>
+        </div>
+      </div>
+
+      <!-- SVG bar chart for 7-day trend -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">近 7 天请求趋势</div></div>
+        <div class="card-body">
+          {{if .DailyStats}}
+          <div class="usage-chart" id="usage-chart"></div>
+          {{else}}
+          <div class="empty" style="padding:24px">
+            <div class="empty-icon">⌚</div>
+            <div class="empty-sub">暂无数据 — 发出几次请求后即可看到趋势</div>
+          </div>
+          {{end}}
+        </div>
+      </div>
+
+      <!-- Model breakdown -->
+      <div class="grid g2">
+        <div class="card">
+          <div class="card-header"><div class="card-title">模型分布</div></div>
+          <div class="card-body">
+            <div id="model-breakdown" class="model-breakdown"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Token 消耗</div></div>
+          <div class="card-body">
+            <div id="token-breakdown" class="kv"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent request log -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">近期请求记录</div>
+          <span class="tiny muted">最近 200 条</span>
+        </div>
+        <div class="table-wrap" style="max-height:500px;overflow-y:auto">
+          <table class="data">
+            <thead>
+              <tr><th>时间</th><th>模型</th><th>分组</th><th>输入 Token</th><th>输出 Token</th><th>延迟</th><th>状态</th></tr>
+            </thead>
+            <tbody>
+            {{range .Logs}}
+              <tr>
+                <td class="tiny mono muted">{{.At.Format "01-02 15:04:05"}}</td>
+                <td class="tiny mono">{{or .Model "—"}}</td>
+                <td class="tiny muted">{{or .GroupID "—"}}</td>
+                <td class="center tiny">{{fmtTokens .InputTokens}}</td>
+                <td class="center tiny">{{fmtTokens .OutputTokens}}</td>
+                <td class="tiny muted">{{.DurationMs}} ms</td>
+                <td><span class="badge {{if eq .Status "ok"}}ok{{else}}err{{end}}" style="font-size:10px">{{.Status}}</span></td>
+              </tr>
+            {{end}}
+            {{if empty .Logs}}
+              <tr><td colspan="7"><div class="empty" style="padding:28px">
+                <div class="empty-icon">⌚</div>
+                <div class="empty-sub">暂无记录</div>
+              </div></td></tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script src="/static/charts.js?v=2"></script>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+
+// Render SVG bar chart from server data
+(function(){
+  const dailyStats = [
+    {{range .DailyStats}}{label:"{{.Label}}",count:{{.Count}}},{{end}}
+  ];
+  const maxReqs = {{.MaxDailyReqs}};
+  const host = document.getElementById('usage-chart');
+  if(!host || !dailyStats.length || maxReqs === 0) return;
+
+  const W = host.clientWidth || 600, H = 160;
+  const pad = {l:40,r:12,t:12,b:24};
+  const innerW = W-pad.l-pad.r, innerH = H-pad.t-pad.b;
+  const barW = Math.min(40, innerW/dailyStats.length * 0.6);
+  const gap = (innerW - barW*dailyStats.length) / (dailyStats.length + 1);
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns,'svg');
+  svg.setAttribute('width',W);svg.setAttribute('height',H);
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+
+  // Grid lines
+  for(let i=0;i<=4;i++){
+    const y=pad.t+innerH*i/4;
+    const line=document.createElementNS(ns,'line');
+    line.setAttribute('x1',pad.l);line.setAttribute('x2',W-pad.r);
+    line.setAttribute('y1',y);line.setAttribute('y2',y);
+    line.setAttribute('stroke','rgba(127,127,127,0.12)');line.setAttribute('stroke-width','1');
+    svg.appendChild(line);
+    const label=document.createElementNS(ns,'text');
+    label.setAttribute('x',pad.l-6);label.setAttribute('y',y+4);
+    label.setAttribute('text-anchor','end');label.setAttribute('font-size','10');
+    label.setAttribute('fill','currentColor');label.setAttribute('opacity','0.4');
+    label.textContent=Math.round(maxReqs-maxReqs*i/4);
+    svg.appendChild(label);
+  }
+
+  // Bars
+  dailyStats.forEach((d,i)=>{
+    const x=pad.l+gap+(barW+gap)*i;
+    const h=maxReqs>0?d.count/maxReqs*innerH:0;
+    const y=pad.t+innerH-h;
+
+    // Bar gradient
+    const rect=document.createElementNS(ns,'rect');
+    rect.setAttribute('x',x);rect.setAttribute('y',y);
+    rect.setAttribute('width',barW);rect.setAttribute('height',h);
+    rect.setAttribute('rx','3');rect.setAttribute('fill','var(--accent)');
+    rect.setAttribute('opacity','0.8');
+    svg.appendChild(rect);
+
+    // Value on top
+    if(d.count>0){
+      const vt=document.createElementNS(ns,'text');
+      vt.setAttribute('x',x+barW/2);vt.setAttribute('y',y-4);
+      vt.setAttribute('text-anchor','middle');vt.setAttribute('font-size','10');
+      vt.setAttribute('font-weight','600');vt.setAttribute('fill','currentColor');
+      vt.textContent=d.count;svg.appendChild(vt);
+    }
+
+    // X label
+    const lt=document.createElementNS(ns,'text');
+    lt.setAttribute('x',x+barW/2);lt.setAttribute('y',H-6);
+    lt.setAttribute('text-anchor','middle');lt.setAttribute('font-size','10');
+    lt.setAttribute('fill','currentColor');lt.setAttribute('opacity','0.55');
+    lt.textContent=d.label;svg.appendChild(lt);
+  });
+
+  host.appendChild(svg);
+})();
+
+// Model breakdown from logs
+(function(){
+  const logs = [
+    {{range .Logs}}{model:"{{or .Model "unknown"}}",input:{{.InputTokens}},output:{{.OutputTokens}}},{{end}}
+  ];
+  const byModel={};
+  let totalIn=0,totalOut=0;
+  for(const l of logs){
+    if(!byModel[l.model])byModel[l.model]={count:0,input:0,output:0};
+    byModel[l.model].count++;
+    byModel[l.model].input+=l.input;
+    byModel[l.model].output+=l.output;
+    totalIn+=l.input;totalOut+=l.output;
+  }
+
+  const models=Object.entries(byModel).sort((a,b)=>b[1].count-a[1].count);
+  const maxCount=models.length?models[0][1].count:1;
+
+  const host=document.getElementById('model-breakdown');
+  if(host&&models.length){
+    const colors=['var(--accent)','var(--purple)','var(--green)','var(--orange)','var(--teal)','var(--indigo)'];
+    models.forEach(([name,d],i)=>{
+      const pct=Math.round(d.count/maxCount*100);
+      const row=document.createElement('div');
+      row.className='model-row';
+      row.innerHTML=`<span class="model-name">${name}</span>
+        <div class="model-bar-track"><div class="model-bar-fill" style="width:${pct}%;background:${colors[i%colors.length]}"></div></div>
+        <span class="model-count">${d.count}</span>`;
+      host.appendChild(row);
+    });
+  } else if(host){
+    host.innerHTML='<div class="empty-sub muted center" style="padding:16px">暂无数据</div>';
+  }
+
+  const tkHost=document.getElementById('token-breakdown');
+  if(tkHost){
+    tkHost.innerHTML=`
+      <div class="kv-row"><span class="kv-key">总输入 Token</span><span class="kv-val">${fmtTokens(totalIn)}</span></div>
+      <div class="kv-row"><span class="kv-key">总输出 Token</span><span class="kv-val">${fmtTokens(totalOut)}</span></div>
+      <div class="kv-row"><span class="kv-key">合计</span><span class="kv-val bold">${fmtTokens(totalIn+totalOut)}</span></div>
+      <div class="kv-row"><span class="kv-key">输入占比</span><span class="kv-val">${totalIn+totalOut>0?Math.round(totalIn/(totalIn+totalOut)*100):0}%</span></div>`;
+  }
+})();
+</script>
+</body></html>

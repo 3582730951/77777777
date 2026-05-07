@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{T .Lang "guide.title"}} · {{T .Lang "app.name"}}</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.guide-step{background:var(--bg);border:1px solid var(--hairline);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.guide-step h3{margin:0 0 8px;font-size:15px;letter-spacing:-0.01em}
+.guide-step pre{background:var(--bg-elev);border:1px solid var(--hairline);border-radius:8px;padding:10px;overflow:auto;font-size:12px}
+</style>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{if .IsAdmin}}{{template "_sidebar" .}}{{else}}{{template "_portal_sidebar" .}}{{end}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">{{T .Lang "guide.title"}}</div>
+      <div class="topbar-actions">
+        <a href="/set-lang?l=cn&back={{if .IsAdmin}}/guide{{else}}/portal/guide{{end}}" class="btn ghost sm {{if eq .Lang langCN}}primary{{end}}">中</a>
+        <a href="/set-lang?l=en&back={{if .IsAdmin}}/guide{{else}}/portal/guide{{end}}" class="btn ghost sm {{if eq .Lang langEN}}primary{{end}}">EN</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      {{if eq .Lang langEN}}
+      <div class="card section">
+        <div class="card-title">Where do I provide my real OpenAI / Claude / Gemini credentials?</div>
+        <p class="muted">The pool currently runs in <code>mock</code> mode by default. To make real upstream calls, you need to enroll a paid web session for at least one provider. Below is the recommended workflow for ChatGPT (OpenAI subscription).</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>Step 1 — Capture your ChatGPT session</h3>
+        <ol>
+          <li>Open <a href="https://chatgpt.com" target="_blank">https://chatgpt.com</a> in Chrome / Edge and log in.</li>
+          <li>Open DevTools (F12) → <b>Application</b> → <b>Cookies</b> → <code>https://chatgpt.com</code>.</li>
+          <li>Copy the value of <code>__Secure-next-auth.session-token</code> (starts with <code>eyJ...</code>) — this is your <b>session_token</b>.</li>
+          <li>Optionally also copy <code>cf_clearance</code> + <code>__cf_bm</code> for the cookies field below.</li>
+        </ol>
+      </div>
+
+      <div class="guide-step">
+        <h3>Step 2 — Enroll into the pool</h3>
+        <p>Two equivalent ways:</p>
+        <p><b>Option A — Web UI:</b> click <a href="/accounts/new"><b>+ Add account</b></a>, choose provider <code>chatgpt</code>, paste session_token + cookies, save.</p>
+        <p><b>Option B — REST API:</b></p>
+<pre>curl -X POST http://your-host:8788/api/admin/accounts \
+  -H "Cookie: $ADMIN_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "openai-1",
+    "tenant_id": "default",
+    "provider": "chatgpt",
+    "plan_tier": "plus",
+    "session_token": "eyJhbGc...&lt;your token&gt;",
+    "cookies": "__cf_bm=...; cf_clearance=..."
+  }'</pre>
+      </div>
+
+      <div class="guide-step">
+        <h3>Step 3 — Switch the gateway to real mode</h3>
+        <p>Edit <code>docker-compose.yml</code> (or your env vars) and set <code>PROVIDER_MODE=real</code>, then restart:</p>
+<pre>cd /opt/llm-pool
+docker compose down
+PROVIDER_MODE=real docker compose up -d</pre>
+        <p class="muted small">⚠️ Note: in this MVP the <code>provider/chatgpt.invokeReal</code> path is a stub. The real reverse-engineered call to <code>/backend-api/conversation</code> still needs to be implemented before real-mode actually exchanges traffic with chatgpt.com. The credentials you enroll <i>are</i> stored encrypted in SQLite and ready to use as soon as that path is wired up.</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>Same flow for Claude / Gemini</h3>
+        <p>Claude — capture <code>sessionKey</code> from <a href="https://claude.ai" target="_blank">claude.ai</a> cookies. Provider <code>claude</code>.</p>
+        <p>Gemini — capture <code>__Secure-1PSID</code> + <code>__Secure-1PSIDTS</code> from <a href="https://gemini.google.com" target="_blank">gemini.google.com</a>. Provider <code>gemini</code>.</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>Bulk import</h3>
+<pre>curl -X POST 'http://your-host:8788/api/admin/accounts/bulk-import?tenant=default' \
+  -H "Cookie: $ADMIN_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '[{"id":"oa1","provider":"chatgpt","session_token":"..."},
+       {"id":"oa2","provider":"chatgpt","session_token":"..."}]'</pre>
+        <p>Or pipe a Netscape <code>cookies.txt</code> file:</p>
+<pre>curl -X POST 'http://your-host:8788/api/admin/accounts/bulk-import?tenant=default&provider=chatgpt' \
+  -H "Cookie: $ADMIN_SESSION" \
+  --data-binary @cookies.txt</pre>
+      </div>
+
+      {{else}}
+
+      <div class="card section">
+        <div class="card-title">如何录入真实的 OpenAI / Claude / Gemini 订阅凭证</div>
+        <p class="muted">默认情况下账号池运行在 <code>mock</code> 模式 — 所有 provider 都返回测试响应。要让它真打上游，需要至少录入一家 provider 的 paid web session。下面以 <b>ChatGPT (OpenAI 订阅)</b> 为例说明流程。</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>第 1 步 — 抓取 ChatGPT 会话凭证</h3>
+        <ol>
+          <li>在 Chrome / Edge 中打开 <a href="https://chatgpt.com" target="_blank">https://chatgpt.com</a> 并登录你的 Plus / Pro 账号。</li>
+          <li>按 F12 打开开发者工具 → <b>Application</b> 标签 → 左侧 <b>Cookies</b> → <code>https://chatgpt.com</code>。</li>
+          <li>复制 <code>__Secure-next-auth.session-token</code> 的 Value（很长，以 <code>eyJ...</code> 开头），这就是你的 <b>session_token</b>。</li>
+          <li>可选：把 <code>cf_clearance</code> + <code>__cf_bm</code> 也复制下来，保存为 <code>name=value</code> 多行格式（用于 cookies 字段，能减少 CF 验证概率）。</li>
+        </ol>
+        <p class="muted small">推荐用 EditThisCookie / Cookie-Editor 这类浏览器插件一键导出 JSON，比手抄方便。</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>第 2 步 — 录入到账号池</h3>
+        <p>两种等效方式：</p>
+        <p><b>方式 A · Web UI（最简单）：</b>点击 <a href="/accounts/new"><b>+ 添加账号</b></a>，provider 选 <code>chatgpt</code>，把刚才抓的 <b>session_token</b> 粘进 Session Token 字段，cookies 多行粘到 Cookies 文本框，保存即可。</p>
+        <p><b>方式 B · REST API：</b></p>
+<pre>curl -X POST http://你的主机:8788/api/admin/accounts \
+  -H "Cookie: $ADMIN_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "openai-1",
+    "tenant_id": "default",
+    "provider": "chatgpt",
+    "plan_tier": "plus",
+    "session_token": "eyJhbGc...&lt;你的 token&gt;",
+    "cookies": "__cf_bm=...; cf_clearance=..."
+  }'</pre>
+      </div>
+
+      <div class="guide-step">
+        <h3>第 3 步 — 切到 real 模式</h3>
+        <p>修改 <code>docker-compose.yml</code> 或 env，把 <code>PROVIDER_MODE=mock</code> 改成 <code>PROVIDER_MODE=real</code>，然后重启：</p>
+<pre>cd /opt/llm-pool
+docker compose down
+PROVIDER_MODE=real docker compose up -d</pre>
+        <p class="muted small">⚠️ 重要说明：当前 MVP 里 <code>provider/chatgpt.invokeReal</code> 是占位实现 — 凭据会被加密保存到 SQLite，但调用 chatgpt.com 的反向工程逻辑（arkose token、<code>/backend-api/conversation</code> 协议解析）需要后续完成才会真正打上游。你现在录入的 cookies/token 不会丢，等那一步打通后立即生效。</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>Claude / Gemini 同流程</h3>
+        <p><b>Claude</b>：在 <a href="https://claude.ai" target="_blank">claude.ai</a> cookies 里抓 <code>sessionKey</code>，provider 选 <code>claude</code>。</p>
+        <p><b>Gemini</b>：在 <a href="https://gemini.google.com" target="_blank">gemini.google.com</a> cookies 里抓 <code>__Secure-1PSID</code> + <code>__Secure-1PSIDTS</code>，provider 选 <code>gemini</code>。</p>
+      </div>
+
+      <div class="guide-step">
+        <h3>批量导入</h3>
+        <p>JSON 数组：</p>
+<pre>curl -X POST 'http://你的主机:8788/api/admin/accounts/bulk-import?tenant=default' \
+  -H "Cookie: $ADMIN_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '[{"id":"oa1","provider":"chatgpt","session_token":"..."},
+       {"id":"oa2","provider":"chatgpt","session_token":"..."}]'</pre>
+        <p>或者直接传 Netscape 格式的 <code>cookies.txt</code>：</p>
+<pre>curl -X POST 'http://你的主机:8788/api/admin/accounts/bulk-import?tenant=default&provider=chatgpt' \
+  -H "Cookie: $ADMIN_SESSION" \
+  --data-binary @cookies.txt</pre>
+      </div>
+
+      <div class="guide-step">
+        <h3>安全提示</h3>
+        <ul>
+          <li>所有凭据用 AES-256-GCM 加密存进 SQLite，主密钥在 <code>POOL_MASTER_KEY</code> 环境变量里 — 不要提交到 git</li>
+          <li>登录 ChatGPT 时关掉 Memory 个性化（<i>Settings → Personalization → Memory: Off</i>），避免账号切换时模型回答风格漂移</li>
+          <li>把订阅版伪装成 API 调用通常违反 OpenAI/Anthropic/Google 的 ToS，可能导致账号被封 — 自评估风险</li>
+          <li>建议每个账号绑独立的住宅代理（在 HTTP 代理字段填），避免多账号共用一个公网 IP 触发风控</li>
+        </ul>
+      </div>
+      {{end}}
+
+      <div class="card section" style="margin-top:24px">
+        <div class="card-title">CLI 工具接入配置</div>
+      </div>
+
+      <div class="guide-step">
+        <h3>Codex CLI 接入</h3>
+        <p>Codex CLI 使用 <code>~/.codex/config.toml</code> 配置 base_url，<b>不是环境变量</b>。</p>
+<pre># 方法 1: 使用脚本自动配置
+bash scripts/setup-codex.sh http://你的IP:{{.GatewayPort}} sk-pool-你的key
+
+# 方法 2: 手动编写 ~/.codex/config.toml
+model_provider = "llmpool"
+model = "gpt-5.2"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.llmpool]
+name = "llmpool"
+base_url = "http://你的IP:{{.GatewayPort}}"
+wire_api = "responses"</pre>
+        <p>同时写入 <code>~/.codex/auth.json</code>：</p>
+<pre>{
+  "OPENAI_API_KEY": "sk-pool-你的key"
+}</pre>
+      </div>
+
+      <div class="guide-step">
+        <h3>Claude Code 接入</h3>
+<pre># 设置环境变量
+export ANTHROPIC_BASE_URL=http://你的IP:{{.GatewayPort}}
+export ANTHROPIC_API_KEY=sk-pool-你的key
+
+# 然后正常运行 claude
+claude</pre>
+      </div>
+
+      <div class="guide-step">
+        <h3>Gemini CLI 接入</h3>
+<pre># 设置环境变量
+export GEMINI_API_BASE=http://你的IP:{{.GatewayPort}}
+export GEMINI_API_KEY=sk-pool-你的key
+
+# 然后正常运行 gemini
+gemini</pre>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body>
+</html>

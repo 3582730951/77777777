@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>注册任务 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+/* ── Register form layout ── */
+.reg-layout{display:grid;gap:20px;grid-template-columns:minmax(0,1.45fr) 340px}
+@media(max-width:1100px){.reg-layout{grid-template-columns:1fr}}
+
+/* ── Identity / executor option buttons ── */
+.opt-grid{display:grid;gap:12px;grid-template-columns:repeat(2,1fr)}
+.opt-grid.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:700px){.opt-grid,.opt-grid.cols-3{grid-template-columns:1fr}}
+.opt-btn{text-align:left;padding:16px;border-radius:var(--r-md);
+  border:1px solid var(--hairline);background:var(--bg);cursor:pointer;
+  transition:all var(--dur) var(--ease)}
+.opt-btn:hover{border-color:var(--accent);transform:translateY(-1px)}
+.opt-btn.active{border-color:var(--accent);background:rgba(0,122,255,0.06);
+  box-shadow:0 0 0 1px var(--accent)}
+.opt-btn.disabled{opacity:0.45;cursor:not-allowed;pointer-events:none}
+.opt-btn .opt-title{font-size:13px;font-weight:600;color:var(--fg);display:flex;align-items:center;gap:6px}
+.opt-btn .opt-desc{font-size:11px;color:var(--fg-muted);margin-top:6px;line-height:1.5}
+.opt-btn .opt-warn{font-size:11px;color:var(--orange);margin-top:6px}
+
+/* ── Summary chips ── */
+.summary-chip{padding:14px;border-radius:var(--r-md);border:1px solid var(--hairline);
+  background:var(--sep)}
+.summary-chip .chip-label{font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.16em;color:var(--fg-muted);display:flex;align-items:center;gap:5px}
+.summary-chip .chip-val{font-size:15px;font-weight:600;color:var(--fg);margin-top:6px}
+
+/* ── Task status panel ── */
+.task-status-grid{display:grid;gap:10px;grid-template-columns:repeat(2,1fr)}
+.task-stat-chip{padding:10px 14px;border-radius:var(--r-md);border:1px solid var(--hairline);background:var(--sep)}
+.task-stat-chip .ts-label{font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.16em;color:var(--fg-muted)}
+.task-stat-chip .ts-val{font-size:14px;font-weight:600;color:var(--fg);margin-top:4px}
+
+/* ── Live log ── */
+.log-box{font-family:"SF Mono",Menlo,monospace;font-size:11px;background:var(--bg);
+  border:1px solid var(--hairline);border-radius:var(--r-md);padding:14px;
+  max-height:50vh;min-height:240px;overflow-y:auto}
+.log-line{padding:5px 10px;margin-bottom:3px;border-radius:var(--r-sm);
+  background:var(--sep);line-height:1.5;word-break:break-all}
+.log-line.ok{color:var(--ok)}.log-line.err{color:var(--err)}
+.log-empty{display:flex;align-items:center;justify-content:center;min-height:180px;
+  border:1px dashed var(--hairline);border-radius:var(--r-md);color:var(--fg-muted);font-size:13px}
+
+/* ── Task history table ── */
+.task-metrics{display:grid;gap:12px;grid-template-columns:repeat(4,1fr)}
+@media(max-width:700px){.task-metrics{grid-template-columns:repeat(2,1fr)}}
+.task-metric{display:flex;align-items:center;gap:12px;padding:14px 16px;
+  border-radius:var(--r-md);border:1px solid var(--hairline);background:var(--bg-elev)}
+.task-metric .tm-icon{width:36px;height:36px;border-radius:var(--r-sm);
+  display:flex;align-items:center;justify-content:center;font-size:16px;background:var(--sep);flex-shrink:0}
+.task-metric .tm-label{font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.12em;color:var(--fg-muted)}
+.task-metric .tm-val{font-size:18px;font-weight:700;color:var(--fg);margin-top:1px}
+
+.ratio-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--sep);width:64px}
+.ratio-ok{height:100%;background:var(--ok);border-radius:3px}
+.ratio-err{height:100%;background:var(--err);border-radius:3px}
+
+/* ── Progress bar ── */
+.task-progress{height:8px;border-radius:4px;overflow:hidden;background:var(--sep);
+  box-shadow:inset 0 0 0 1px var(--hairline)}
+.task-progress-fill{height:100%;border-radius:4px;transition:width 0.5s var(--ease)}
+.task-progress-fill.running{background:var(--accent)}
+.task-progress-fill.ok{background:var(--ok)}
+.task-progress-fill.err{background:var(--err)}
+
+/* ── Error alert ── */
+.err-alert{padding:12px 16px;border-radius:var(--r-md);background:rgba(255,59,48,0.08);
+  border:1px solid rgba(255,59,48,0.20);color:var(--err);font-size:13px}
+.err-alert b{display:block;margin-bottom:4px;font-weight:600}
+
+/* ── Tabs ── */
+.ar-tabs{display:flex;gap:2px;border-bottom:1px solid var(--hairline);margin-bottom:16px}
+.ar-tab{padding:8px 16px;font-size:13px;font-weight:500;color:var(--fg-muted);
+  border-bottom:2px solid transparent;cursor:pointer;transition:all var(--dur) var(--ease)}
+.ar-tab:hover{color:var(--fg)}.ar-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+
+/* ── Service offline banner ── */
+.offline-banner{padding:16px 20px;border-radius:var(--r-md);background:rgba(255,159,10,0.08);
+  border:1px solid rgba(255,159,10,0.20);color:var(--orange);font-size:13px;text-align:center;
+  display:flex;flex-direction:column;align-items:center;gap:8px}
+</style>
+<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">注册任务</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/autoreg/tasks")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- Tabs: Register / History -->
+      <div class="ar-tabs">
+        <div class="ar-tab active" data-tab="register" onclick="switchTab('register',this)">注册</div>
+        <div class="ar-tab" data-tab="history" onclick="switchTab('history',this)">任务记录</div>
+      </div>
+
+      <!-- ============ TAB: REGISTER ============ -->
+      <div id="tab-register">
+        <div id="offline-msg" style="display:none">
+          <div class="offline-banner">
+            <div style="font-size:24px;opacity:0.5">⚠</div>
+            <div><b>AutoReg 服务未运行</b></div>
+            <div style="font-size:12px;color:var(--fg-muted)">请确保已启用 autoreg 并正确启动 Python 服务</div>
+          </div>
+        </div>
+
+        <div id="reg-content" class="reg-layout">
+          <!-- Left: config -->
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <!-- Basic config -->
+            <div class="card">
+              <div class="card-header"><div class="card-title">基本配置</div></div>
+              <div class="card-body">
+                <div class="form">
+                  <div class="field">
+                    <label>平台</label>
+                    <select id="f-platform">
+                      {{range .Platforms}}<option value="{{.}}">{{.}}</option>{{end}}
+                    </select>
+                  </div>
+                  <div class="form-row c2">
+                    <div class="field">
+                      <label>批量数量</label>
+                      <input type="number" id="f-count" value="1" min="1" max="100">
+                    </div>
+                    <div class="field">
+                      <label>代理 (可选)</label>
+                      <input type="text" id="f-proxy" placeholder="http://user:pass@host:port">
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 1: Identity -->
+            <div class="card">
+              <div class="card-header"><div class="card-title">Step 1 · 注册身份</div></div>
+              <div class="card-body">
+                <div class="opt-grid" id="identity-grid">
+                  <button class="opt-btn active" data-identity="mailbox" data-oauth="" onclick="pickIdentity(this)">
+                    <div class="opt-title">✉ 邮箱注册</div>
+                    <div class="opt-desc">系统自动生成邮箱或使用配置的邮箱服务完成注册</div>
+                  </button>
+                  <button class="opt-btn" data-identity="oauth_browser" data-oauth="google" onclick="pickIdentity(this)">
+                    <div class="opt-title">🛡 Google OAuth</div>
+                    <div class="opt-desc">使用 Google 账号 OAuth 授权注册，需要浏览器环境</div>
+                  </button>
+                  <button class="opt-btn" data-identity="oauth_browser" data-oauth="github" onclick="pickIdentity(this)">
+                    <div class="opt-title">🛡 GitHub OAuth</div>
+                    <div class="opt-desc">使用 GitHub 账号 OAuth 授权注册</div>
+                  </button>
+                  <button class="opt-btn" data-identity="oauth_browser" data-oauth="microsoft" onclick="pickIdentity(this)">
+                    <div class="opt-title">🛡 Microsoft OAuth</div>
+                    <div class="opt-desc">使用 Microsoft 账号 OAuth 授权注册</div>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 2: Executor -->
+            <div class="card">
+              <div class="card-header"><div class="card-title">Step 2 · 执行通道</div></div>
+              <div class="card-body">
+                <div class="opt-grid cols-3" id="executor-grid">
+                  <button class="opt-btn active" data-executor="protocol" onclick="pickExecutor(this)">
+                    <div class="opt-title">协议注册</div>
+                    <div class="opt-desc">纯 HTTP 协议模拟注册流程，速度快资源消耗低</div>
+                  </button>
+                  <button class="opt-btn" data-executor="browser" onclick="pickExecutor(this)">
+                    <div class="opt-title">浏览器注册</div>
+                    <div class="opt-desc">使用无头浏览器模拟真实用户操作，兼容性最好</div>
+                  </button>
+                  <button class="opt-btn" data-executor="hybrid" onclick="pickExecutor(this)">
+                    <div class="opt-title">混合模式</div>
+                    <div class="opt-desc">协议为主，遇到风控时自动切换浏览器完成</div>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Mailbox config (conditional) -->
+            <div class="card" id="mail-config">
+              <div class="card-header"><div class="card-title">邮箱配置</div></div>
+              <div class="card-body">
+                <div class="form">
+                  <div class="field">
+                    <label>邮箱服务</label>
+                    <select id="f-mail-provider">
+                      <option value="">自动</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>指定邮箱 (可选)</label>
+                    <input type="email" id="f-email" placeholder="留空则自动生成">
+                  </div>
+                  <div class="field">
+                    <label>指定密码 (可选)</label>
+                    <input type="password" id="f-password" placeholder="留空则自动生成">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: summary + status -->
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <!-- Summary card -->
+            <div class="card" style="position:sticky;top:72px">
+              <div class="card-header"><div class="card-title">当前编排摘要</div></div>
+              <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+                <div class="summary-chip">
+                  <div class="chip-label">✉ Platform</div>
+                  <div class="chip-val" id="sum-platform">—</div>
+                </div>
+                <div class="summary-chip">
+                  <div class="chip-label">🛡 Identity</div>
+                  <div class="chip-val" id="sum-identity">邮箱注册</div>
+                </div>
+                <div class="summary-chip">
+                  <div class="chip-label">⚡ Executor</div>
+                  <div class="chip-val" id="sum-executor">协议注册</div>
+                </div>
+                <div class="summary-chip">
+                  <div class="chip-label">🔍 Verification</div>
+                  <div class="chip-val" id="sum-captcha">自动选择</div>
+                </div>
+                <button class="btn primary lg w-full" id="btn-start" onclick="startRegister()" style="margin-top:6px">
+                  ▶ 开始注册
+                </button>
+              </div>
+            </div>
+
+            <!-- Task status (hidden until task starts) -->
+            <div id="task-panel" style="display:none">
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title" style="display:flex;align-items:center;gap:8px">
+                    执行状态 <span class="badge blue" id="task-status-badge">运行中</span>
+                  </div>
+                </div>
+                <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+                  <div class="task-status-grid">
+                    <div class="task-stat-chip"><div class="ts-label">状态</div><div class="ts-val" id="ts-status">—</div></div>
+                    <div class="task-stat-chip"><div class="ts-label">进度</div><div class="ts-val" id="ts-progress">0/0</div></div>
+                    <div class="task-stat-chip"><div class="ts-label">成功</div><div class="ts-val" id="ts-success" style="color:var(--ok)">0</div></div>
+                    <div class="task-stat-chip"><div class="ts-label">失败</div><div class="ts-val" id="ts-failed" style="color:var(--err)">0</div></div>
+                  </div>
+                  <div class="task-progress"><div class="task-progress-fill running" id="ts-progress-bar" style="width:0%"></div></div>
+                  <div class="task-stat-chip">
+                    <div class="ts-label">任务 ID</div>
+                    <div class="ts-val mono" id="ts-id" style="font-size:11px;word-break:break-all">—</div>
+                  </div>
+                  <div id="ts-error" style="display:none">
+                    <div class="err-alert"><b>失败原因</b><span id="ts-error-text"></span></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Live log -->
+              <div class="card" style="margin-top:16px">
+                <div class="card-header">
+                  <div class="card-title">实时日志</div>
+                  <button class="btn ghost sm" onclick="copyLogs()">复制日志</button>
+                </div>
+                <div class="card-body">
+                  <div class="log-box" id="log-box">
+                    <div class="log-empty">等待任务日志...</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Waiting state (shown before task) -->
+            <div id="waiting-panel" class="card">
+              <div class="card-header"><div class="card-title">等待执行</div></div>
+              <div class="card-body" style="color:var(--fg-muted);font-size:13px">
+                选择平台和注册方式后点击「开始注册」，执行状态与日志将在此显示。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ TAB: HISTORY ============ -->
+      <div id="tab-history" style="display:none">
+        <!-- Metrics -->
+        <div class="task-metrics" id="hist-metrics">
+          <div class="task-metric">
+            <div class="tm-icon" style="color:var(--accent)">◈</div>
+            <div><div class="tm-label">任务数</div><div class="tm-val" id="hm-total">—</div></div>
+          </div>
+          <div class="task-metric">
+            <div class="tm-icon" style="color:var(--ok)">✓</div>
+            <div><div class="tm-label">成功</div><div class="tm-val" id="hm-success">—</div></div>
+          </div>
+          <div class="task-metric">
+            <div class="tm-icon" style="color:var(--err)">✗</div>
+            <div><div class="tm-label">失败</div><div class="tm-val" id="hm-failed">—</div></div>
+          </div>
+          <div class="task-metric">
+            <div class="tm-icon" style="color:var(--orange)">◔</div>
+            <div><div class="tm-label">进行中</div><div class="tm-val" id="hm-running">—</div></div>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-header" style="flex-wrap:wrap;gap:8px">
+            <div class="card-title">最近任务</div>
+            <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:flex-end">
+              <select id="hist-platform" onchange="loadHistory()" style="padding:5px 10px;font-size:12px">
+                <option value="">全部平台</option>
+                {{range .Platforms}}<option value="{{.}}">{{.}}</option>{{end}}
+              </select>
+              <select id="hist-status" onchange="loadHistory()" style="padding:5px 10px;font-size:12px">
+                <option value="">全部状态</option>
+                <option value="running">运行中</option>
+                <option value="succeeded">成功</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option>
+                <option value="interrupted">已中断</option>
+              </select>
+              <button class="btn ghost sm" onclick="loadHistory()">刷新</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>时间</th><th>任务 ID</th><th>平台</th><th>状态</th>
+                  <th>进度</th><th>成功/失败</th><th>错误</th>
+                </tr>
+              </thead>
+              <tbody id="hist-body">
+                <tr><td colspan="7" class="center muted" style="padding:40px">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+const BASE = '/api/autoreg';
+let currentTask = null;
+let evtSource = null;
+let logLines = [];
+let serviceOnline = true;
+
+/* ── Safe fetch ── */
+async function safeFetch(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    if (!r.ok) { const t = await r.text(); throw new Error(t); }
+    const text = await r.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch(e) {
+    if (e.message && (e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
+      serviceOnline = false;
+      showOffline();
+    }
+    throw e;
+  }
+}
+
+function showOffline() {
+  document.getElementById('offline-msg').style.display = '';
+  document.getElementById('reg-content').style.display = 'none';
+}
+
+/* ── Tabs ── */
+function switchTab(tab, el) {
+  document.querySelectorAll('.ar-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-register').style.display = tab === 'register' ? '' : 'none';
+  document.getElementById('tab-history').style.display = tab === 'history' ? '' : 'none';
+  if (tab === 'history') loadHistory();
+}
+
+/* ── Identity / Executor selection ── */
+let formState = { identity: 'mailbox', oauth: '', executor: 'protocol' };
+
+function pickIdentity(btn) {
+  document.querySelectorAll('#identity-grid .opt-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  formState.identity = btn.dataset.identity;
+  formState.oauth = btn.dataset.oauth || '';
+  document.getElementById('sum-identity').textContent = btn.querySelector('.opt-title').textContent.replace(/^[^\s]+\s/, '');
+  document.getElementById('mail-config').style.display = formState.identity === 'mailbox' ? '' : 'none';
+}
+
+function pickExecutor(btn) {
+  document.querySelectorAll('#executor-grid .opt-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  formState.executor = btn.dataset.executor;
+  document.getElementById('sum-executor').textContent = btn.querySelector('.opt-title').textContent;
+}
+
+/* ── Update summary on platform change ── */
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('f-platform');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      document.getElementById('sum-platform').textContent = sel.value;
+    });
+    document.getElementById('sum-platform').textContent = sel.value || '—';
+  }
+  checkService();
+});
+
+async function checkService() {
+  try {
+    await safeFetch(BASE + '/platforms');
+    serviceOnline = true;
+    document.getElementById('offline-msg').style.display = 'none';
+    document.getElementById('reg-content').style.display = '';
+  } catch {
+    showOffline();
+  }
+}
+
+/* ── Start register ── */
+async function startRegister() {
+  const btn = document.getElementById('btn-start');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> 注册中...';
+
+  const body = {
+    platform: document.getElementById('f-platform').value,
+    count: parseInt(document.getElementById('f-count').value) || 1,
+    proxy: document.getElementById('f-proxy').value || null,
+    executor_type: formState.executor,
+    captcha_solver: 'auto',
+    extra: {
+      identity_provider: formState.identity,
+      oauth_provider: formState.oauth || undefined,
+    },
+  };
+  if (formState.identity === 'mailbox') {
+    const email = document.getElementById('f-email').value;
+    const password = document.getElementById('f-password').value;
+    if (email) body.email = email;
+    if (password) body.password = password;
+    const mp = document.getElementById('f-mail-provider').value;
+    if (mp) body.extra.mail_provider = mp;
+  }
+
+  try {
+    const res = await safeFetch(BASE + '/tasks/register', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    currentTask = res;
+    showTaskPanel(res);
+    startLogStream(res.id || res.task_id);
+    pollTaskStatus(res.id || res.task_id);
+  } catch(e) {
+    btn.disabled = false;
+    btn.innerHTML = '▶ 开始注册';
+    alert('创建失败: ' + e.message);
+  }
+}
+
+function showTaskPanel(task) {
+  document.getElementById('waiting-panel').style.display = 'none';
+  document.getElementById('task-panel').style.display = '';
+  updateTaskUI(task);
+}
+
+const STATUS_TEXT = {
+  pending:'待执行', running:'运行中', claimed:'执行中',
+  succeeded:'成功', failed:'失败', cancelled:'已取消',
+  interrupted:'已中断', cancel_requested:'取消中'
+};
+const STATUS_BADGE = {
+  pending:'gray', running:'blue', claimed:'blue',
+  succeeded:'ok', failed:'err', cancelled:'warn', interrupted:'warn'
+};
+
+function updateTaskUI(task) {
+  if (!task) return;
+  const s = task.status || 'running';
+  document.getElementById('ts-status').textContent = STATUS_TEXT[s] || s;
+  document.getElementById('ts-progress').textContent = task.progress || '0/0';
+  document.getElementById('ts-success').textContent = task.success ?? 0;
+  document.getElementById('ts-failed').textContent = task.error_count ?? task.errors?.length ?? 0;
+  document.getElementById('ts-id').textContent = task.id || task.task_id || '—';
+
+  const badge = document.getElementById('task-status-badge');
+  badge.className = 'badge ' + (STATUS_BADGE[s] || 'gray');
+  badge.textContent = STATUS_TEXT[s] || s;
+
+  // Progress bar
+  const bar = document.getElementById('ts-progress-bar');
+  const pd = task.progress_detail || {};
+  const total = pd.total || 0, current = pd.current || 0;
+  const pct = total > 0 ? Math.min(100, Math.round(current/total*100)) : (isTerminal(s) ? 100 : 18);
+  bar.style.width = pct + '%';
+  bar.className = 'task-progress-fill ' + (s === 'failed' ? 'err' : s === 'succeeded' ? 'ok' : 'running');
+
+  // Error
+  const errEl = document.getElementById('ts-error');
+  const errText = task.error || (task.errors?.length ? task.errors[0] : '');
+  if (errText) {
+    errEl.style.display = '';
+    document.getElementById('ts-error-text').textContent = errText;
+  } else {
+    errEl.style.display = 'none';
+  }
+
+  // Re-enable button on terminal
+  if (isTerminal(s)) {
+    const btn = document.getElementById('btn-start');
+    btn.disabled = false;
+    btn.innerHTML = '▶ 开始注册';
+  }
+}
+
+function isTerminal(s) {
+  return ['succeeded','failed','cancelled','interrupted'].includes(s);
+}
+
+/* ── Log streaming ── */
+function startLogStream(taskId) {
+  logLines = [];
+  const box = document.getElementById('log-box');
+  box.innerHTML = '<div class="log-empty">连接中...</div>';
+
+  if (evtSource) evtSource.close();
+  evtSource = new EventSource(BASE + '/tasks/' + taskId + '/logs/stream');
+  evtSource.onmessage = (e) => {
+    try {
+      const payload = JSON.parse(e.data);
+      if (payload.line) appendLog(payload.line);
+      if (payload.done) evtSource.close();
+    } catch {
+      appendLog(e.data);
+    }
+  };
+  evtSource.onerror = () => { evtSource.close(); };
+}
+
+function appendLog(line) {
+  logLines.push(line);
+  const box = document.getElementById('log-box');
+  if (box.querySelector('.log-empty')) box.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  if (line.includes('✓') || line.includes('成功')) div.classList.add('ok');
+  if (line.includes('✗') || line.includes('失败') || line.includes('错误') || line.includes('ERROR')) div.classList.add('err');
+  div.textContent = line;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function copyLogs() {
+  copyText(logLines.join('\n'), '日志');
+}
+
+/* ── Task polling ── */
+function pollTaskStatus(taskId) {
+  const poll = setInterval(async () => {
+    try {
+      const t = await safeFetch(BASE + '/tasks/' + taskId);
+      currentTask = t;
+      updateTaskUI(t);
+      if (isTerminal(t.status)) clearInterval(poll);
+    } catch { /* passive */ }
+  }, 3000);
+}
+
+/* ── History ── */
+async function loadHistory() {
+  const platform = document.getElementById('hist-platform').value;
+  const status = document.getElementById('hist-status').value;
+  const params = new URLSearchParams({page:'1', page_size:'50'});
+  if (platform) params.set('platform', platform);
+  if (status) params.set('status', status);
+
+  const body = document.getElementById('hist-body');
+  try {
+    const data = await safeFetch(BASE + '/tasks?' + params);
+    const items = data.items || [];
+
+    // Update metrics
+    const succeeded = items.filter(t => t.status === 'succeeded').length;
+    const failed = items.filter(t => t.status === 'failed').length;
+    const running = items.filter(t => ['running','claimed','pending','cancel_requested'].includes(t.status)).length;
+    document.getElementById('hm-total').textContent = items.length;
+    document.getElementById('hm-success').textContent = succeeded;
+    document.getElementById('hm-failed').textContent = failed;
+    document.getElementById('hm-running').textContent = running;
+
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="7" class="center muted" style="padding:40px">暂无任务记录</td></tr>';
+      return;
+    }
+
+    body.innerHTML = items.map(t => {
+      const success = t.success || 0;
+      const errCount = t.error_count || 0;
+      const total = success + errCount;
+      const okPct = total > 0 ? Math.round(success/total*100) : 0;
+      const errPct = total > 0 ? Math.round(errCount/total*100) : 0;
+      const errText = formatError(t.error);
+      const shortId = t.id ? (t.id.length > 12 ? '...' + t.id.slice(-8) : t.id) : '-';
+      const time = t.created_at ? new Date(t.created_at).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '-';
+      const badgeClass = STATUS_BADGE[t.status] || 'gray';
+      return '<tr>' +
+        '<td class="tiny muted">' + time + '</td>' +
+        '<td><span class="mono tiny muted" title="' + (t.id||'') + '">' + shortId + '</span></td>' +
+        '<td><span class="badge gray">' + (t.platform||'-') + '</span></td>' +
+        '<td><span class="badge ' + badgeClass + '">' + (STATUS_TEXT[t.status]||t.status) + '</span></td>' +
+        '<td class="tiny muted">' + (t.progress||'-') + '</td>' +
+        '<td>' + (total > 0
+          ? '<div style="display:flex;align-items:center;gap:8px">' +
+            '<div class="ratio-bar"><div class="ratio-ok" style="width:'+okPct+'%"></div><div class="ratio-err" style="width:'+errPct+'%"></div></div>' +
+            '<span class="tiny"><span style="color:var(--ok)">' + success + '</span> / <span style="color:var(--err)">' + errCount + '</span></span></div>'
+          : '<span class="tiny muted">-</span>') + '</td>' +
+        '<td style="max-width:240px">' + (errText ? '<span class="tiny" style="color:var(--err)" title="'+(t.error||'')+'">' + errText + '</span>' : '<span class="tiny muted">-</span>') + '</td>' +
+      '</tr>';
+    }).join('');
+  } catch {
+    body.innerHTML = '<tr><td colspan="7" class="center muted" style="padding:40px">加载失败，AutoReg 服务可能未运行</td></tr>';
+  }
+}
+
+function formatError(err) {
+  if (!err) return '';
+  try {
+    if (err.startsWith('{') || err.startsWith('[')) {
+      const p = JSON.parse(err);
+      if (p.message) return p.message;
+      if (p.error) return p.error;
+    }
+  } catch {}
+  return err.length > 100 ? err.slice(0,100) + '...' : err;
+}
+</script>
+{{template "_copy_script" .}}
+</body>
+</html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="logo-lg"></div>
+    <div>
+      <div class="login-title">LLM Pool</div>
+      <div class="login-sub mt-4">管理员登录</div>
+    </div>
+    {{if .Error}}
+    <div class="alert alert-err w-full">{{.Error}}</div>
+    {{end}}
+    <form method="post" action="/login" class="login-form">
+      <div class="field">
+        <label>用户名</label>
+        <input type="text" name="username" placeholder="admin" autocomplete="username" autofocus/>
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" name="password" placeholder="••••••••" autocomplete="current-password"/>
+      </div>
+      <button class="btn primary lg w-full" style="margin-top:4px">登录</button>
+    </form>
+    <div class="tiny muted center">首次登录密码见 <code>data/passwd.txt</code></div>
+  </div>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body></html>

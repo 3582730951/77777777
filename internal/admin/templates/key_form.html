@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>生成 API Key · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">生成 API Key</div>
+      <div class="topbar-actions">
+        <a href="/keys" class="btn ghost">← API Keys</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      {{if .FlashKey}}
+      <div class="alert alert-ok">
+        <div>
+          <div class="bold small">✓ Key 已生成，请立即复制（仅显示一次）</div>
+          <div class="mono mt-4" style="font-size:13px;word-break:break-all;color:var(--fg)">{{.FlashKey}}</div>
+        </div>
+        <button class="btn ghost sm" style="flex-shrink:0"
+          onclick="copyText('{{.FlashKey}}','Key');this.textContent='已复制'">复制</button>
+      </div>
+      {{end}}
+
+      <div class="grid g2" style="align-items:start">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Key 配置</div></div>
+          <div class="card-body">
+            <form method="post" action="/keys/new" class="form">
+              <div class="form-section-title">绑定关系</div>
+              <div class="form-row c2">
+                <div class="field">
+                  <label>租户 *</label>
+                  <select name="tenant_id" required>
+                    <option value="">— 选择租户 —</option>
+                    {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
+                    {{range .Tenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
+                  </select>
+                </div>
+                <div class="field">
+                  <label>分组 *</label>
+                  <select name="group_id" required>
+                    <option value="">— 选择分组 —</option>
+                    {{range .YamlGroups}}
+                      <option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>
+                    {{end}}
+                    {{range .Groups}}
+                      <option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>
+                    {{end}}
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label>备注（可选）</label>
+                <input name="label" placeholder="例如：Cursor 专用 Key"/>
+              </div>
+              <div class="form-actions">
+                <button class="btn primary" type="submit">生成 Key</button>
+                <a href="/keys" class="btn ghost">取消</a>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="card flat">
+          <div class="card-header"><div class="card-title">使用说明</div></div>
+          <div class="card-body flex-col gap-12">
+            <div class="alert alert-info small">
+              Key 生成后<b>只显示一次</b>，请立即复制保存。丢失后需重新生成。
+            </div>
+            <div class="kv">
+              <div class="kv-row"><span class="kv-key small">OpenAI 兼容</span>
+                <code class="tiny">Authorization: Bearer sk-pool-xxx</code></div>
+              <div class="kv-row"><span class="kv-key small">Anthropic 兼容</span>
+                <code class="tiny">x-api-key: sk-pool-xxx</code></div>
+              <div class="kv-row"><span class="kv-key small">Gemini 兼容</span>
+                <code class="tiny">x-goog-api-key: sk-pool-xxx</code></div>
+            </div>
+            <div class="tiny muted">Key 绑定到租户+分组后，只能调用该分组允许的 provider 和模型。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<div id="toast-ct"></div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+function showToast(m){
+  const c=document.getElementById('toast-ct');
+  const t=document.createElement('div');t.className='toast';t.textContent=m;
+  c.appendChild(t);setTimeout(()=>t.remove(),2500);
+}
+</script>
+{{template "_copy_script" .}}
+</body></html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用户门户登录 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto mesh-bg">
+<div class="login-wrap">
+  <div class="login-card" style="backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);background:var(--bg-glass)">
+    <div class="logo-lg"></div>
+    <div>
+      <div class="login-title">LLM Pool 用户门户</div>
+      <div class="login-sub mt-4">多模型 API 代理网关 · 统一接入 OpenAI / Claude / Gemini</div>
+    </div>
+    {{if .Error}}<div class="alert alert-err w-full small">{{.Error}}</div>{{end}}
+    <form method="post" action="/portal/login" class="login-form">
+      <div class="field">
+        <label>用户名</label>
+        <input type="text" name="username" placeholder="由管理员创建" autocomplete="username" autofocus required/>
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" name="password" placeholder="••••••••" autocomplete="current-password" required/>
+      </div>
+      <button class="btn primary lg w-full" style="margin-top:4px">登录门户</button>
+    </form>
+    <div class="divider" style="margin:8px 0"></div>
+    <div class="tiny muted" style="line-height:1.6;text-align:center">
+      没有账号？<a href="/portal/register">注册新用户 →</a>
+    </div>
+  </div>
+</div>
+</body></html>

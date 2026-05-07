@@ -1,0 +1,302 @@
+# LLM Pool Gateway example configuration.
+# Edit this file (typically at /opt/llm-pool/config/config.yaml when deployed
+# via the install script) and restart the container to apply.
+
+server:
+  gateway_addr: "0.0.0.0:19787"   # Public API: /v1/*, /v1beta/*
+  admin_addr:   "0.0.0.0:19788"   # Web UI + admin JSON API
+  read_timeout:  300s
+  read_header_timeout: 10s
+  write_timeout: 600s
+  idle_timeout:  120s
+  max_header_bytes: 1048576
+  max_request_bytes: 536870912
+  request_body_memory_budget: 536870912
+  network_ingress_bytes_per_sec: 8388608
+  network_egress_bytes_per_sec: 4194304
+  network_burst_bytes: 1048576
+  rate_limit_rpm: 300
+  rate_limit_burst: 60
+
+resource:
+  profile: lowmem        # lowmem | balanced | performance
+  go_mem_limit: "768MiB"
+  go_gc: 50
+  sqlite_mmap: "30MB"
+  conversation_cache_max: 5000
+  responses_state_max: 5000
+  responses_state_bytes: 268435456
+  responses_state_ttl: 12h
+  buffer_pool_max: 1000
+  chromium:
+    lazy: true
+    idle_ttl: 5m
+    max_concurrent: 1
+
+tenants:
+  - id: default
+    name: "Default Tenant"
+
+groups:
+  - id: openai
+    tenant_id: default
+    provider: chatgpt
+    api_keys:
+      - "sk-pool-CHANGEME-openai"
+    models:
+      - "gpt-5.2"
+      - "gpt-5.3"
+      - "gpt-5.3-codex"
+      - "gpt-5.4"
+      - "gpt-5.4-mini"
+      - "gpt-5.5"
+      - "gpt-4o"
+      - "gpt-4o-mini"
+      - "o1-mini"
+    model_aliases:
+      "gpt-4o": "gpt-5.4"
+      "gpt-4": "gpt-5.4"
+      "gpt-4o-mini": "gpt-5.4-mini"
+      "o1-mini": "gpt-5.4"
+    model_whitelist:
+      - gpt-5.2
+      - gpt-5.3
+      - gpt-5.3-codex
+      - gpt-5.4
+      - gpt-5.4-mini
+      - gpt-5.5
+    apikey_overrides: {}
+    account_ids: []      # populated via admin UI / api
+
+  - id: claude
+    tenant_id: default
+    provider: claude
+    api_keys:
+      - "sk-pool-CHANGEME-claude"
+    models:
+      - "claude-opus-4-7"
+      - "claude-sonnet-4-6"
+      - "claude-haiku-4-5-20251001"
+    model_whitelist:
+      - claude-opus-4-7
+      - claude-sonnet-4-6
+      - claude-haiku-4-5-20251001
+    account_ids: []
+
+  - id: gemini
+    tenant_id: default
+    provider: gemini
+    api_keys:
+      - "sk-pool-CHANGEME-gemini"
+    models:
+      - "gemini-2.5-pro"
+      - "gemini-2.5-flash"
+      - "gemini-2.5-flash-lite"
+      - "gemini-3-pro-preview"
+      - "gemini-3-flash-preview"
+    model_whitelist:
+      - gemini-2.5-pro
+      - gemini-2.5-flash
+      - gemini-2.5-flash-lite
+      - gemini-3-pro-preview
+      - gemini-3-flash-preview
+    account_ids: []
+
+  - id: cursor
+    tenant_id: default
+    provider: cursor
+    source_platform: cursor
+    auto_register: true
+    api_keys: ["sk-pool-cursor"]
+    models: []
+    account_ids: []
+
+  - id: kiro
+    tenant_id: default
+    provider: kiro
+    source_platform: kiro
+    auto_register: true
+    api_keys: ["sk-pool-kiro"]
+    models: []
+    account_ids: []
+
+  - id: windsurf
+    tenant_id: default
+    provider: windsurf
+    source_platform: windsurf
+    auto_register: true
+    api_keys: ["sk-pool-windsurf"]
+    models: []
+    account_ids: []
+
+  - id: grok
+    tenant_id: default
+    provider: grok
+    source_platform: grok
+    auto_register: true
+    api_keys: ["sk-pool-grok"]
+    models: []
+    account_ids: []
+
+  - id: trae
+    tenant_id: default
+    provider: trae
+    source_platform: trae
+    auto_register: true
+    api_keys: ["sk-pool-trae"]
+    models: []
+    account_ids: []
+
+  - id: blink
+    tenant_id: default
+    provider: blink
+    source_platform: blink
+    auto_register: true
+    api_keys: ["sk-pool-blink"]
+    models: []
+    account_ids: []
+
+  - id: cerebras
+    tenant_id: default
+    provider: cerebras
+    source_platform: cerebras
+    auto_register: true
+    api_keys: ["sk-pool-cerebras"]
+    models: []
+    account_ids: []
+
+  - id: tavily
+    tenant_id: default
+    provider: tavily
+    source_platform: tavily
+    auto_register: true
+    api_keys: ["sk-pool-tavily"]
+    models: []
+    account_ids: []
+
+  - id: openblocklabs
+    tenant_id: default
+    provider: openblocklabs
+    source_platform: openblocklabs
+    auto_register: true
+    api_keys: ["sk-pool-openblocklabs"]
+    models: []
+    account_ids: []
+
+federations:
+  - id: unified-claude
+    description: "Unified Claude model scheduling"
+    member_groups: [claude, cursor, kiro, windsurf, trae]
+    api_keys: ["sk-pool-unified-claude"]
+
+  - id: unified-openai
+    description: "Unified OpenAI model scheduling"
+    member_groups: [openai, cursor, windsurf]
+    api_keys: ["sk-pool-unified-openai"]
+
+  - id: unified-all
+    description: "All models unified scheduling"
+    member_groups: [openai, claude, gemini, cursor, kiro, windsurf, grok, trae, blink, cerebras]
+    api_keys: ["sk-pool-unified-all"]
+
+autoreg:
+  enabled: false
+  python_path: "python3"
+  work_dir: "services/autoreg"
+  listen: "127.0.0.1:9900"
+  sync_interval: 30s
+  auto_activate: true
+  auto_discovery: true
+  discovery_refresh_interval: 6h
+  platform_group_mapping:
+    chatgpt: openai
+    cursor: cursor
+    kiro: kiro
+    windsurf: windsurf
+    grok: grok
+    trae: trae
+    blink: blink
+    cerebras: cerebras
+    tavily: tavily
+    openblocklabs: openblocklabs
+
+scheduler:
+  algorithm: p2c_ewma
+  ewma_alpha: 0.3
+  breaker:
+    fail_threshold: 5
+    open_duration: 60s
+    open_max: 30m
+    backoff: exponential
+  retry:
+    max_attempts: 3
+    backoff_ms: [100, 500, 2000]
+  sticky:
+    enabled: true
+    fallback_replay: full
+    sticky_ttl: 30m
+  failover:
+    head_buffer:
+      max_duration: 500ms
+      max_bytes: 16384
+      max_events: 5
+    mid_stream:
+      mode: best_effort_close
+      mark_account_on_fail: suspected
+    never_fail:
+      enabled: true
+      max_wait: 60s
+      probe_interval: 30s
+      probe_cost: minimal
+      degraded_response: 429_retry_after
+  prober:
+    background_interval: 30s
+    on_state_change: confirmed
+  consistency:
+    require_same_plan_tier: true
+    require_same_models: true
+    full_history_replay_on_switch: true
+    disable_account_personalization: true
+  quota:
+    # Accounts below this remaining quota are "draining": existing sticky
+    # conversations may continue, but new conversations prefer fuller accounts.
+    drain_threshold: 0.10
+    # Higher values make low-remaining accounts less likely for new work.
+    cost_power: 2.0
+
+token_optimizer:
+  # off | safe | aggressive. Safe only compresses large tool/function outputs.
+  mode: safe
+  min_tool_output_bytes: 32768
+  max_optimized_tool_output_bytes: 65536
+  head_lines: 80
+  tail_lines: 80
+  error_context_lines: 6
+
+stealth:
+  default_tls_profile: "chrome_124_windows"
+  warmup_on_first_use: true
+  max_rps_per_persona: 0.5
+  jitter_percent: 20
+
+discovery:
+  default_interval: 5m
+  stable_interval: 15m
+  unstable_interval: 1m
+  on_first_seen: immediate
+
+cluster:
+  enabled: false
+  identity: "local-1"
+  region: "self"
+  peers: []
+  pull_interval: 15s
+  pull_timeout: 5s
+
+storage:
+  db_path: "data/pool.db"
+  passwd_path: "data/passwd.txt"
+
+logging:
+  level: info
+  format: json

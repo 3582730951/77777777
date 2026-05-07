@@ -1,0 +1,26 @@
+# Slim variant: no Chromium → image ~80MB. Use this when CF auto-recovery is
+# delegated to an external headless service or when you don't yet need it.
+FROM node:22-bookworm-slim AS autoreg-spa
+WORKDIR /src/services/autoreg/frontend
+COPY services/autoreg/frontend/package*.json ./
+RUN npm ci
+COPY services/autoreg/frontend/ ./
+RUN VITE_API_BASE=/api/autoreg npx vite build --base=/autoreg/ --outDir /out/autoreg_spa
+
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=autoreg-spa /out/autoreg_spa ./internal/admin/autoreg_spa
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
+
+FROM alpine:3.20
+RUN apk add --no-cache bash ca-certificates curl git jq nodejs npm python3 py3-pip rsync tar tzdata unzip wget
+COPY --from=build /out/gateway /usr/local/bin/gateway
+COPY --from=build /src /workspace
+COPY config/config.example.yaml /etc/llm-pool/config.example.yaml
+WORKDIR /workspace
+VOLUME ["/data", "/config"]
+EXPOSE 8787 8788
+ENTRYPOINT ["/usr/local/bin/gateway", "-config", "/config/config.yaml"]

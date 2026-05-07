@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OAuth 登录 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        {{if .Cfg}}用 {{.Cfg.DisplayName}} 登录{{else}}OAuth 登录{{end}}
+      </div>
+      <div class="topbar-actions">
+        <a href="/accounts" class="btn ghost">← 账号池</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+      <!-- 状态横幅 -->
+      <div id="status-bar" class="status-bar status-pending">
+        <span class="spin"></span>
+        <span id="status-txt">等待登录回调…</span>
+      </div>
+
+      <div class="grid g2">
+        <!-- 步骤 1 -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">第一步：在浏览器中登录</div>
+          </div>
+          <div class="card-body flex-col items-center gap-16" style="padding-top:24px">
+            <a href="{{.AuthURL}}" target="_blank" class="big-btn">
+              {{if .Cfg}}{{if eq .Cfg.ID "codex"}}🤖{{else if eq .Cfg.ID "claude"}}🧠{{else}}✨{{end}}
+              Login with {{.Cfg.DisplayName}}{{else}}⚡ 开始登录{{end}}
+            </a>
+            <div class="url-box w-full">{{.AuthURL}}</div>
+            <p class="tiny muted center">
+              登录后浏览器会跳转到
+              {{if .Cfg}}
+                {{if eq .Cfg.ID "claude"}}
+                  <code>platform.claude.com/oauth/code/callback</code>
+                  — 平台服务器处理后自动回调，页面会自动变绿
+                {{else}}
+                  <code>localhost:{{.Cfg.CallbackPort}}{{.Cfg.CallbackPath}}</code>
+                  — 本机直连时本页自动变绿
+                {{end}}
+              {{else}}
+                <code>/callback</code>
+              {{end}}
+            </p>
+          </div>
+        </div>
+
+        <!-- 步骤 2（跨机粘贴）-->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">第二步（跨机部署）：粘贴回调 URL</div>
+          </div>
+          <div class="card-body">
+            <p class="small muted mb-12">
+              {{if and .Cfg (eq .Cfg.ID "claude")}}
+                浏览器登录并授权后，<b>platform.claude.com</b> 会把含 <code>?code=...&state=...</code> 的完整 URL 重定向到你的浏览器地址栏。复制该完整 URL 粘贴到这里：
+              {{else}}
+                若浏览器跳到
+                <code>localhost:{{if .Cfg}}{{.Cfg.CallbackPort}}{{else}}NNNN{{end}}</code>
+                报错，从地址栏复制完整 URL（含 <code>?code=...&state=...</code>）粘贴到这里：
+              {{end}}
+            </p>
+            <form method="post" action="/accounts/oauth/{{.Pending.ID}}/paste" class="form">
+              <div class="field">
+                <label>回调 URL</label>
+                <textarea name="callback_url" rows="3"
+                  placeholder="http://localhost:{{if .Cfg}}{{.Cfg.CallbackPort}}{{.Cfg.CallbackPath}}{{else}}/callback{{end}}?code=XXX&state=YYY"></textarea>
+              </div>
+              <div class="form-actions">
+                <button class="btn primary w-full" type="submit">用粘贴的 URL 完成登录</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- 技术信息 -->
+      <div class="card flat">
+        <div class="card-body">
+          <div class="kv">
+            <div class="kv-row"><span class="kv-key tiny">Enrollment ID</span><code class="kv-val tiny">{{.Pending.ID}}</code></div>
+            <div class="kv-row"><span class="kv-key tiny">State</span><code class="kv-val tiny">{{.Pending.State}}</code></div>
+            <div class="kv-row"><span class="kv-key tiny">租户</span><span class="kv-val tiny">{{.Pending.TenantID}}</span></div>
+            <div class="kv-row"><span class="kv-key tiny">过期</span>
+              <span class="kv-val tiny" id="exp-txt">{{.Pending.ExpiresAt.Format "15:04:05"}}</span></div>
+            <div class="kv-row"><span class="kv-key tiny">状态</span>
+              <span class="kv-val tiny" id="state-txt">{{.Pending.Status}}</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+const id="{{.Pending.ID}}";
+const bar=document.getElementById('status-bar');
+const txt=document.getElementById('status-txt');
+const stxt=document.getElementById('state-txt');
+async function poll(){
+  try{
+    const j=await fetch('/accounts/oauth/'+id+'/status').then(r=>r.json());
+    stxt.textContent=j.status;
+    if(j.status==='success'){
+      bar.className='status-bar status-success';
+      txt.textContent='✓ 登录成功 (账号 '+(j.account_id||'')+')，跳转中…';
+      setTimeout(()=>location.href='/accounts/'+(j.account_id||''),1500);
+      return false;
+    }
+    if(j.status==='failed'){
+      bar.className='status-bar status-failed';
+      txt.textContent='✗ 失败：'+(j.error||'未知错误');
+      return false;
+    }
+  }catch{}
+  return true;
+}
+(async()=>{while(await poll())await new Promise(r=>setTimeout(r,2000))})();
+</script>
+</body></html>

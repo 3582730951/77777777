@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用户注册 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto mesh-bg">
+<div class="login-wrap">
+  <div class="login-card" style="backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);background:var(--bg-glass)">
+    <div class="logo-lg"></div>
+    <div>
+      <div class="login-title">创建账号</div>
+      <div class="login-sub mt-4">注册后即可申请 API Key，接入多模型网关</div>
+    </div>
+    {{if .Error}}<div class="alert alert-err w-full small">{{.Error}}</div>{{end}}
+    <form method="post" action="/portal/register" class="login-form">
+      <div class="field">
+        <label>用户名</label>
+        <input type="text" name="username" value="{{.Username}}"
+          placeholder="3-32 个字符" autocomplete="username" autofocus required minlength="3"/>
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" name="password"
+          placeholder="至少 6 个字符" autocomplete="new-password" required minlength="6"/>
+      </div>
+      <div class="field">
+        <label>确认密码</label>
+        <input type="password" name="confirm"
+          placeholder="再次输入密码" autocomplete="new-password" required/>
+      </div>
+      <div class="field" id="invite-field" style="display:none">
+        <label>邀请码</label>
+        <input type="text" name="invite_code" placeholder="管理员提供的邀请码"/>
+      </div>
+      <button class="btn primary lg w-full" style="margin-top:4px">注册</button>
+    </form>
+    <div class="divider" style="margin:8px 0"></div>
+    <div class="tiny muted" style="text-align:center">
+      已有账号？<a href="/portal/login">登录 →</a>
+    </div>
+  </div>
+</div>
+<script>
+if(new URLSearchParams(location.search).get('hint')==='invite'){
+  document.getElementById('invite-field').style.display='';
+}
+</script>
+</body></html>

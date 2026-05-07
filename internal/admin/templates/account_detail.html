@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">{{.Title}}</div>
+      <div class="topbar-actions">
+        <form method="post" action="/accounts/{{.Account.ID}}/probe" class="form-inline">
+          <button class="btn primary" type="submit">立即探测</button>
+        </form>
+        <a href="/accounts/{{.Account.ID}}/edit" class="btn ghost">编辑</a>
+        <form method="post" action="/accounts/{{.Account.ID}}/delete" class="form-inline"
+              onsubmit="return confirm('删除账号 {{.Account.ID}}?')">
+          <button class="btn ghost danger" type="submit">删除</button>
+        </form>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- 基本信息 + 健康度 -->
+      <div class="grid g3">
+        <div class="card glass">
+          <div class="card-header"><div class="card-title">账号信息</div></div>
+          <div class="card-body">
+            <div class="kv">
+              <div class="kv-row"><span class="kv-key">ID</span><code class="kv-val">{{.Account.ID}}</code></div>
+              <div class="kv-row"><span class="kv-key">Provider</span>
+                <span class="provider-tag provider-{{.Account.Provider}}">{{.Account.Provider}}</span></div>
+              <div class="kv-row"><span class="kv-key">租户</span><span class="kv-val">{{.Account.TenantID}}</span></div>
+              <div class="kv-row"><span class="kv-key">Plan</span><span class="kv-val">{{or .Account.PlanTier "—"}}</span></div>
+              <div class="kv-row"><span class="kv-key">状态</span>
+                <span class="badge state-{{.Account.State}}">{{.Account.State}}</span></div>
+              <div class="kv-row"><span class="kv-key">TLS Profile</span><code class="kv-val">{{or .Account.StealthProfile "default"}}</code></div>
+              <div class="kv-row"><span class="kv-key">代理</span><span class="kv-val muted">{{or .Account.Proxy "无"}}</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card glass">
+          <div class="card-header"><div class="card-title">健康度</div></div>
+          <div class="card-body flex-col items-center gap-16" style="padding-top:20px">
+            <div id="gauge-ewma" class="gauge-host" style="height:100px;width:100px"></div>
+            <div class="kv w-full">
+              <div class="kv-row"><span class="kv-key">EWMA 延迟</span><span class="kv-val" id="val-ewma">—</span></div>
+              <div class="kv-row"><span class="kv-key">成功率</span><span class="kv-val" id="val-sr">—</span></div>
+              <div class="kv-row"><span class="kv-key">Inflight</span><span class="kv-val" id="val-inf">—</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card glass">
+          <div class="card-header"><div class="card-title">EWMA 延迟趋势（6h）</div></div>
+          <div class="card-body" style="padding-top:8px">
+            <div id="spark-ewma" class="spark-host" style="height:120px"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 配额 -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">配额状态</div></div>
+        <div class="card-body grid g2">
+          <div class="quota-block">
+            <div class="quota-head"><span>5h 剩余</span>
+              {{if .Account.Quota.ShortWindow.Limit}}
+              <b style="color:{{remainColor .Account.Quota.ShortWindow.Used .Account.Quota.ShortWindow.Limit}}">{{fmtf (subf .Account.Quota.ShortWindow.Limit .Account.Quota.ShortWindow.Used)}}%</b>
+              {{else}}<b>未知</b>{{end}}
+            </div>
+            {{if .Account.Quota.ShortWindow.Limit}}
+            <div class="progress-track">
+              <div class="progress-fill" style="width:{{remainPct .Account.Quota.ShortWindow.Used .Account.Quota.ShortWindow.Limit}}%;background:{{remainColor .Account.Quota.ShortWindow.Used .Account.Quota.ShortWindow.Limit}}"></div>
+            </div>
+            {{end}}
+            <div class="tiny muted">重置：{{if .Account.Quota.ShortWindow.ResetAt.IsZero}}—{{else}}{{.Account.Quota.ShortWindow.ResetAt.Format "01-02 15:04"}}{{end}}</div>
+          </div>
+          <div class="quota-block">
+            <div class="quota-head"><span>7d 剩余</span>
+              {{if .Account.Quota.LongWindow.Limit}}
+              <b style="color:{{remainColor .Account.Quota.LongWindow.Used .Account.Quota.LongWindow.Limit}}">{{fmtf (subf .Account.Quota.LongWindow.Limit .Account.Quota.LongWindow.Used)}}%</b>
+              {{else}}<b>未知</b>{{end}}
+            </div>
+            {{if .Account.Quota.LongWindow.Limit}}
+            <div class="progress-track">
+              <div class="progress-fill" style="width:{{remainPct .Account.Quota.LongWindow.Used .Account.Quota.LongWindow.Limit}}%;background:{{remainColor .Account.Quota.LongWindow.Used .Account.Quota.LongWindow.Limit}}"></div>
+            </div>
+            {{end}}
+            <div class="tiny muted">重置：{{if .Account.Quota.LongWindow.ResetAt.IsZero}}—{{else}}{{.Account.Quota.LongWindow.ResetAt.Format "01-02 15:04"}}{{end}}</div>
+          </div>
+        </div>
+        {{if .Account.Quota.TierWindows}}
+        <div class="card-body" style="border-top:1px solid var(--border)">
+          <div class="card-title" style="font-size:13px;margin-bottom:8px">模型级别窗口</div>
+          <div class="grid g2">
+          {{range $name, $w := .Account.Quota.TierWindows}}
+            <div class="quota-block">
+              <div class="quota-head"><span>{{$name}}</span>
+                {{if $w.Limit}}<b style="color:{{remainColor $w.Used $w.Limit}}">剩余 {{fmtf (subf $w.Limit $w.Used)}}%</b>{{else}}<b>—</b>{{end}}
+              </div>
+              {{if $w.Limit}}
+              <div class="progress-track">
+                <div class="progress-fill" style="width:{{remainPct $w.Used $w.Limit}}%;background:{{remainColor $w.Used $w.Limit}}"></div>
+              </div>
+              {{end}}
+              <div class="tiny muted">{{if $w.ResetAt.IsZero}}—{{else}}重置 {{$w.ResetAt.Format "01-02 15:04"}}{{end}}</div>
+            </div>
+          {{end}}
+          </div>
+        </div>
+        {{end}}
+        {{if .Account.Quota.ExtraUsage}}
+        <div class="card-body" style="border-top:1px solid var(--border)">
+          <div class="card-title" style="font-size:13px;margin-bottom:4px">超额使用</div>
+          <span class="tag {{if .Account.Quota.ExtraUsage.IsEnabled}}ok{{else}}muted{{end}}">
+            {{if .Account.Quota.ExtraUsage.IsEnabled}}已启用{{else}}未启用{{end}}
+          </span>
+          {{if .Account.Quota.ExtraUsage.IsEnabled}}
+          <span class="tiny muted" style="margin-left:8px">
+            已用 {{fmtf .Account.Quota.ExtraUsage.UsedCredits}} {{.Account.Quota.ExtraUsage.Currency}}
+            {{if .Account.Quota.ExtraUsage.MonthlyLimit}} / 月限 {{fmtf .Account.Quota.ExtraUsage.MonthlyLimit}}{{end}}
+          </span>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+
+      <!-- 模型列表 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">已发现模型</div>
+          <span class="tiny muted">{{if .Account.Quota.LastDiscoveryAt.IsZero}}未探测{{else}}{{.Account.Quota.LastDiscoveryAt.Format "01-02 15:04"}} 更新{{end}}</span>
+        </div>
+        <div class="card-body">
+          {{if .Account.Quota.DiscoveredModels}}
+          <div class="chip-row">
+            {{range .Account.Quota.DiscoveredModels}}
+            <span class="chip">
+              {{.ID}}
+              {{if .ContextWindow}}<small class="muted">· {{.ContextWindow}}ctx</small>{{end}}
+              {{if .SupportsTools}}<small class="muted">· tools</small>{{end}}
+              {{if .SupportsVision}}<small class="muted">· vision</small>{{end}}
+            </span>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty" style="padding:24px">
+            <div class="empty-icon">○</div>
+            <div class="empty-sub">暂未探测到模型列表，点击「立即探测」</div>
+          </div>
+          {{end}}
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script src="/static/charts.js?v=2"></script>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+fetch('/api/admin/accounts/{{.Account.ID}}/series?window=6h')
+  .then(r=>r.json())
+  .then(data=>{
+    const sp=document.getElementById('spark-ewma');
+    if(sp)window.renderSparkline&&renderSparkline(sp,data,{h:120,key:'EWMAMs'});
+    const last=data[data.length-1]||{};
+    const lat=last.EWMAMs||0;
+    const g=document.getElementById('gauge-ewma');
+    if(g){
+      const color=lat>1500?'var(--err)':lat>800?'var(--warn)':'var(--ok)';
+      window.renderGauge&&renderGauge(g,lat,2000,{color,label:Math.round(lat)+' ms'});
+    }
+    document.getElementById('val-ewma').textContent=Math.round(lat)+' ms';
+    if(last.SuccessRate!=null)document.getElementById('val-sr').textContent=(last.SuccessRate*100).toFixed(1)+'%';
+    if(last.Inflight!=null)document.getElementById('val-inf').textContent=last.Inflight;
+  }).catch(()=>{});
+</script>
+</body></html>

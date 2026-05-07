@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>仪表盘 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=3">
+<style>
+.pool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.chart-caption{font-size:11px;color:var(--fg-muted);margin-top:6px;text-align:center}
+.donut-legend{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.legend-row{display:flex;align-items:center;gap:6px;font-size:12px}
+.legend-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.legend-row b{margin-left:auto;font-weight:600}
+.ratio-bar{position:relative;height:14px;background:var(--sep);border-radius:3px;overflow:hidden;min-width:80px}
+.ratio-fill{height:100%;border-radius:3px}
+.ratio-label{position:absolute;right:4px;top:0;bottom:0;display:flex;align-items:center;font-size:10px;font-weight:600;color:#fff}
+.kpi-spark{height:32px;width:100%;margin-top:6px}
+.log-filters{display:flex;gap:4px;flex-wrap:wrap}
+.log-filters .filter-chip{font-size:10px;padding:2px 8px}
+.provider-bar{display:flex;flex-direction:column;gap:8px}
+.provider-bar-row{display:flex;align-items:center;gap:8px}
+.provider-bar-label{width:70px;font-size:11px;font-weight:600;text-transform:uppercase}
+.provider-bar-track{flex:1;height:8px;background:var(--sep);border-radius:4px;overflow:hidden}
+.provider-bar-fill{height:100%;border-radius:4px;transition:width 0.5s var(--ease)}
+.provider-bar-val{width:40px;font-size:11px;font-weight:600;text-align:right}
+</style>
+<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">仪表盘</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- KPI Row: 5 cards -->
+      <div class="grid g5">
+        <div class="card stat-card">
+          <div class="stat-icon">◯</div>
+          <div class="stat-val">{{.Total}}</div>
+          <div class="stat-label">账号总数</div>
+          <div class="kpi-spark" id="spark-total"></div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">✓</div>
+          <div class="stat-val" style="color:var(--ok)">{{.Healthy}}</div>
+          <div class="stat-label">健康账号</div>
+          <div class="stat-delta up" id="health-ratio">{{.Healthy}}/{{.Total}}</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(0,122,255,0.10);color:var(--accent)">⚡</div>
+          <div class="stat-val" id="kpi-rps">—</div>
+          <div class="stat-label">请求/小时</div>
+          <div class="kpi-spark" id="spark-rps"></div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">⊕</div>
+          <div class="stat-val" id="kpi-cache">—</div>
+          <div class="stat-label">缓存命中率</div>
+          <div class="kpi-spark" id="spark-cache"></div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-icon" style="background:rgba(191,90,242,0.10);color:var(--purple)">⏱</div>
+          <div class="stat-val" id="kpi-latency">—</div>
+          <div class="stat-label">平均延迟</div>
+          <div class="kpi-spark" id="spark-latency"></div>
+        </div>
+      </div>
+
+      <!-- Request trend chart -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">请求量趋势（近 1 小时）</div>
+          <span class="tiny muted">每 10s 刷新</span>
+        </div>
+        <div class="card-body" style="padding-bottom:4px">
+          <div id="chart-requests" class="chart-host" style="height:220px"
+               hx-get="/api/admin/charts/requests?window=1h&buckets=60"
+               hx-trigger="load, every 10s" hx-swap="none"></div>
+        </div>
+      </div>
+
+      <!-- 3-col: Health donut + Cache stats + Provider/Group -->
+      <div class="grid g3">
+        <!-- Account health donut -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">账号健康分布</div></div>
+          <div class="card-body flex-col items-center gap-8">
+            <div id="chart-confidence" class="chart-host" style="height:180px;width:100%"
+                 hx-get="/api/admin/charts/accounts"
+                 hx-trigger="load, every 10s" hx-swap="none"></div>
+          </div>
+        </div>
+
+        <!-- Cache statistics -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">缓存统计（24h）</div></div>
+          <div class="card-body flex-col items-center gap-12">
+            <div id="cache-ring" style="width:120px;height:120px"></div>
+            <div id="cache-stats" class="kv w-full"></div>
+            <div id="cache-series" style="height:50px;width:100%"></div>
+          </div>
+        </div>
+
+        <!-- Provider breakdown / Group pressure -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">分组负载</div>
+            <span class="tiny muted">实时</span>
+          </div>
+          <div class="card-body">
+            <div id="provider-summary" class="provider-bar" style="margin-bottom:16px"></div>
+            <div class="divider" style="margin:8px 0"></div>
+            <div class="section-hd" style="margin-top:12px">
+              <span class="section-title tiny muted">分组压力</span>
+            </div>
+            <div id="group-pressure"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Provider breakdown + Token trend -->
+      <div class="grid g2">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Provider 分布（24h）</div></div>
+          <div class="card-body flex-col items-center">
+            <div id="chart-provider-pie" style="min-height:200px;width:100%"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Token 消耗趋势（24h）</div></div>
+          <div class="card-body">
+            <div id="chart-token-trend" style="min-height:200px;width:100%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Account pool grid -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">账号池详情（额度 · 负载 · 能力）</div>
+          <a href="/accounts" class="btn ghost sm">管理 →</a>
+        </div>
+        <div class="card-body" style="padding-top:12px">
+          <div id="pool-grid" class="pool-grid"></div>
+        </div>
+      </div>
+
+      <!-- Real-time audit log with filters -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title flex items-center gap-8">
+            实时日志流
+            <span class="flex items-center gap-4 tiny muted"><span class="spin"></span>SSE</span>
+          </div>
+          <div class="log-filters">
+            <span class="filter-chip active" data-level="all" onclick="setLogFilter('all',this)">全部</span>
+            <span class="filter-chip" data-level="info" onclick="setLogFilter('info',this)">Info</span>
+            <span class="filter-chip" data-level="warn" onclick="setLogFilter('warn',this)">Warn</span>
+            <span class="filter-chip" data-level="error" onclick="setLogFilter('error',this)">Error</span>
+          </div>
+        </div>
+        <div class="card-body" style="padding:0 20px 16px">
+          <div id="audit-log" class="audit-log"></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<div id="toast-ct"></div>
+<script src="/static/charts.js?v=3"></script>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+
+// ── HTMX chart callbacks ──
+document.body.addEventListener('htmx:afterRequest',(e)=>{
+  const t=e.detail.requestConfig.elt;
+  if(!t||!t.id||e.detail.failed)return;
+  let p;try{p=JSON.parse(e.detail.xhr.responseText)}catch{return}
+  if(t.id==='chart-requests'){
+    renderRequestSeries(t,p);
+    // Update KPI: requests/hour & avg latency
+    if(Array.isArray(p)&&p.length){
+      const total=p.reduce((a,b)=>a+(b.Count||0),0);
+      const lats=p.filter(r=>r.AvgLatencyMs>0).map(r=>r.AvgLatencyMs);
+      const avgLat=lats.length?Math.round(lats.reduce((a,b)=>a+b,0)/lats.length):0;
+      document.getElementById('kpi-rps').textContent=total;
+      document.getElementById('kpi-latency').textContent=avgLat+'ms';
+      // mini sparklines
+      if(typeof renderSparkline==='function'){
+        renderSparkline(document.getElementById('spark-rps'),p,{key:'Count',h:32,color:'var(--accent)'});
+        renderSparkline(document.getElementById('spark-latency'),p,{key:'AvgLatencyMs',h:32,color:'var(--purple)'});
+      }
+    }
+  }
+  else if(t.id==='chart-confidence')renderConfidenceDonut(t,p);
+});
+
+// ── SSE audit with level filtering ──
+let _logFilter='all';
+const sse=new EventSource('/api/admin/audit/stream');
+sse.onmessage=(e)=>{try{appendAudit(JSON.parse(e.data))}catch{}};
+
+function setLogFilter(level,el){
+  _logFilter=level;
+  document.querySelectorAll('.log-filters .filter-chip').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  const rows=document.querySelectorAll('#audit-log .audit-row');
+  rows.forEach(r=>{
+    if(level==='all')r.style.display='';
+    else r.style.display=r.dataset.level===level?'':'none';
+  });
+}
+
+const _origAppend=window.appendAudit;
+window.appendAudit=function(ev,target){
+  const host=target||document.getElementById('audit-log');
+  if(!host)return;
+  const row=document.createElement('div');
+  const lvl=ev.level||'info';
+  row.className='audit-row';
+  row.dataset.level=lvl;
+  if(_logFilter!=='all'&&lvl!==_logFilter)row.style.display='none';
+  const ts=new Date(ev.at||Date.now()).toLocaleTimeString('zh-CN');
+  row.innerHTML=`<span class="a-ts">${ts}</span><span class="a-lvl ${lvl}">${lvl}</span><span class="a-msg">${escapeHtml(ev.message||'')}</span>`;
+  host.prepend(row);
+  while(host.children.length>200)host.lastChild.remove();
+};
+function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]))}
+
+// ── Cache stats + ring ──
+async function refreshCache(){
+  try{
+    const [overall,series]=await Promise.all([
+      fetch('/api/admin/charts/cache-hit?window=24h').then(r=>r.json()),
+      fetch('/api/admin/charts/cache-hit-series?window=24h&buckets=48').then(r=>r.json()),
+    ]);
+    const total=overall.Total||0,hits=overall.Hits||0;
+    const ratio=total>0?hits/total:0;
+    renderCacheRing(document.getElementById('cache-ring'),ratio,'命中率');
+    document.getElementById('kpi-cache').textContent=Math.round(ratio*100)+'%';
+    // sparkline for cache
+    if(series&&series.length&&typeof renderSparkline==='function'){
+      renderSparkline(document.getElementById('spark-cache'),
+        series.map(s=>({EWMAMs:s.total>0?s.hits/s.total*100:0})),
+        {h:32,color:'var(--ok)'});
+    }
+    const stats=document.getElementById('cache-stats');
+    if(stats)stats.innerHTML=`
+      <div class="kv-row"><span class="kv-key tiny">总请求</span><span class="kv-val tiny">${total}</span></div>
+      <div class="kv-row"><span class="kv-key tiny">缓存命中</span><span class="kv-val tiny ok">${hits}</span></div>
+      <div class="kv-row"><span class="kv-key tiny">节省 Token</span><span class="kv-val tiny">${fmtTokens(overall.TokensSaved||0)}</span></div>`;
+    renderCacheSeries(document.getElementById('cache-series'),series);
+  }catch{}
+}
+refreshCache();setInterval(refreshCache,15000);
+
+// ── Provider breakdown + Token trend ──
+async function refreshProviderAndTokens(){
+  try{
+    const [providers,tokens]=await Promise.all([
+      fetch('/api/admin/charts/provider-breakdown?window=24h').then(r=>r.json()),
+      fetch('/api/admin/charts/token-trend?window=24h').then(r=>r.json()),
+    ]);
+    const pieHost=document.getElementById('chart-provider-pie');
+    if(pieHost&&providers&&providers.length&&typeof renderProviderPie==='function'){
+      renderProviderPie(pieHost,providers.map(p=>({name:p.provider,value:p.count})));
+    }
+    const trendHost=document.getElementById('chart-token-trend');
+    if(trendHost&&tokens&&tokens.length&&typeof renderTokenTrend==='function'){
+      renderTokenTrend(trendHost,tokens.map(t=>({
+        label:new Date(t.bucket).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}),
+        input:t.input_tokens,output:t.output_tokens
+      })));
+    }
+  }catch{}
+}
+refreshProviderAndTokens();setInterval(refreshProviderAndTokens,30000);
+
+// ── Account pool grid + provider summary + group pressure ──
+async function refreshPool(){
+  try{
+    const slots=await fetch('/api/admin/accounts').then(r=>r.json());
+    const grid=document.getElementById('pool-grid');
+    if(grid&&slots&&slots.length){
+      renderPoolGrid(grid, slots.map(s=>({
+        accountID:s.id, provider:s.provider, state:s.state,
+        confidence:s.confidence, ewmaLatency:s.ewma_latency,
+        healthy:s.healthy===true,
+        inflight:s.inflight,
+        quotaShortUsed:s.quota_short_used||0, quotaShortLimit:s.quota_short_limit||0,
+        quotaShortReset:s.quota_short_reset,
+        quotaLongUsed:s.quota_long_used||0, quotaLongLimit:s.quota_long_limit||0,
+        quotaLongReset:s.quota_long_reset,
+        discoveredModels:s.discovered_models||[],
+      })));
+    }
+
+    // Provider summary
+    const byProv={};
+    for(const s of (slots||[])){
+      const p=s.provider||'unknown';
+      if(!byProv[p])byProv[p]={count:0,healthy:0};
+      byProv[p].count++;
+      if(s.healthy===true)byProv[p].healthy++;
+    }
+    const provHost=document.getElementById('provider-summary');
+    if(provHost){
+      provHost.innerHTML='';
+      const total=slots?slots.length:1;
+      for(const [prov,d] of Object.entries(byProv)){
+        const pct=Math.round(d.count/total*100);
+        const row=document.createElement('div');
+        row.className='provider-bar-row';
+        const colors={chatgpt:'var(--provider-chatgpt)',claude:'var(--provider-claude)',
+          gemini:'var(--provider-gemini)',deepseek:'var(--provider-deepseek)',openai:'var(--provider-openai)'};
+        const c=colors[prov]||'var(--fg-muted)';
+        row.innerHTML=`<span class="provider-bar-label" style="color:${c}">${prov}</span>
+          <div class="provider-bar-track"><div class="provider-bar-fill" style="width:${pct}%;background:${c}"></div></div>
+          <span class="provider-bar-val">${d.count}</span>
+          <span class="tiny muted">(${d.healthy} 健康)</span>`;
+        provHost.appendChild(row);
+      }
+    }
+
+    // Group pressure
+    const byGroup={};
+    for(const s of (slots||[])){
+      const g=s.group_id||s.provider||'default';
+      if(!byGroup[g])byGroup[g]={groupID:g,provider:s.provider,accountCount:0,totalPressure:0,totalInflight:0};
+      byGroup[g].accountCount++;
+      byGroup[g].totalPressure+=Math.min(1,(s.inflight||0)/10*0.5+((s.ewma_latency||0)/3000)*0.3+((s.inflight||0)>0?0.1:0));
+      byGroup[g].totalInflight+=(s.inflight||0);
+    }
+    const groups=Object.values(byGroup).map(g=>({...g,avgPressure:g.accountCount?g.totalPressure/g.accountCount:0}));
+    renderGroupPressure(document.getElementById('group-pressure'),groups);
+  }catch(e){console.warn('pool refresh',e)}
+}
+refreshPool();setInterval(refreshPool,8000);
+</script>
+</body></html>

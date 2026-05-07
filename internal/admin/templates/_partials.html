@@ -1,0 +1,136 @@
+{{define "_sidebar"}}
+<aside class="side">
+  <div class="side-header">
+    <div class="brand">
+      <div class="logo"></div>
+      <div>
+        <div class="brand-name">LLM Pool</div>
+        <div class="brand-ver">Admin Console</div>
+      </div>
+    </div>
+  </div>
+  <nav class="side-nav">
+    <div class="nav-section">概览</div>
+    <a href="/" class="nav-item {{if eq .Active "dashboard"}}active{{end}}">
+      <span class="nav-ico">◈</span>仪表盘
+    </a>
+    <div class="nav-section">资源</div>
+    <a href="/accounts" class="nav-item {{if eq .Active "accounts"}}active{{end}}">
+      <span class="nav-ico">⊙</span>账号池
+    </a>
+    <a href="/groups" class="nav-item {{if eq .Active "groups"}}active{{end}}">
+      <span class="nav-ico">⊞</span>分组路由
+    </a>
+    <a href="/keys" class="nav-item {{if eq .Active "keys"}}active{{end}}">
+      <span class="nav-ico">⚿</span>API Keys
+    </a>
+    <div class="nav-section">管理</div>
+    <a href="/tenants" class="nav-item {{if eq .Active "tenants"}}active{{end}}">
+      <span class="nav-ico">⊡</span>租户
+    </a>
+    <a href="/audit" class="nav-item {{if eq .Active "audit"}}active{{end}}">
+      <span class="nav-ico">☰</span>审计日志
+    </a>
+    <a href="/cluster" class="nav-item {{if eq .Active "cluster"}}active{{end}}">
+      <span class="nav-ico">⎈</span>集群
+    </a>
+    <a href="/guide" class="nav-item {{if eq .Active "guide"}}active{{end}}">
+      <span class="nav-ico">◉</span>接入指南
+    </a>
+    <div class="nav-section">自动注册</div>
+    <a href="/autoreg" class="nav-item {{if eq .Active "autoreg"}}active{{end}}">
+      <span class="nav-ico">⚙</span>AutoReg
+    </a>
+    <a href="/kiro-gateway" class="nav-item {{if eq .Active "kiro-gateway"}}active{{end}}">
+      <span class="nav-ico">🔑</span>Kiro Gateway
+    </a>
+  </nav>
+  <div class="side-footer">
+    <div class="tiny muted">租户门户</div>
+    <div class="side-footer-links">
+      <a href="/portal/login" target="_blank" class="side-link">↗ 用户门户</a>
+      <a href="/logout" class="side-link" style="color:var(--err)">退出</a>
+    </div>
+  </div>
+</aside>
+{{end}}
+
+{{define "_portal_sidebar"}}
+<aside class="side">
+  <div class="side-header">
+    <div class="brand">
+      <div class="logo"></div>
+      <div>
+        <div class="brand-name">LLM Pool</div>
+        <div class="brand-ver">用户门户</div>
+      </div>
+    </div>
+  </div>
+  <nav class="side-nav">
+    <a href="/portal" class="nav-item {{if eq .PActive "dashboard"}}active{{end}}">
+      <span class="nav-ico">◈</span>我的概览
+    </a>
+    <a href="/portal/keys" class="nav-item {{if eq .PActive "keys"}}active{{end}}">
+      <span class="nav-ico">⚿</span>我的 Key
+    </a>
+    <a href="/portal/usage" class="nav-item {{if eq .PActive "usage"}}active{{end}}">
+      <span class="nav-ico">◔</span>用量统计
+    </a>
+  </nav>
+  <div class="side-footer">
+    <div class="tiny muted">用户: {{.TenantID}}</div>
+    <div class="side-footer-links">
+      <a href="/portal/logout" class="side-link" style="color:var(--err)">退出</a>
+    </div>
+  </div>
+</aside>
+{{end}}
+
+{{define "_topbar_ctrl"}}
+<a href="/set-lang?l=cn&back={{.BackURL}}" class="btn ghost sm {{if eq .Lang langCN}}primary{{end}}">中</a>
+<a href="/set-lang?l=en&back={{.BackURL}}" class="btn ghost sm {{if eq .Lang langEN}}primary{{end}}">EN</a>
+<button class="btn-icon" onclick="toggleTheme()" title="切换主题">◐</button>
+{{end}}
+
+{{define "_copy_script"}}
+<script>
+function copyTextRaw(text){
+  text = String(text || '');
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand('copy') ? resolve() : reject(new Error('copy rejected'));
+    } catch (err) {
+      reject(err);
+    } finally {
+      document.body.removeChild(ta);
+    }
+  });
+}
+function copyText(text,label){
+  return copyTextRaw(text).then(() => {
+    if (typeof showToast === 'function') showToast((label || '内容') + '已复制');
+  }).catch(() => {
+    if (typeof showToast === 'function') showToast('复制失败，请手动选择复制');
+  });
+}
+function copyBlock(id){
+  const el = document.getElementById(id);
+  if (!el) return;
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('button').forEach(btn => btn.remove());
+  copyText(clone.innerText.trim(), '');
+}
+</script>
+{{end}}

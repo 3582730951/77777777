@@ -1,0 +1,176 @@
+# LLM Pool 生产级打磨计划
+
+## Context
+
+llm-pool 是一个 Go 编写的 LLM 订阅池网关（~4800 LOC），对标两个成熟项目：
+- **cliproxyapi** (478 Go files, 134 test files) — CLI 代理，TUI + Web 面板，60+ 管理 API，多存储后端
+- **sub2api** (1351 Go files, 514 test files, Vue 3 前端) — 商业级平台，支付系统，14 个 Admin 视图，Redis + Ent ORM
+
+目标：识别关键差距，按优先级打磨成生产级成品。
+
+---
+
+## 一、差距分析
+
+### 🔴 严重差距（必须补）
+
+| 差距 | llm-pool | 竞品 | 影响 |
+|------|---------|------|------|
+| **测试覆盖** | 4 个测试包 | 134 / 514 测试文件 | 每次修改都有回归风险 |
+| **缓存命中率** | 已有 sticky routing + Anthropic breakpoints | 未利用 Gemini CachedContent API，无跨用户前缀共享 | 直接影响成本和速度 |
+| **配置热加载** | 改配置需重启 | cliproxyapi 有 fsnotify watcher | 运维体验差 |
+
+### 🟡 中等差距（应该补）
+
+| 差距 | 说明 |
+|------|------|
+| **前端深度** | Dashboard 缺 token 趋势、provider 分布、成本估算；Portal 缺引导流程 |
+| **备份恢复** | 无自动备份，1C1G VPS 数据丢失风险 |
+| **健康检查** | `/healthz` 只返回 OK，缺结构化状态 |
+| **审计日志** | 无日志轮转/大小限制，磁盘可能写满 |
+
+### 🟢 可跳过（低 ROI 或不适用）
+
+- TUI Dashboard → HTMX 已够用
+- Vue/React 前端 → 不引入 Node 构建链
+- 支付/订阅/2FA → 个人/小团队工具，非商业 SaaS
+- PostgreSQL/Redis → SQLite 适合 1C1G VPS
+- 多语言 README → 当前不需要
+
+---
+
+## 二、缓存命中率提升方案（不降低模型质量）
+
+### 当前已实现
+
+1. ✅ Tool schema 规范化（JSON key 排序 + minify）— `internal/cacheopt/cacheopt.go`
+2. ✅ System prompt 空白规范化 — `internal/normalize/normalize.go`
+3. ✅ Anthropic cache breakpoints（3 个：system、last tool、倒数第二 user message）
+4. ✅ Sticky routing（xxHash64 对话哈希 → 同账号路由）— `internal/router/router.go`
+5. ✅ 对话映射 LRU（10k entries, 30min TTL）— `internal/conversation/mapper.go`
+6. ✅ 图片去重缓存（SHA256 → upstream file_id）— `internal/dedup/dedup.go`
+
+### 新增优化（按 ROI 排序）
+
+#### 优化 1：跨用户前缀共享（所有 Provider，最高 ROI）
+
+**原理**：多数 Claude Code / Cursor / Aider 用户共享相同的 system prompt + tools（~4000 tokens）。如果把这些用户路由到同一个上游账号，前缀 KV 缓存可以跨用户复用。
+
+**实现**：
+- 在 `internal/scheduler/scheduler.go` 增加 `prefixMap map[string]string`（system_hash → accountID）
+- `Pick()` 流程：sticky lookup → prefixMap lookup → P2C fallback
+- 成功派发后记录 system_hash → accountID 映射
+- **预期收益**：Anthropic 缓存 token 价格降 90%，TTFT 降低 ~50%（命中时跳过 prefill）
+
+#### 优化 2：Gemini CachedContent API 集成
+
+**原理**：Gemini 提供显式缓存 API（`POST /v1beta/cachedContents`），缓存的 token 费用降 75%，TTL 可控。
+
+**实现**：
+- 新文件 `internal/provider/gemini/cache.go`
+- 请求前检查是否已有该前缀的 CachedContent 资源
+- 没有则创建（system + tools 作为内容，TTL=5min）
+- 后续请求引用 `cachedContent` name
+- 内存维护 `prefix_hash → cachedContentName` 映射 + TTL
+
+#### 优化 3：OpenAI 前缀稳定性强化
+
+**原理**：GPT 模型自动缓存 ≥1024 token 的匹配前缀，要求精确字节匹配。
+
+**实现**：
+- `internal/normalize/normalize.go` 扩展：对消息内容也做空白规范化
+- Tool call result 的 JSON 输出做 key 排序（这些会成为下一轮的缓存前缀）
+- 确保 message 序列化顺序一致（role, content, tool_calls）
+
+#### 优化 4：Anthropic 第 4 个 breakpoint
+
+**原理**：Anthropic 允许 4 个 cache breakpoint，当前只用 3 个。对于长 tool_result（如代码文件内容），加第 4 个 breakpoint 可以缓存。
+
+**实现**：
+- `internal/cacheopt/cacheopt.go` 的 `InjectCacheBreakpoints()` 增加逻辑：
+- 扫描 assistant message 中的 tool_use output，如果 > 2048 bytes 则标记 cache_control
+- 不超过 4 个 breakpoint 总限制
+
+### 缓存优化覆盖矩阵
+
+| 技术 | Claude | GPT | Gemini |
+|------|--------|-----|--------|
+| Tool 规范化 | ✅ | ✅ | ✅ |
+| System prompt 规范化 | ✅ | ✅ | ✅ |
+| Anthropic breakpoints (3→4) | ✅→**增强** | N/A | N/A |
+| Sticky routing | ✅ | ✅ | ✅ |
+| 跨用户前缀共享 | **新增** | **新增** | **新增** |
+| Gemini CachedContent API | N/A | N/A | **新增** |
+| 消息内容规范化 | **新增** | **新增** | **新增** |
+
+---
+
+## 三、实施计划（4 周）
+
+### Phase 1：测试覆盖（Week 1-2）
+
+每次修改的安全网。目标 60%+ 覆盖率。
+
+| 测试文件 | 覆盖范围 |
+|----------|---------|
+| `internal/cacheopt/cacheopt_test.go` | breakpoint 注入边界（0/1/多消息，短 system，已标记 tool） |
+| `internal/normalize/normalize_test.go` | 空白规范化幂等性，JSON key 排序嵌套对象，Hash 确定性 |
+| `internal/conversation/mapper_test.go` | LRU 驱逐，TTL 过期，并发安全，hit/miss 计数 |
+| `internal/scheduler/scheduler_test.go`（扩展） | P2C 分布，breaker 状态机，never-fail probe，quota cost |
+| `internal/auth/auth_test.go` | API key 解析，tenant/group 绑定 |
+| `internal/store/store_test.go` | CRUD 操作（内存 SQLite） |
+| `internal/protocol/anthropic/anthropic_test.go` | cache_control 块的 encode/decode round-trip |
+
+### Phase 2：缓存优化（Week 2-3）
+
+按上述 4 个优化点实施。关键文件：
+- `internal/scheduler/scheduler.go` — 增加 prefixMap
+- `internal/provider/gemini/cache.go` — 新文件，CachedContent API
+- `internal/normalize/normalize.go` — 消息内容规范化
+- `internal/cacheopt/cacheopt.go` — 第 4 breakpoint
+
+### Phase 3：配置热加载（Week 3）
+
+- 新文件 `internal/config/watcher.go` — fsnotify + 500ms debounce + 校验后原子替换
+- `Gateway` 改为接受 `*atomic.Value` 而非 `*config.Root`
+- `scheduler.Scheduler` 和 `auth.Resolver` 增加 `Reload()` 方法
+
+### Phase 4：运维加固（Week 4）
+
+- `internal/store/backup.go` — `VACUUM INTO` 定时备份，保留最近 3 份
+- `/healthz` 增强 → JSON（账号数、breaker 状态、缓存命中率、SQLite 大小、内存）
+- 审计日志轮转/大小限制
+
+### Phase 5：前端打磨（按 plan/1.txt 执行）
+
+已有详细 7 阶段计划在 `/home/12/llm-pool/plan/1.txt`，包括：
+- Dashboard KPI 增强（token 趋势、provider 分布、缓存 token 统计）
+- Accounts 页面卡片视觉升级
+- Portal 用户引导优化
+- charts.js 新增 6 个渲染器
+
+---
+
+## 四、验证策略
+
+| 验证项 | 方法 | 目标 |
+|--------|------|------|
+| 测试覆盖 | `go test ./internal/... -race -cover` | ≥60% 关键包 |
+| 缓存命中率 | 日志 `cache_read_tokens / total_input_tokens`，按 provider 分 | >70% 多轮对话 |
+| 负载测试 | 10 并发 Claude Code session，监控 TTFT + 内存 | 无 5xx，RSS < 400MB |
+| 热加载 | 修改配置同时发请求，验证无掉线 | 0 dropped requests |
+| 回归基准 | `go test -bench` normalize.Hash + scheduler.Pick | 性能不退化 |
+
+---
+
+## 关键文件索引
+
+- `/home/12/llm-pool/internal/scheduler/scheduler.go` — 调度器（P2C + sticky + 新增 prefix sharing）
+- `/home/12/llm-pool/internal/cacheopt/cacheopt.go` — 缓存优化（breakpoint 注入）
+- `/home/12/llm-pool/internal/normalize/normalize.go` — 请求规范化
+- `/home/12/llm-pool/internal/conversation/mapper.go` — 对话映射 LRU
+- `/home/12/llm-pool/internal/provider/claude/claude.go` — Claude 请求构建（cache_control 编码）
+- `/home/12/llm-pool/internal/provider/gemini/gemini.go` — Gemini provider（新增 CachedContent）
+- `/home/12/llm-pool/internal/config/config.go` — 配置（新增 watcher）
+- `/home/12/llm-pool/internal/store/store.go` — SQLite 存储（新增 backup）
+- `/home/12/llm-pool/plan/1.txt` — 前端打磨详细计划

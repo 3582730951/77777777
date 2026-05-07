@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>租户管理 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">租户管理</div>
+      <div class="topbar-actions">
+        <a href="/tenants/new" class="btn primary">+ 新建租户</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+
+      {{if .FlashUser}}
+      <div class="alert alert-ok" style="align-items:flex-start">
+        <div class="flex-1">
+          <div class="bold small">✓ 租户创建成功 — 请立即保存以下凭据（密码只显示一次）</div>
+          <div class="kv mt-8">
+            <div class="kv-row"><span class="kv-key small">用户名</span><code class="kv-val">{{.FlashUser}}</code></div>
+            <div class="kv-row"><span class="kv-key small">密码</span><code class="kv-val">{{.FlashPW}}</code></div>
+            <div class="kv-row"><span class="kv-key small">登录地址</span><code class="kv-val">/portal/login</code></div>
+          </div>
+        </div>
+      </div>
+      {{end}}
+
+      <!-- 动态租户 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">动态租户 ({{len .Dyns}})</div>
+          <span class="tiny muted">通过 Web UI 创建，存储于数据库</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>租户 ID</th><th>名称</th><th>用户数</th>
+                <th>创建时间</th><th class="right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+            {{range .Dyns}}
+              <tr>
+                <td><code>{{.ID}}</code></td>
+                <td>{{.Name}}</td>
+                <td class="center">
+                  {{$users := index $.UsersByTenant .ID}}
+                  {{len $users}}
+                </td>
+                <td class="tiny muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+                <td>
+                  <div class="actions-cell">
+                    <!-- 用户列表展开 -->
+                    <button class="btn ghost sm"
+                      onclick="toggleRow('users-{{.ID}}')" type="button">用户</button>
+                    <form method="post" action="/tenants/{{.ID}}/rotate" class="form-inline">
+                      <button class="btn ghost sm" type="submit"
+                        onclick="return confirm('轮换 {{.ID}} 的主密钥?')">轮换密钥</button>
+                    </form>
+                    <form method="post" action="/tenants/{{.ID}}/delete" class="form-inline"
+                          onsubmit="return confirm('删除租户 {{.ID}} 及其所有用户?')">
+                      <button class="btn ghost sm danger" type="submit">删除</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              <!-- 用户子行 -->
+              {{$uid := .ID}}
+              {{$users := index $.UsersByTenant .ID}}
+              {{if $users}}
+              <tr id="users-{{.ID}}" style="display:none">
+                <td colspan="5" style="padding:0 14px 12px 28px">
+                  <div class="tiny muted mb-4" style="margin-top:8px">租户用户：</div>
+                  <table class="data" style="margin:0">
+                    <thead><tr><th>用户名</th><th class="right">操作</th></tr></thead>
+                    <tbody>
+                    {{range $users}}
+                      <tr>
+                        <td><code>{{.Username}}</code></td>
+                        <td>
+                          <div class="actions-cell">
+                            <form method="post" action="/tenants/{{$uid}}/users/{{.Username}}/reset"
+                                  class="form-inline">
+                              <button class="btn ghost sm" type="submit">重置密码</button>
+                            </form>
+                            <form method="post" action="/tenants/{{$uid}}/users/{{.Username}}/delete"
+                                  class="form-inline"
+                                  onsubmit="return confirm('删除用户 {{.Username}}?')">
+                              <button class="btn ghost sm danger" type="submit">删除</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    {{end}}
+                    </tbody>
+                  </table>
+                  <!-- 新增用户 -->
+                  <form method="post" action="/tenants/{{$uid}}/users"
+                        class="flex gap-8 items-center mt-8">
+                    <input name="username" placeholder="新用户名" style="width:140px"/>
+                    <input type="password" name="password" placeholder="密码（空=随机）" style="width:160px"/>
+                    <button class="btn ghost sm" type="submit">+ 添加用户</button>
+                  </form>
+                </td>
+              </tr>
+              {{end}}
+            {{end}}
+            {{if empty .Dyns}}
+              <tr><td colspan="5">
+                <div class="empty" style="padding:32px">
+                  <div class="empty-icon">⌂</div>
+                  <div class="empty-title">还没有动态租户</div>
+                  <div class="empty-sub">点击右上角「新建租户」创建第一个</div>
+                </div>
+              </td></tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 配置文件租户 -->
+      {{if .YamlTenants}}
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">配置文件租户</div>
+          <span class="tiny muted">来自 config.yaml（只读）</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>ID</th><th>名称</th></tr></thead>
+            <tbody>
+            {{range .YamlTenants}}
+              <tr>
+                <td><code>{{.ID}}</code></td>
+                <td>{{.Name}}</td>
+              </tr>
+            {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{end}}
+
+    </div>
+  </main>
+</div>
+<script>
+function toggleTheme(){document.body.classList.toggle('theme-dark')}
+function toggleRow(id){
+  const el=document.getElementById(id);
+  if(el) el.style.display = el.style.display==='none' ? '' : 'none';
+}
+</script>
+</body></html>

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>平台管理 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+<style>
+.plat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.plat-card{padding:16px}
+.plat-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.plat-name{font-size:15px;font-weight:700;color:var(--fg)}
+.plat-display{font-size:12px;color:var(--fg-muted);margin-top:2px}
+.plat-row{display:flex;justify-content:space-between;align-items:center;font-size:12px;
+  padding:6px 0;border-bottom:1px solid var(--sep)}
+.plat-row:last-child{border-bottom:none}
+.plat-row .label{color:var(--fg-muted)}.plat-row .val{font-weight:500}
+.cap-section{margin-top:12px}
+.cap-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;
+  color:var(--fg-muted);margin-bottom:8px}
+.cap-grid{display:flex;flex-wrap:wrap;gap:6px}
+.cap-pill{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;
+  border-radius:999px;font-size:11px;font-weight:500}
+.cap-pill.yes{background:rgba(52,199,89,0.12);color:var(--ok);border:1px solid rgba(52,199,89,0.25)}
+.cap-pill.no{background:var(--sep);color:var(--fg-muted);border:1px solid var(--hairline)}
+.cap-pill::before{content:'';width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.cap-pill.yes::before{background:var(--ok)}.cap-pill.no::before{background:var(--fg-dim)}
+
+/* ── Desktop state ── */
+.desktop-section{margin-top:16px}
+.desktop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.desktop-card{padding:14px}
+.desktop-name{font-size:14px;font-weight:600;margin-bottom:4px}
+.desktop-desc{font-size:11px;color:var(--fg-muted);line-height:1.5;margin-bottom:10px}
+.desktop-badges{display:flex;flex-wrap:wrap;gap:6px}
+</style>
+<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">平台管理</div>
+      <div class="topbar-actions">
+        <button class="btn ghost" onclick="loadAll()">刷新</button>
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/autoreg/platforms")}}
+      </div>
+    </header>
+    <div class="content">
+
+      <!-- Platform cards -->
+      <div class="plat-grid" id="plat-grid">
+        <div class="card" style="padding:40px;text-align:center;color:var(--fg-muted)">加载中...</div>
+      </div>
+
+      <!-- Desktop app status -->
+      <div class="desktop-section">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:14px">桌面应用状态</h3>
+        <div class="desktop-grid" id="desktop-grid">
+          <div class="card" style="padding:24px;text-align:center;color:var(--fg-muted)">加载中...</div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+<script>
+const BASE = '/api/autoreg';
+
+async function safeFetch(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const text = await r.text();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch { return null; }
+}
+
+async function loadAll() {
+  loadPlatforms();
+  loadDesktop();
+}
+
+async function loadPlatforms() {
+  const grid = document.getElementById('plat-grid');
+  const data = await safeFetch(BASE + '/platforms');
+  const list = Array.isArray(data) ? data : (data?.data || data?.items || []);
+
+  if (!list.length) {
+    grid.innerHTML = '<div class="card"><div class="empty"><div class="empty-icon">▦</div>' +
+      '<div class="empty-title">暂无平台数据</div><div class="empty-sub">AutoReg 服务可能未运行</div></div></div>';
+    return;
+  }
+
+  grid.innerHTML = list.map(p => {
+    const name = p.name || p.platform || p;
+    const displayName = p.display_name || name;
+    const executors = p.supported_executors || [];
+    const proto = p.protocol_supported ?? executors.includes('protocol');
+    const browser = p.browser_supported ?? executors.includes('browser');
+
+    let capsHtml = '';
+    if (p.capabilities && Object.keys(p.capabilities).length) {
+      capsHtml = '<div class="cap-section"><div class="cap-title">能力</div><div class="cap-grid">' +
+        Object.entries(p.capabilities).map(([k,v]) =>
+          '<span class="cap-pill ' + (v?'yes':'no') + '">' + k + '</span>'
+        ).join('') + '</div></div>';
+    }
+
+    const identityModes = p.supported_identity_modes || [];
+    let identityHtml = '';
+    if (identityModes.length) {
+      identityHtml = '<div class="cap-section"><div class="cap-title">注册方式</div><div class="cap-grid">' +
+        identityModes.map(m => '<span class="cap-pill yes">' + m + '</span>').join('') + '</div></div>';
+    }
+
+    return '<div class="card plat-card">' +
+      '<div class="plat-header"><div><div class="plat-name">' + displayName + '</div>' +
+      '<div class="plat-display">' + name + '</div></div>' +
+      '<span class="badge ' + (proto || browser ? 'ok' : 'gray') + '">' + (proto || browser ? '可用' : '未接入') + '</span></div>' +
+      '<div class="plat-row"><span class="label">协议注册</span><span class="val">' + (proto ? '<span style="color:var(--ok)">支持</span>' : '<span style="color:var(--fg-muted)">不支持</span>') + '</span></div>' +
+      '<div class="plat-row"><span class="label">浏览器注册</span><span class="val">' + (browser ? '<span style="color:var(--ok)">支持</span>' : '<span style="color:var(--fg-muted)">不支持</span>') + '</span></div>' +
+      (p.register_url ? '<div class="plat-row"><span class="label">注册地址</span><span class="val mono tiny trunc" style="max-width:180px" title="'+p.register_url+'">' + p.register_url + '</span></div>' : '') +
+      identityHtml + capsHtml + '</div>';
+  }).join('');
+}
+
+async function loadDesktop() {
+  const grid = document.getElementById('desktop-grid');
+  const platforms = await safeFetch(BASE + '/platforms');
+  const list = Array.isArray(platforms) ? platforms : (platforms?.data || []);
+  const desktopNames = ['cursor', 'kiro', 'chatgpt'];
+  const desktopPlatforms = list.filter(p => desktopNames.includes(p.name));
+
+  if (!desktopPlatforms.length) {
+    grid.innerHTML = '<div class="card" style="padding:24px;text-align:center;color:var(--fg-muted)">无桌面应用数据</div>';
+    return;
+  }
+
+  const cards = await Promise.all(desktopPlatforms.map(async p => {
+    const state = await safeFetch(BASE + '/platforms/' + p.name + '/desktop-state') || {};
+    const label = state.app_name || p.display_name || p.name;
+    const desc = state.available === false
+      ? (state.message || '当前平台暂未接入桌面状态探测')
+      : (state.ready_label || state.status_label || '桌面账号切换与本地就绪状态');
+    const badges = state.available !== false ? [
+      {label: state.installed ? '已安装':'未安装', ok: state.installed},
+      {label: state.configured ? '已配置':'未配置', ok: state.configured},
+      {label: state.running ? '已打开':'未打开', ok: state.running},
+      {label: state.ready ? '已就绪':'未就绪', ok: state.ready},
+    ] : [];
+
+    return '<div class="card desktop-card">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start">' +
+      '<div><div class="desktop-name">' + label + '</div>' +
+      '<div class="desktop-desc">' + desc + '</div></div>' +
+      '<span class="badge ' + (state.ready ? 'ok' : 'gray') + '">' + (state.ready ? '就绪' : '待命') + '</span></div>' +
+      '<div class="desktop-badges">' +
+      badges.map(b => '<span class="badge ' + (b.ok?'ok':'gray') + '">' + b.label + '</span>').join('') +
+      '</div></div>';
+  }));
+
+  grid.innerHTML = cards.join('');
+}
+
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>

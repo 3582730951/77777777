@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{or .Title "添加账号"}} · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">{{or .Title "手动添加账号"}}</div>
+      <div class="topbar-actions">
+        <a href="/accounts" class="btn ghost">← 账号池</a>
+        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+      <div class="grid g2" style="align-items:start">
+        <div class="card">
+          <div class="card-header"><div class="card-title">账号配置</div></div>
+          <div class="card-body">
+            <form method="post" action="{{or .FormAction "/accounts/new"}}" class="form">
+              <div class="form-section-title">基础信息</div>
+              <div class="form-row c2">
+                <div class="field"><label>Provider *</label>
+                  <select name="provider">
+                    <option value="chatgpt" {{if eq .Account.Provider "chatgpt"}}selected{{end}}>chatgpt (OpenAI)</option>
+                    <option value="claude"  {{if eq .Account.Provider "claude"}}selected{{end}}>claude (Anthropic)</option>
+                    <option value="gemini"  {{if eq .Account.Provider "gemini"}}selected{{end}}>gemini (Google)</option>
+                  </select></div>
+                <div class="field"><label>租户</label>
+                  <select name="tenant_id">
+                    {{range .Tenants}}<option value="{{.ID}}" {{if eq .ID $.Account.TenantID}}selected{{end}}>{{.Name}}</option>{{end}}
+                  </select></div>
+              </div>
+              <div class="form-row c2">
+                <div class="field"><label>Plan Tier</label>
+                  <select name="plan_tier">
+                    <option value="plus"  {{if eq .Account.PlanTier "plus"}}selected{{end}}>Plus</option>
+                    <option value="pro"   {{if eq .Account.PlanTier "pro"}}selected{{end}}>Pro</option>
+                    <option value="free"  {{if eq .Account.PlanTier "free"}}selected{{end}}>Free</option>
+                  </select></div>
+                <div class="field"><label>TLS Profile</label>
+                  <select name="stealth_profile">
+                    <option value="chrome_124_windows">Chrome 124 Windows</option>
+                    <option value="chrome_120_mac">Chrome 120 Mac</option>
+                    <option value="firefox_125_linux">Firefox 125 Linux</option>
+                  </select></div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">凭证</div>
+                <div class="field"><label>Session Token / Session JSON *</label>
+                  <textarea name="session_token" rows="4"
+                    placeholder='粘贴 __Secure-next-auth.session-token cookie 值，&#10;或 {"accessToken":"...","refreshToken":"...","account":{...}} JSON'
+                  >{{.Account.SessionToken}}</textarea></div>
+              </div>
+
+              <div class="form-section">
+                <div class="form-section-title">可选配置</div>
+                <div class="form-row c2">
+                  <div class="field"><label>User-Agent</label>
+                    <input name="ua" value="{{.Account.UA}}" placeholder="留空使用默认"/></div>
+                  <div class="field"><label>出站代理</label>
+                    <input name="proxy" value="{{.Account.Proxy}}" placeholder="socks5://127.0.0.1:1080"/></div>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button class="btn primary" type="submit">保存账号</button>
+                <a href="/accounts" class="btn ghost">取消</a>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="card flat">
+          <div class="card-header"><div class="card-title">推荐：使用 OAuth 登录</div></div>
+          <div class="card-body flex-col gap-12">
+            <div class="alert alert-info">
+              <div class="small">OAuth 方式自动获取并存储 access_token + refresh_token，支持过期自动续期，比手动粘贴 cookie 更稳定。</div>
+            </div>
+            <a href="/accounts/oauth" class="btn primary">⚡ 去 OAuth 登录 →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body></html>

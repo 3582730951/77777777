@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>集群 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">集群 · Federation</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/cluster")}}
+      </div>
+    </header>
+    <div class="content">
+      {{if .Peers}}
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">对端节点 ({{len .Peers}})</div>
+          <span class="tiny muted">15s 轮询快照</span>
+        </div>
+        <div class="card-body">
+          <div class="cluster-grid">
+            {{range .Peers}}
+            <div class="cluster-tile">
+              <div class="cluster-name">{{.Name}}</div>
+              <div class="cluster-region muted">{{or .Region "unknown"}}</div>
+              <div class="cluster-stat"><span class="muted">RPS</span><b>{{printf "%.1f" .RPS}}</b></div>
+              <div class="cluster-stat"><span class="muted">账号</span>
+                <b>{{.HealthyAccounts}}/{{.TotalAccounts}}</b></div>
+              <div class="cluster-stat"><span class="muted">状态</span>
+                <span class="badge {{if eq .Status "ok"}}ok{{else}}err{{end}}">{{.Status}}</span></div>
+              <div class="mt-8">
+                <a href="{{.URL}}" target="_blank" class="btn ghost sm w-full">打开 UI ↗</a>
+              </div>
+            </div>
+            {{end}}
+          </div>
+        </div>
+      </div>
+      {{else}}
+      <div class="card">
+        <div class="card-body">
+          <div class="empty">
+            <div class="empty-icon">⌘</div>
+            <div class="empty-title">未配置集群对端</div>
+            <div class="empty-sub">在 config.yaml 中添加 cluster.peers 开启多 VPS 联邦观测</div>
+          </div>
+        </div>
+      </div>
+      {{end}}
+
+      <!-- 本机信息 -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">本实例</div></div>
+        <div class="card-body grid g3">
+          <div class="kv">
+            <div class="kv-row"><span class="kv-key">实例 ID</span><code class="kv-val">{{or .Self.Identity "—"}}</code></div>
+            <div class="kv-row"><span class="kv-key">区域</span><span class="kv-val">{{or .Self.Region "—"}}</span></div>
+            <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">{{or .Self.Version "—"}}</span></div>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span class="kv-key">账号总数</span><span class="kv-val">{{.Self.TotalAccounts}}</span></div>
+            <div class="kv-row"><span class="kv-key">健康账号</span><span class="kv-val ok">{{.Self.HealthyAccounts}}</span></div>
+            <div class="kv-row"><span class="kv-key">RPS</span><span class="kv-val">{{printf "%.1f" .Self.RPS}}</span></div>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span class="kv-key">启动时间</span><span class="kv-val tiny muted">{{.Self.StartedAt.Format "01-02 15:04"}}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card flat">
+        <div class="card-body">
+          <div class="alert alert-info">
+            <div>
+              <div class="bold small">Federation 模式说明</div>
+              <div class="tiny mt-4">每个实例独立运行，admin UI 通过轮询 <code>/api/cluster/snapshot</code> 聚合展示各节点状态。
+              对端不共享账号凭证，仅同步状态快照。配置文件 <code>cluster.peers</code> 中添加对端 URL 即可。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body></html>
