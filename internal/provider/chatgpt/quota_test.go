@@ -154,6 +154,84 @@ func TestFetchWhamUsageUsesCodexHeaders(t *testing.T) {
 	}
 }
 
+func TestDiscoverPrefersLivePlanTierAndPersistsIt(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	p.SetStore(st)
+
+	acc := &domain.Account{
+		ID:       "acc-plan",
+		TenantID: "default",
+		Provider: "chatgpt",
+		PlanTier: "free",
+		State:    domain.StateActive,
+	}
+	secret := store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  testJWTExp(time.Now().Add(time.Hour)),
+			RefreshToken: "rt",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "free",
+		}),
+		RefreshToken: "rt",
+	}
+	if err := st.UpsertAccount(ctx, acc, secret); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{
+			"rate_limit": {
+				"primary_window": {"used_percent": 1, "limit_window_seconds": 18000, "reset_at": 1777722657},
+				"secondary_window": {"used_percent": 2, "limit_window_seconds": 604800, "reset_at": 1778123456}
+			},
+			"plan_type": "plus"
+		}`))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	state, err := p.Discover(ctx, acc)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if state.PlanTier != "plus" {
+		t.Fatalf("state plan tier = %q, want plus", state.PlanTier)
+	}
+	if acc.PlanTier != "plus" {
+		t.Fatalf("account plan tier = %q, want plus", acc.PlanTier)
+	}
+	stored, err := st.GetAccount(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get stored account: %v", err)
+	}
+	if stored.PlanTier != "plus" {
+		t.Fatalf("stored plan tier = %q, want plus", stored.PlanTier)
+	}
+	if len(state.DiscoveredModels) == 0 {
+		t.Fatal("expected discovered models")
+	}
+	var hasSpark bool
+	for _, model := range state.DiscoveredModels {
+		if model.ID == "gpt-5.3-codex-spark" {
+			hasSpark = true
+			break
+		}
+	}
+	if !hasSpark {
+		t.Fatal("plus live plan should include spark model")
+	}
+}
+
 func TestInvokeRawUsesPromptCacheKeyForCodexSessionHeaders(t *testing.T) {
 	p, cleanup := newRawInvokeTestProvider(t)
 	defer cleanup()

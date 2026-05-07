@@ -125,6 +125,15 @@ func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Accou
 	return p.store.UpsertAccount(ctx, acc, next)
 }
 
+func (p *Provider) persistPlanTier(ctx context.Context, acc *domain.Account, sec store.AccountSecret, tier string) error {
+	if p.store == nil || tier == "" || acc.PlanTier == tier {
+		return nil
+	}
+	acc.PlanTier = tier
+	acc.UpdatedAt = time.Now()
+	return p.store.UpsertAccount(ctx, acc, sec)
+}
+
 func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
 	trimmed := strings.TrimSpace(existing)
 	if trimmed == "" {
@@ -243,22 +252,28 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 	log.Printf("[chatgpt-discover] account=%s resolved: access_token_len=%d, account_id=%q, plan=%q, expires=%v",
 		acc.ID, len(info.AccessToken), info.AccountID, info.PlanType, info.Expires)
 
-	models := append([]domain.ModelCapability{}, codexBase...)
-	tier := acc.PlanTier
-	if info.PlanType != "" {
-		tier = info.PlanType
-	}
-	if tier == "plus" || tier == "pro" || tier == "team" {
-		models = append(models, codexSparkExtra)
-	}
-
 	quotaState, err := p.fetchConversationLimit(ctx, acc, info.AccessToken, info.AccountID)
 	if err != nil {
 		return nil, err
 	}
+
+	tier := quotaState.PlanTier
+	if tier == "" && info.PlanType != "" {
+		tier = info.PlanType
+	}
+	if tier == "" {
+		tier = acc.PlanTier
+	}
+	models := append([]domain.ModelCapability{}, codexBase...)
+	if tier == "plus" || tier == "pro" || tier == "team" {
+		models = append(models, codexSparkExtra)
+	}
 	quotaState.DiscoveredModels = models
 	quotaState.PlanTier = tier
 	quotaState.LastDiscoveryAt = time.Now()
+	if err := p.persistPlanTier(ctx, acc, sec, tier); err != nil {
+		log.Printf("[chatgpt-discover] account=%s persist plan tier: %v", acc.ID, err)
+	}
 	log.Printf("[chatgpt-discover] account=%s discover done: tier=%s 5h=%.1f/%.1f(conf=%.1f) 7d=%.1f/%.1f(conf=%.1f) models=%d",
 		acc.ID, tier,
 		quotaState.ShortWindow.Used, quotaState.ShortWindow.Limit, quotaState.ShortWindow.Confidence,
