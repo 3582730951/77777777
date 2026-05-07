@@ -28,8 +28,7 @@
           <tr>
             <th class="px-4 py-3 text-left font-medium">ID</th>
             <th class="px-4 py-3 text-left font-medium">Provider</th>
-            <th class="px-4 py-3 text-left font-medium">State</th>
-            <th class="px-4 py-3 text-left font-medium">Confidence</th>
+            <th class="px-4 py-3 text-left font-medium">Status</th>
             <th class="px-4 py-3 text-right font-medium">Latency</th>
             <th class="px-4 py-3 text-right font-medium">5h Quota</th>
             <th class="px-4 py-3 text-right font-medium">7d Quota</th>
@@ -61,8 +60,11 @@
             <td class="px-4 py-2.5">
               <span :class="providerClass(accountProvider(acc))" class="px-2 py-0.5 rounded-full text-xs font-medium">{{ accountProvider(acc) }}</span>
             </td>
-            <td class="px-4 py-2.5">{{ accountState(acc) }}</td>
-            <td class="px-4 py-2.5">{{ accountConfidence(acc) }}</td>
+            <td class="px-4 py-2.5">
+              <span :class="statusClass(accountStatusCategory(acc))" class="px-2 py-0.5 rounded-full text-xs font-medium">
+                {{ accountStatusLabel(acc) }}
+              </span>
+            </td>
             <td class="px-4 py-2.5 text-right">{{ formatLatency(acc) }}</td>
             <td class="px-4 py-2.5 text-right">
               <span v-if="formatQuotaRemaining(acc, 'short')">{{ formatQuotaRemaining(acc, 'short') }}</span>
@@ -96,7 +98,10 @@ const filtered = computed(() => {
     ? accounts.value
     : accounts.value.filter(a => accountProvider(a) === filterProvider.value)
   return [...list].sort((a, b) => {
-    if (isHealthy(a) !== isHealthy(b)) return isHealthy(a) ? -1 : 1
+    const rankDiff = accountSortRank(a) - accountSortRank(b)
+    if (rankDiff !== 0) return rankDiff
+    const costDiff = accountPickCost(a) - accountPickCost(b)
+    if (costDiff !== 0) return costDiff
     return accountId(a).localeCompare(accountId(b))
   })
 })
@@ -135,6 +140,63 @@ function accountState(acc: any): string {
 
 function accountConfidence(acc: any): string {
   return String(accField(acc, 'Confidence', 'confidence') || '-')
+}
+
+function accountStatusCategory(acc: any): string {
+  const category = String(accField(acc, 'StatusCategory', 'status_category') || '')
+  if (category) return category
+  if (accountState(acc) === 'banned') return 'banned'
+  if (accountConfidence(acc) === 'probably_exhausted') return 'no_quota'
+  if (accountConfidence(acc) === 'cooling' || accountConfidence(acc) === 'suspected_issue') return 'abnormal'
+  const shortRemaining = quotaRemaining(acc, 'short')
+  const longRemaining = quotaRemaining(acc, 'long')
+  if (shortRemaining === 0 || longRemaining === 0) return 'no_quota'
+  const shortLow = shortRemaining !== null && shortRemaining <= 10
+  const longLow = longRemaining !== null && longRemaining <= 10
+  if (shortLow || longLow) return 'low_quota'
+  return isHealthy(acc) ? 'healthy' : 'abnormal'
+}
+
+function accountStatusLabel(acc: any): string {
+  const label = String(accField(acc, 'StatusLabel', 'status_label') || '')
+  if (label) return label
+  const map: Record<string, string> = {
+    healthy: '健康的',
+    low_quota: '额度低',
+    no_quota: '没有额度',
+    banned: '账号被封禁的',
+    abnormal: '账号异常的',
+  }
+  return map[accountStatusCategory(acc)] || '账号异常的'
+}
+
+function accountSortRank(acc: any): number {
+  const rank = Number(accField(acc, 'SortRank', 'sort_rank'))
+  if (Number.isFinite(rank)) return rank
+  const fallback: Record<string, number> = {
+    healthy: 0,
+    low_quota: 1,
+    abnormal: 2,
+    no_quota: 3,
+    banned: 4,
+  }
+  return fallback[accountStatusCategory(acc)] ?? 5
+}
+
+function accountPickCost(acc: any): number {
+  const cost = Number(accField(acc, 'PickCost', 'pick_cost'))
+  return Number.isFinite(cost) ? cost : 0
+}
+
+function statusClass(category: string) {
+  const map: Record<string, string> = {
+    healthy: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
+    low_quota: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+    no_quota: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+    banned: 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300',
+    abnormal: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
+  }
+  return map[category] || map.abnormal
 }
 
 function numberField(acc: any, ...keys: string[]): number {

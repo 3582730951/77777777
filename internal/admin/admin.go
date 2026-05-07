@@ -18,7 +18,6 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -226,6 +225,30 @@ func New(d Deps) *Server {
 				return "冷却中"
 			default:
 				return c
+			}
+		},
+		"statusColor": func(category string) string {
+			switch category {
+			case scheduler.SlotStatusHealthy:
+				return "var(--ok)"
+			case scheduler.SlotStatusLowQuota:
+				return "var(--warn)"
+			case scheduler.SlotStatusNoQuota, scheduler.SlotStatusBanned:
+				return "var(--err)"
+			default:
+				return "var(--fg-muted)"
+			}
+		},
+		"statusBadgeClass": func(category string) string {
+			switch category {
+			case scheduler.SlotStatusHealthy:
+				return "ok"
+			case scheduler.SlotStatusLowQuota:
+				return "warn"
+			case scheduler.SlotStatusNoQuota, scheduler.SlotStatusBanned:
+				return "err"
+			default:
+				return "gray"
 			}
 		},
 		"latColor": func(lat float64) string {
@@ -487,13 +510,12 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		seen[a.ID] = true
 		if sl, ok := slotByID[a.ID]; ok {
 			sl.Email = a.Email
+			if sl.PlanTier == "" {
+				sl.PlanTier = a.PlanTier
+			}
 			merged = append(merged, sl)
 		} else {
-			merged = append(merged, scheduler.SlotView{
-				AccountID: a.ID, Provider: a.Provider,
-				Email: a.Email, TenantID: a.TenantID, PlanTier: a.PlanTier,
-				State: string(a.State), Confidence: "likely_available",
-			})
+			merged = append(merged, scheduler.SlotViewFromAccount(a))
 		}
 	}
 	for _, sl := range slots {
@@ -501,12 +523,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			merged = append(merged, sl)
 		}
 	}
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Healthy != merged[j].Healthy {
-			return merged[i].Healthy
-		}
-		return merged[i].AccountID < merged[j].AccountID
-	})
+	scheduler.SortSlotViewsForPick(merged)
 	s.render(w, r, "accounts.html", map[string]any{
 		"Active": "accounts",
 		"Title":  "账号池",

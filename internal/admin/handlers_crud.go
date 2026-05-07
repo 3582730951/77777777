@@ -336,6 +336,10 @@ type accountView struct {
 	Proxy          string                   `json:"proxy"`
 	Confidence     string                   `json:"confidence"`
 	Healthy        bool                     `json:"healthy"`
+	StatusCategory string                   `json:"status_category"`
+	StatusLabel    string                   `json:"status_label"`
+	SortRank       int                      `json:"sort_rank"`
+	PickCost       float64                  `json:"pick_cost"`
 	EWMAMs         float64                  `json:"ewma_latency"`
 	Inflight       int                      `json:"inflight"`
 	BreakerOpen    bool                     `json:"breaker_open"`
@@ -374,47 +378,65 @@ func (s *Server) handleListAccountsAPI(w http.ResponseWriter, r *http.Request) {
 			Models: a.Quota.DiscoveredModels,
 		}
 		if sl, ok := slotByID[a.ID]; ok {
-			v.Confidence = sl.Confidence
-			v.Healthy = sl.Healthy
-			v.EWMAMs = sl.EWMALatency
-			v.Inflight = sl.Inflight
-			v.BreakerOpen = sl.BreakerState == int(domain.BreakerOpen)
-			if !sl.OpenUntil.IsZero() {
-				ou := sl.OpenUntil
-				v.OpenUntil = &ou
-			}
-			if !sl.LastSuccess.IsZero() {
-				ls := sl.LastSuccess
-				v.LastSuccess = &ls
-			}
-			if !sl.LastFailure.IsZero() {
-				lf := sl.LastFailure
-				v.LastFailure = &lf
-			}
-			// Quota visualization fields.
-			v.QuotaShortUsed = sl.QuotaShortUsed
-			v.QuotaShortLimit = sl.QuotaShortLimit
-			v.QuotaLongUsed = sl.QuotaLongUsed
-			v.QuotaLongLimit = sl.QuotaLongLimit
-			if !sl.QuotaShortReset.IsZero() {
-				t := sl.QuotaShortReset
-				v.QuotaShortReset = &t
-			}
-			if !sl.QuotaLongReset.IsZero() {
-				t := sl.QuotaLongReset
-				v.QuotaLongReset = &t
-			}
-			v.DiscoveredModels = sl.DiscoveredModels
+			applySlotToAccountView(&v, sl)
+		} else {
+			applySlotToAccountView(&v, scheduler.SlotViewFromAccount(a))
 		}
 		views = append(views, v)
 	}
 	sort.Slice(views, func(i, j int) bool {
-		if views[i].Healthy != views[j].Healthy {
-			return views[i].Healthy
+		if views[i].SortRank != views[j].SortRank {
+			return views[i].SortRank < views[j].SortRank
+		}
+		if views[i].PickCost != views[j].PickCost {
+			return views[i].PickCost < views[j].PickCost
 		}
 		return views[i].ID < views[j].ID
 	})
 	writeJSONStatus(w, 200, views)
+}
+
+func applySlotToAccountView(v *accountView, sl scheduler.SlotView) {
+	if sl.State != "" {
+		v.State = sl.State
+	}
+	if sl.PlanTier != "" {
+		v.PlanTier = sl.PlanTier
+	}
+	v.Confidence = sl.Confidence
+	v.Healthy = sl.Healthy
+	v.StatusCategory = sl.StatusCategory
+	v.StatusLabel = sl.StatusLabel
+	v.SortRank = sl.SortRank
+	v.PickCost = sl.PickCost
+	v.EWMAMs = sl.EWMALatency
+	v.Inflight = sl.Inflight
+	v.BreakerOpen = sl.BreakerState == int(domain.BreakerOpen)
+	if !sl.OpenUntil.IsZero() {
+		ou := sl.OpenUntil
+		v.OpenUntil = &ou
+	}
+	if !sl.LastSuccess.IsZero() {
+		ls := sl.LastSuccess
+		v.LastSuccess = &ls
+	}
+	if !sl.LastFailure.IsZero() {
+		lf := sl.LastFailure
+		v.LastFailure = &lf
+	}
+	v.QuotaShortUsed = sl.QuotaShortUsed
+	v.QuotaShortLimit = sl.QuotaShortLimit
+	v.QuotaLongUsed = sl.QuotaLongUsed
+	v.QuotaLongLimit = sl.QuotaLongLimit
+	if !sl.QuotaShortReset.IsZero() {
+		t := sl.QuotaShortReset
+		v.QuotaShortReset = &t
+	}
+	if !sl.QuotaLongReset.IsZero() {
+		t := sl.QuotaLongReset
+		v.QuotaLongReset = &t
+	}
+	v.DiscoveredModels = sl.DiscoveredModels
 }
 
 type createAccountReq struct {
@@ -724,16 +746,23 @@ func (s *Server) handleChartRequests(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChartAccounts(w http.ResponseWriter, r *http.Request) {
 	slots := s.deps.Sched.Snapshot()
 	type bucket struct {
-		Confidence string `json:"confidence"`
-		Count      int    `json:"count"`
+		StatusCategory string `json:"status_category"`
+		StatusLabel    string `json:"status_label"`
+		Count          int    `json:"count"`
 	}
 	count := map[string]int{}
 	for _, sl := range slots {
-		count[sl.Confidence]++
+		count[sl.StatusCategory]++
 	}
 	out := []bucket{}
-	for _, k := range []string{"confirmed_available", "likely_available", "suspected_issue", "probably_exhausted", "cooling"} {
-		out = append(out, bucket{Confidence: k, Count: count[k]})
+	for _, k := range []string{
+		scheduler.SlotStatusHealthy,
+		scheduler.SlotStatusLowQuota,
+		scheduler.SlotStatusNoQuota,
+		scheduler.SlotStatusBanned,
+		scheduler.SlotStatusAbnormal,
+	} {
+		out = append(out, bucket{StatusCategory: k, StatusLabel: scheduler.SlotStatusLabel(k), Count: count[k]})
 	}
 	writeJSONStatus(w, 200, out)
 }

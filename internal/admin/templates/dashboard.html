@@ -292,8 +292,10 @@ async function refreshPool(){
     if(grid&&slots&&slots.length){
       renderPoolGrid(grid, slots.map(s=>({
         accountID:s.id, provider:s.provider, state:s.state,
-        confidence:s.confidence, ewmaLatency:s.ewma_latency,
+        statusCategory:s.status_category, statusLabel:s.status_label,
+        ewmaLatency:s.ewma_latency,
         healthy:s.healthy===true,
+        sortRank:s.sort_rank, pickCost:s.pick_cost,
         inflight:s.inflight,
         quotaShortUsed:s.quota_short_used||0, quotaShortLimit:s.quota_short_limit||0,
         quotaShortReset:s.quota_short_reset,

@@ -260,37 +260,12 @@ func (s *Scheduler) Snapshot() []SlotView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]SlotView, 0, len(s.accounts))
+	now := time.Now()
+	drainThreshold := s.quotaDrainThreshold()
+	quotaPower := s.quotaCostPower()
 	for _, sl := range s.accounts {
 		sl.mu.Lock()
-		out = append(out, SlotView{
-			AccountID:       sl.Account.ID,
-			Provider:        sl.Account.Provider,
-			Email:           sl.Account.Email,
-			TenantID:        sl.Account.TenantID,
-			PlanTier:        sl.Account.PlanTier,
-			State:           string(sl.Account.State),
-			Confidence:      sl.Confidence.String(),
-			Healthy:         slotHealthyLocked(sl),
-			Inflight:        sl.inflight(),
-			EWMALatency:     sl.EWMALatency,
-			BreakerState:    int(sl.BreakerState),
-			OpenUntil:       sl.OpenUntil,
-			LastSuccess:     sl.LastSuccess,
-			LastFailure:     sl.LastFailure,
-			QuotaShortUsed:  sl.Account.Quota.ShortWindow.Used,
-			QuotaShortLimit: sl.Account.Quota.ShortWindow.Limit,
-			QuotaShortReset: sl.Account.Quota.ShortWindow.ResetAt,
-			QuotaLongUsed:   sl.Account.Quota.LongWindow.Used,
-			QuotaLongLimit:  sl.Account.Quota.LongWindow.Limit,
-			QuotaLongReset:  sl.Account.Quota.LongWindow.ResetAt,
-			DiscoveredModels: func() []string {
-				ms := make([]string, 0, len(sl.Account.Quota.DiscoveredModels))
-				for _, m := range sl.Account.Quota.DiscoveredModels {
-					ms = append(ms, m.ID)
-				}
-				return ms
-			}(),
-		})
+		out = append(out, slotViewLocked(sl, now, drainThreshold, quotaPower))
 		sl.mu.Unlock()
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].AccountID < out[j].AccountID })
@@ -309,20 +284,26 @@ func (s *Scheduler) SnapshotCached(ttl time.Duration) []SlotView {
 }
 
 type SlotView struct {
-	AccountID    string
-	Provider     string
-	Email        string
-	TenantID     string
-	PlanTier     string
-	State        string
-	Confidence   string
-	Healthy      bool
-	Inflight     int
-	EWMALatency  float64
-	BreakerState int
-	OpenUntil    time.Time
-	LastSuccess  time.Time
-	LastFailure  time.Time
+	AccountID  string
+	Provider   string
+	Email      string
+	TenantID   string
+	PlanTier   string
+	State      string
+	Confidence string
+	Healthy    bool
+	// StatusCategory/StatusLabel are the admin-facing account pool buckets.
+	// SortRank/PickCost mirror scheduler preference: lower sorts earlier.
+	StatusCategory string
+	StatusLabel    string
+	SortRank       int
+	PickCost       float64
+	Inflight       int
+	EWMALatency    float64
+	BreakerState   int
+	OpenUntil      time.Time
+	LastSuccess    time.Time
+	LastFailure    time.Time
 	// Quota mirrors domain.QuotaState for dashboard and CLI compat endpoints.
 	QuotaShortUsed   float64
 	QuotaShortLimit  float64
@@ -331,6 +312,171 @@ type SlotView struct {
 	QuotaLongLimit   float64
 	QuotaLongReset   time.Time
 	DiscoveredModels []string
+}
+
+const (
+	SlotStatusHealthy  = "healthy"
+	SlotStatusLowQuota = "low_quota"
+	SlotStatusNoQuota  = "no_quota"
+	SlotStatusBanned   = "banned"
+	SlotStatusAbnormal = "abnormal"
+)
+
+const (
+	slotSortRankHealthy = iota
+	slotSortRankLowQuota
+	slotSortRankDegradedCandidate
+	slotSortRankNoQuota
+	slotSortRankBanned
+	slotSortRankAbnormal
+)
+
+const maxSlotPickCost = 1e18
+
+func SlotStatusLabel(category string) string {
+	switch category {
+	case SlotStatusHealthy:
+		return "健康的"
+	case SlotStatusLowQuota:
+		return "额度低"
+	case SlotStatusNoQuota:
+		return "没有额度"
+	case SlotStatusBanned:
+		return "账号被封禁的"
+	case SlotStatusAbnormal:
+		return "账号异常的"
+	default:
+		return "账号异常的"
+	}
+}
+
+func slotViewLocked(sl *Slot, now time.Time, drainThreshold, quotaPower float64) SlotView {
+	category, rank, pickCost := slotDisplayStatusLocked(sl, now, drainThreshold, quotaPower)
+	ms := make([]string, 0, len(sl.Account.Quota.DiscoveredModels))
+	for _, m := range sl.Account.Quota.DiscoveredModels {
+		ms = append(ms, m.ID)
+	}
+	return SlotView{
+		AccountID:        sl.Account.ID,
+		Provider:         sl.Account.Provider,
+		Email:            sl.Account.Email,
+		TenantID:         sl.Account.TenantID,
+		PlanTier:         sl.Account.PlanTier,
+		State:            string(sl.Account.State),
+		Confidence:       sl.Confidence.String(),
+		Healthy:          slotHealthyLocked(sl),
+		StatusCategory:   category,
+		StatusLabel:      SlotStatusLabel(category),
+		SortRank:         rank,
+		PickCost:         pickCost,
+		Inflight:         sl.inflight(),
+		EWMALatency:      sl.EWMALatency,
+		BreakerState:     int(sl.BreakerState),
+		OpenUntil:        sl.OpenUntil,
+		LastSuccess:      sl.LastSuccess,
+		LastFailure:      sl.LastFailure,
+		QuotaShortUsed:   sl.Account.Quota.ShortWindow.Used,
+		QuotaShortLimit:  sl.Account.Quota.ShortWindow.Limit,
+		QuotaShortReset:  sl.Account.Quota.ShortWindow.ResetAt,
+		QuotaLongUsed:    sl.Account.Quota.LongWindow.Used,
+		QuotaLongLimit:   sl.Account.Quota.LongWindow.Limit,
+		QuotaLongReset:   sl.Account.Quota.LongWindow.ResetAt,
+		DiscoveredModels: ms,
+	}
+}
+
+// SlotViewFromAccount returns a DB-only account view. It is intentionally
+// sorted behind live scheduler slots because the next connection cannot pick an
+// account that is not registered in the scheduler.
+func SlotViewFromAccount(a *domain.Account) SlotView {
+	if a == nil {
+		return SlotView{
+			StatusCategory: SlotStatusAbnormal,
+			StatusLabel:    SlotStatusLabel(SlotStatusAbnormal),
+			SortRank:       slotSortRankAbnormal,
+			PickCost:       maxSlotPickCost,
+		}
+	}
+	tmp := &Slot{Account: a, Confidence: domain.ConfLikelyAvailable}
+	category, rank, pickCost := slotDisplayStatusLocked(tmp, time.Now(), defaultQuotaDrainThreshold, defaultQuotaCostPower)
+	if category == SlotStatusHealthy || category == SlotStatusLowQuota {
+		category = SlotStatusAbnormal
+		rank = slotSortRankAbnormal
+		pickCost = maxSlotPickCost
+	}
+	ms := make([]string, 0, len(a.Quota.DiscoveredModels))
+	for _, m := range a.Quota.DiscoveredModels {
+		ms = append(ms, m.ID)
+	}
+	return SlotView{
+		AccountID:        a.ID,
+		Provider:         a.Provider,
+		Email:            a.Email,
+		TenantID:         a.TenantID,
+		PlanTier:         a.PlanTier,
+		State:            string(a.State),
+		Confidence:       domain.ConfLikelyAvailable.String(),
+		StatusCategory:   category,
+		StatusLabel:      SlotStatusLabel(category),
+		SortRank:         rank,
+		PickCost:         pickCost,
+		QuotaShortUsed:   a.Quota.ShortWindow.Used,
+		QuotaShortLimit:  a.Quota.ShortWindow.Limit,
+		QuotaShortReset:  a.Quota.ShortWindow.ResetAt,
+		QuotaLongUsed:    a.Quota.LongWindow.Used,
+		QuotaLongLimit:   a.Quota.LongWindow.Limit,
+		QuotaLongReset:   a.Quota.LongWindow.ResetAt,
+		DiscoveredModels: ms,
+	}
+}
+
+func slotDisplayStatusLocked(sl *Slot, now time.Time, drainThreshold, quotaPower float64) (string, int, float64) {
+	if sl.Account.State == domain.StateBanned {
+		return SlotStatusBanned, slotSortRankBanned, maxSlotPickCost
+	}
+	if !slotSelectableStateLocked(sl) {
+		return SlotStatusAbnormal, slotSortRankAbnormal, maxSlotPickCost
+	}
+
+	quotaCandidate := quotaCandidateLocked(sl)
+	if !quotaCandidate {
+		return SlotStatusNoQuota, slotSortRankNoQuota, slotRecoverySortCostLocked(sl, now, quotaPower)
+	}
+
+	blockedByBreaker := sl.BreakerState == domain.BreakerOpen && now.Before(sl.OpenUntil)
+	blockedByConfidence := sl.Confidence == domain.ConfCooling || sl.Confidence == domain.ConfProbablyExhausted
+	blockedByState := sl.Account.State == domain.StateCooling || sl.Account.State == domain.StateCFChallenged
+	if blockedByBreaker || blockedByConfidence || blockedByState {
+		if sl.Confidence == domain.ConfProbablyExhausted {
+			return SlotStatusNoQuota, slotSortRankDegradedCandidate, slotRecoverySortCostLocked(sl, now, quotaPower)
+		}
+		return SlotStatusAbnormal, slotSortRankDegradedCandidate, slotRecoverySortCostLocked(sl, now, quotaPower)
+	}
+
+	pickCost := slotCostLocked(sl, "", quotaPower)
+	if quotaDrainingLocked(sl, drainThreshold) {
+		return SlotStatusLowQuota, slotSortRankLowQuota, pickCost
+	}
+	return SlotStatusHealthy, slotSortRankHealthy, pickCost
+}
+
+func slotRecoverySortCostLocked(sl *Slot, now time.Time, quotaPower float64) float64 {
+	if horizon := slotRecoveryHorizonLocked(sl); !horizon.IsZero() && horizon.After(now) {
+		return float64(horizon.Sub(now).Milliseconds())
+	}
+	return slotCostLocked(sl, "", quotaPower)
+}
+
+func SortSlotViewsForPick(views []SlotView) {
+	sort.SliceStable(views, func(i, j int) bool {
+		if views[i].SortRank != views[j].SortRank {
+			return views[i].SortRank < views[j].SortRank
+		}
+		if views[i].PickCost != views[j].PickCost {
+			return views[i].PickCost < views[j].PickCost
+		}
+		return views[i].AccountID < views[j].AccountID
+	})
 }
 
 // PickRequest carries the criteria and conversation hint for selecting an account.
@@ -491,6 +637,10 @@ func pickRand(slots []*Slot) *Slot {
 func cost(sl *Slot, model string, quotaPower float64) float64 {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
+	return slotCostLocked(sl, model, quotaPower)
+}
+
+func slotCostLocked(sl *Slot, model string, quotaPower float64) float64 {
 	lat := sl.EWMALatency
 	if lat <= 0 {
 		lat = 100
@@ -570,6 +720,10 @@ func (s *Scheduler) neverFail(ctx context.Context, slots []*Slot, req PickReques
 func slotRecoveryHorizon(sl *Slot) time.Time {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
+	return slotRecoveryHorizonLocked(sl)
+}
+
+func slotRecoveryHorizonLocked(sl *Slot) time.Time {
 	if !sl.OpenUntil.IsZero() {
 		return sl.OpenUntil
 	}

@@ -144,11 +144,11 @@
     const cx = W / 2, cy = H / 2 + 6, r = Math.min(W, H) / 2 - 18, ir = r - 22;
 
     const colors = {
-      confirmed_available: "#30d158",
-      likely_available: "#28cd41",
-      suspected_issue: "#ff9f0a",
-      probably_exhausted: "#ff453a",
-      cooling: "#8e8e93",
+      healthy: "#30d158",
+      low_quota: "#ff9f0a",
+      no_quota: "#ff453a",
+      banned: "#ff375f",
+      abnormal: "#8e8e93",
     };
     const total = buckets.reduce((a, b) => a + (b.count || 0), 0);
 
@@ -162,7 +162,8 @@
       for (const b of buckets) {
         if (!b.count) continue;
         const frac = b.count / total;
-        const color = colors[b.confidence] || "#999";
+        const key = b.status_category || b.confidence;
+        const color = colors[key] || "#999";
         // Full circle: SVG arc can't draw start==end, use two semicircles
         if (frac >= 0.999) {
           const midR = (r + ir) / 2;
@@ -200,16 +201,17 @@
     const legend = document.createElement("div");
     legend.className = "donut-legend";
     const labels = {
-      confirmed_available: "已确认可用",
-      likely_available: "可能可用",
-      suspected_issue: "怀疑异常",
-      probably_exhausted: "疑似耗尽",
-      cooling: "冷却中",
+      healthy: "健康的",
+      low_quota: "额度低",
+      no_quota: "没有额度",
+      banned: "账号被封禁的",
+      abnormal: "账号异常的",
     };
     for (const b of buckets) {
+      const key = b.status_category || b.confidence;
       const row = document.createElement("div");
       row.className = "legend-row";
-      row.innerHTML = `<span class="dot" style="background:${colors[b.confidence] || '#999'}"></span><span>${labels[b.confidence] || b.confidence}</span><b>${b.count}</b>`;
+      row.innerHTML = `<span class="dot" style="background:${colors[key] || '#999'}"></span><span>${b.status_label || labels[key] || key}</span><b>${b.count}</b>`;
       legend.appendChild(row);
     }
     host.appendChild(legend);
@@ -392,19 +394,26 @@
   // ── Account pool card: quota bars + load heatmap ─────────────────────────
 
   // renderAccountCard draws a rich mini-card for one account slot.
-  // slot = { accountID, provider, state, confidence, ewmaLatency, inflight,
+  // slot = { accountID, provider, state, statusCategory, statusLabel, ewmaLatency, inflight,
   //          quotaShortUsed, quotaShortLimit, quotaShortReset,
   //          quotaLongUsed, quotaLongLimit, quotaLongReset,
   //          discoveredModels: [] }
   window.renderAccountCard = function(host, slot) {
-    const conf = slot.confidence || 'likely_available';
-    const confColor = slot.healthy === false ? 'var(--err)' : ({
-      confirmed_available: 'var(--ok)',
-      likely_available: 'var(--ok)',
-      suspected_issue: 'var(--warn)',
-      probably_exhausted: 'var(--err)',
-      cooling: 'var(--err)',
-    }[conf] || 'var(--fg-muted)');
+    const statusCategory = slot.statusCategory || 'abnormal';
+    const statusLabel = slot.statusLabel || ({
+      healthy: '健康的',
+      low_quota: '额度低',
+      no_quota: '没有额度',
+      banned: '账号被封禁的',
+      abnormal: '账号异常的',
+    }[statusCategory] || '账号异常的');
+    const statusColor = ({
+      healthy: 'var(--ok)',
+      low_quota: 'var(--warn)',
+      no_quota: 'var(--err)',
+      banned: 'var(--err)',
+      abnormal: 'var(--fg-muted)',
+    }[statusCategory] || 'var(--fg-muted)');
 
     const latMs = Math.round(slot.ewmaLatency || 0);
     const inflight = slot.inflight || 0;
@@ -430,8 +439,8 @@
   <span class="${provClass}" style="font-size:9px">${slot.provider||''}</span>
 </div>
 <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
-  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${confColor};flex-shrink:0"></span>
-  <span style="font-size:11px;color:var(--fg-muted)">${conf.replace(/_/g,' ')}</span>
+  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0"></span>
+  <span style="font-size:11px;color:var(--fg-muted)">${statusLabel}</span>
   <span style="margin-left:auto;font-size:11px;font-weight:600;color:${pressureColor}">${latMs}ms</span>
   <span style="font-size:10px;color:var(--fg-muted)">×${inflight}</span>
 </div>

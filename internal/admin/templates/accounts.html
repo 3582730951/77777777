@@ -58,8 +58,11 @@
           <div class="filter-bar" style="padding:8px 12px">
             <span class="tiny bold muted">状态:</span>
             <span class="filter-chip active" data-filter="all" onclick="filterAccounts('state','all',this)">全部</span>
-            <span class="filter-chip" data-filter="healthy" onclick="filterAccounts('state','healthy',this)">健康</span>
-            <span class="filter-chip" data-filter="issue" onclick="filterAccounts('state','issue',this)">异常</span>
+            <span class="filter-chip" data-filter="healthy" onclick="filterAccounts('state','healthy',this)">健康的</span>
+            <span class="filter-chip" data-filter="low_quota" onclick="filterAccounts('state','low_quota',this)">额度低</span>
+            <span class="filter-chip" data-filter="no_quota" onclick="filterAccounts('state','no_quota',this)">没有额度</span>
+            <span class="filter-chip" data-filter="banned" onclick="filterAccounts('state','banned',this)">封禁</span>
+            <span class="filter-chip" data-filter="abnormal" onclick="filterAccounts('state','abnormal',this)">异常</span>
           </div>
         </div>
         <div class="view-toggle">
@@ -82,7 +85,7 @@
         {{else}}
         <div class="acct-cards">
           {{range .Slots}}
-          <div class="card acct-card" data-provider="{{.Provider}}" data-confidence="{{.Confidence}}" data-healthy="{{.Healthy}}"
+          <div class="card acct-card" data-provider="{{.Provider}}" data-status="{{.StatusCategory}}"
                onclick="location.href='/accounts/{{.AccountID}}'">
             <div class="acct-hd">
               <div class="acct-id-wrap">
@@ -99,8 +102,8 @@
             </div>
             <div class="account-email" hidden></div>
             <div class="acct-meta">
-              <span class="conf-dot" style="background:{{if .Healthy}}{{confColor .Confidence}}{{else}}var(--err){{end}}"></span>
-              <span class="muted">{{confLabel .Confidence}}</span>
+              <span class="conf-dot" style="background:{{statusColor .StatusCategory}}"></span>
+              <span class="muted">{{.StatusLabel}}</span>
               <span style="margin-left:auto;font-weight:600;color:{{latColor .EWMALatency}}">{{printf "%.0f" .EWMALatency}}ms</span>
               <span class="muted">×{{.Inflight}}</span>
             </div>
@@ -153,7 +156,7 @@
               </thead>
               <tbody>
               {{range .Slots}}
-                <tr data-provider="{{.Provider}}" data-confidence="{{.Confidence}}" data-healthy="{{.Healthy}}">
+                <tr data-provider="{{.Provider}}" data-status="{{.StatusCategory}}">
                   <td>
                     <div class="table-id-cell">
                       <div class="table-id-main">
@@ -173,14 +176,7 @@
                   <td class="muted tiny">{{or .TenantID "—"}}</td>
                   <td class="tiny muted">{{or .PlanTier "—"}}</td>
                   <td>
-                    {{if and (not .Healthy) (or (eq .Confidence "confirmed_available") (eq .Confidence "likely_available"))}}<span class="badge err">额度不足</span>
-                    {{else if eq .Confidence "confirmed_available"}}<span class="badge ok">✓ 可用</span>
-                    {{else if eq .Confidence "likely_available"}}<span class="badge ok" style="opacity:.7">可用</span>
-                    {{else if eq .Confidence "suspected_issue"}}<span class="badge warn">疑问</span>
-                    {{else if eq .Confidence "probably_exhausted"}}<span class="badge err">耗尽</span>
-                    {{else if eq .Confidence "cooling"}}<span class="badge warn">冷却</span>
-                    {{else}}<span class="badge gray">{{.Confidence}}</span>
-                    {{end}}
+                    <span class="badge {{statusBadgeClass .StatusCategory}}">{{.StatusLabel}}</span>
                   </td>
                   <td class="mono tiny">{{printf "%.0f" .EWMALatency}}ms</td>
                   <td class="tiny" style="color:{{remainColor .QuotaShortUsed .QuotaShortLimit}}">{{if .QuotaShortLimit}}{{fmtf (subf .QuotaShortLimit .QuotaShortUsed)}}%{{else}}—{{end}}</td>
@@ -221,7 +217,7 @@
 <script>
 function toggleTheme(){document.body.classList.toggle('theme-dark')}
 
-let _provFilter='all',_stateFilter='all';
+let _provFilter='all',_statusFilter='all';
 
 function toggleAccountEmail(event,btn){
   event.stopPropagation();
@@ -245,7 +241,7 @@ function setView(view,btn){
 
 function filterAccounts(type,val,btn){
   if(type==='provider')_provFilter=val;
-  if(type==='state')_stateFilter=val;
+  if(type==='state')_statusFilter=val;
   btn.parentElement.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('active'));
   btn.classList.add('active');
   applyFilters();
@@ -255,12 +251,10 @@ function applyFilters(){
   const items=document.querySelectorAll('[data-provider]');
   items.forEach(el=>{
     const prov=el.dataset.provider;
-    const conf=el.dataset.confidence;
-    const healthy=el.dataset.healthy==='true';
+    const status=el.dataset.status;
     let show=true;
     if(_provFilter!=='all'&&prov!==_provFilter)show=false;
-    if(_stateFilter==='healthy'&&!healthy)show=false;
-    if(_stateFilter==='issue'&&healthy)show=false;
+    if(_statusFilter!=='all'&&status!==_statusFilter)show=false;
     el.style.display=show?'':'none';
   });
 }

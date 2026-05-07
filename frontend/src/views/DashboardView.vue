@@ -26,19 +26,19 @@
     <div class="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm border border-gray-200 dark:border-gray-800">
       <h3 class="font-semibold mb-3">Account Pool</h3>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        <div v-for="acc in accounts" :key="acc.AccountID"
+        <div v-for="acc in sortedAccounts" :key="accountId(acc)"
           class="p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:shadow-md transition">
           <div class="flex items-center justify-between">
-            <span class="font-mono text-sm truncate">{{ acc.AccountID }}</span>
-            <span :class="stateClass(acc)" class="text-xs px-2 py-0.5 rounded-full">{{ acc.Confidence }}</span>
+            <span class="font-mono text-sm truncate">{{ accountId(acc) }}</span>
+            <span :class="statusClass(accountStatusCategory(acc))" class="text-xs px-2 py-0.5 rounded-full">{{ accountStatusLabel(acc) }}</span>
           </div>
           <div class="mt-2 text-xs text-gray-500 space-y-1">
-            <div>Provider: <span class="font-medium">{{ acc.Provider }}</span></div>
-            <div>Latency: <span class="font-medium">{{ acc.EWMALatency.toFixed(0) }}ms</span></div>
-            <div v-if="acc.QuotaShortLimit">
-              5h: {{ (acc.QuotaShortLimit - acc.QuotaShortUsed).toFixed(0) }}% left
+            <div>Provider: <span class="font-medium">{{ accountProvider(acc) }}</span></div>
+            <div>Latency: <span class="font-medium">{{ formatLatency(acc) }}</span></div>
+            <div v-if="quotaRemaining(acc, 'short') !== null">
+              5h: {{ quotaRemaining(acc, 'short')?.toFixed(0) }}% left
               <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 mt-0.5">
-                <div class="bg-primary rounded-full h-1.5" :style="{ width: acc.QuotaShortUsed + '%' }"></div>
+                <div class="bg-primary rounded-full h-1.5" :style="{ width: quotaUsedPct(acc, 'short') + '%' }"></div>
               </div>
             </div>
           </div>
@@ -49,7 +49,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { accountsAPI, chartsAPI } from '../api'
 import { Chart, registerables } from 'chart.js'
 
@@ -67,32 +67,125 @@ const kpis = ref([
 const requestChart = ref<HTMLCanvasElement>()
 const cacheChart = ref<HTMLCanvasElement>()
 
+const sortedAccounts = computed(() => [...accounts.value].sort((a, b) => {
+  const rankDiff = accountSortRank(a) - accountSortRank(b)
+  if (rankDiff !== 0) return rankDiff
+  const costDiff = accountPickCost(a) - accountPickCost(b)
+  if (costDiff !== 0) return costDiff
+  return accountId(a).localeCompare(accountId(b))
+}))
+
 function formatNum(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K'
   return String(n)
 }
 
-function stateClass(acc: any) {
-  if (!isHealthy(acc)) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-  if (acc.BreakerState > 0) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-  if (acc.Confidence === 'confirmed_available') return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-  return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+function accField<T = any>(acc: any, ...keys: string[]): T | undefined {
+  for (const key of keys) {
+    if (acc?.[key] !== undefined && acc[key] !== null) return acc[key] as T
+  }
+  return undefined
+}
+
+function accountId(acc: any): string {
+  return String(accField(acc, 'AccountID', 'account_id', 'ID', 'id') || '')
+}
+
+function accountProvider(acc: any): string {
+  return String(accField(acc, 'Provider', 'provider') || '')
+}
+
+function accountState(acc: any): string {
+  return String(accField(acc, 'State', 'state') || '-')
+}
+
+function accountConfidence(acc: any): string {
+  return String(accField(acc, 'Confidence', 'confidence') || '-')
+}
+
+function numberField(acc: any, ...keys: string[]): number {
+  const n = Number(accField(acc, ...keys) ?? 0)
+  return Number.isFinite(n) ? n : 0
+}
+
+function formatLatency(acc: any): string {
+  return `${numberField(acc, 'EWMALatency', 'ewma_latency', 'EWMAMs').toFixed(0)}ms`
+}
+
+function accountStatusCategory(acc: any): string {
+  const category = String(accField(acc, 'StatusCategory', 'status_category') || '')
+  if (category) return category
+  if (accountState(acc) === 'banned') return 'banned'
+  if (accountConfidence(acc) === 'probably_exhausted') return 'no_quota'
+  if (accountConfidence(acc) === 'cooling' || accountConfidence(acc) === 'suspected_issue') return 'abnormal'
+  const shortRemaining = quotaRemaining(acc, 'short')
+  const longRemaining = quotaRemaining(acc, 'long')
+  if (shortRemaining === 0 || longRemaining === 0) return 'no_quota'
+  if ((shortRemaining !== null && shortRemaining <= 10) || (longRemaining !== null && longRemaining <= 10)) return 'low_quota'
+  const healthy = accField<boolean>(acc, 'Healthy', 'healthy')
+  if (typeof healthy === 'boolean') return healthy ? 'healthy' : 'abnormal'
+  return 'healthy'
+}
+
+function accountStatusLabel(acc: any): string {
+  const label = String(accField(acc, 'StatusLabel', 'status_label') || '')
+  if (label) return label
+  const map: Record<string, string> = {
+    healthy: '健康的',
+    low_quota: '额度低',
+    no_quota: '没有额度',
+    banned: '账号被封禁的',
+    abnormal: '账号异常的',
+  }
+  return map[accountStatusCategory(acc)] || '账号异常的'
+}
+
+function accountSortRank(acc: any): number {
+  const rank = Number(accField(acc, 'SortRank', 'sort_rank'))
+  if (Number.isFinite(rank)) return rank
+  const fallback: Record<string, number> = { healthy: 0, low_quota: 1, abnormal: 2, no_quota: 3, banned: 4 }
+  return fallback[accountStatusCategory(acc)] ?? 5
+}
+
+function accountPickCost(acc: any): number {
+  const cost = Number(accField(acc, 'PickCost', 'pick_cost'))
+  return Number.isFinite(cost) ? cost : 0
+}
+
+function statusClass(category: string) {
+  const map: Record<string, string> = {
+    healthy: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
+    low_quota: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+    no_quota: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+    banned: 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300',
+    abnormal: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
+  }
+  return map[category] || map.abnormal
 }
 
 function quotaRemaining(acc: any, window: 'short' | 'long'): number | null {
-  const limit = Number(acc[window === 'short' ? 'QuotaShortLimit' : 'QuotaLongLimit'] ?? acc[window === 'short' ? 'quota_short_limit' : 'quota_long_limit'] ?? 0)
-  const used = Number(acc[window === 'short' ? 'QuotaShortUsed' : 'QuotaLongUsed'] ?? acc[window === 'short' ? 'quota_short_used' : 'quota_long_used'] ?? 0)
+  const limit = numberField(acc, window === 'short' ? 'QuotaShortLimit' : 'QuotaLongLimit', window === 'short' ? 'quota_short_limit' : 'quota_long_limit')
+  const used = numberField(acc, window === 'short' ? 'QuotaShortUsed' : 'QuotaLongUsed', window === 'short' ? 'quota_short_used' : 'quota_long_used')
   if (limit <= 0) return null
   return limit - used
 }
 
+function quotaUsedPct(acc: any, window: 'short' | 'long'): number {
+  const limit = numberField(acc, window === 'short' ? 'QuotaShortLimit' : 'QuotaLongLimit', window === 'short' ? 'quota_short_limit' : 'quota_long_limit')
+  const used = numberField(acc, window === 'short' ? 'QuotaShortUsed' : 'QuotaLongUsed', window === 'short' ? 'quota_short_used' : 'quota_long_used')
+  if (limit <= 0) return 0
+  return Math.max(0, Math.min(100, (used * 100) / limit))
+}
+
 function isHealthy(acc: any): boolean {
-  if (typeof acc.Healthy === 'boolean') return acc.Healthy
-  if (typeof acc.healthy === 'boolean') return acc.healthy
+  const category = String(accField(acc, 'StatusCategory', 'status_category') || '')
+  if (category) return category === 'healthy'
+  const healthy = accField<boolean>(acc, 'Healthy', 'healthy')
+  if (typeof healthy === 'boolean') return healthy
   const shortRemaining = quotaRemaining(acc, 'short')
   const longRemaining = quotaRemaining(acc, 'long')
-  return acc.BreakerState === 0 && shortRemaining !== 0 && longRemaining !== 0
+  return numberField(acc, 'BreakerState', 'breaker_state') === 0 && shortRemaining !== 0 && longRemaining !== 0
 }
 
 onMounted(async () => {
@@ -100,7 +193,7 @@ onMounted(async () => {
     const accs = await accountsAPI.list()
     accounts.value = accs || []
     const healthy = accounts.value.filter(isHealthy).length
-    const avgLat = accounts.value.length ? (accounts.value.reduce((s: number, a: any) => s + a.EWMALatency, 0) / accounts.value.length) : 0
+    const avgLat = accounts.value.length ? (accounts.value.reduce((s: number, a: any) => s + numberField(a, 'EWMALatency', 'ewma_latency', 'EWMAMs'), 0) / accounts.value.length) : 0
     kpis.value[0].value = String(accounts.value.length)
     kpis.value[1].value = String(healthy)
     kpis.value[4].value = avgLat.toFixed(0) + 'ms'

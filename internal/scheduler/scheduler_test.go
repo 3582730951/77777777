@@ -277,6 +277,57 @@ func TestPreferredAccountCanUseDrainingQuotaForStickyConversation(t *testing.T) 
 	}
 }
 
+func TestSnapshotStatusCategoriesAndPickSort(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.Quota.DrainThreshold = 0.10
+	cfg.Breaker.FailThreshold = 1
+	s := New(cfg)
+
+	withQuota := func(a *domain.Account, shortUsed float64) *domain.Account {
+		a.Quota.ShortWindow = domain.QuotaWindow{Limit: 100, Used: shortUsed, Confidence: 1}
+		a.Quota.LongWindow = domain.QuotaWindow{Limit: 100, Used: 20, Confidence: 1}
+		return a
+	}
+
+	s.Register(withQuota(makeAcc("healthy", "chatgpt", "t1"), 20))
+	s.Register(withQuota(makeAcc("low", "chatgpt", "t1"), 95))
+	s.Register(withQuota(makeAcc("noquota", "chatgpt", "t1"), 100))
+	banned := withQuota(makeAcc("banned", "chatgpt", "t1"), 20)
+	banned.State = domain.StateBanned
+	s.Register(banned)
+	s.Register(withQuota(makeAcc("abnormal", "chatgpt", "t1"), 20))
+	s.MarkFailure("abnormal", domain.ErrUpstreamError)
+
+	snap := s.Snapshot()
+	byID := map[string]SlotView{}
+	for _, sl := range snap {
+		byID[sl.AccountID] = sl
+	}
+	for id, want := range map[string]string{
+		"healthy":  SlotStatusHealthy,
+		"low":      SlotStatusLowQuota,
+		"noquota":  SlotStatusNoQuota,
+		"banned":   SlotStatusBanned,
+		"abnormal": SlotStatusAbnormal,
+	} {
+		if got := byID[id].StatusCategory; got != want {
+			t.Fatalf("%s status = %s, want %s", id, got, want)
+		}
+	}
+
+	SortSlotViewsForPick(snap)
+	gotOrder := []string{}
+	for _, sl := range snap {
+		gotOrder = append(gotOrder, sl.AccountID)
+	}
+	wantOrder := []string{"healthy", "low", "abnormal", "noquota", "banned"}
+	for i, want := range wantOrder {
+		if gotOrder[i] != want {
+			t.Fatalf("sort order = %v, want prefix %v", gotOrder, wantOrder)
+		}
+	}
+}
+
 // TestNeverFailProbeRecovers: both accounts marked exhausted, never-fail probes
 // and succeeds on the one that's "back".
 func TestNeverFailProbeRecovers(t *testing.T) {
