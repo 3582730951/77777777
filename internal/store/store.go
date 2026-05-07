@@ -294,6 +294,18 @@ func (s *Store) ListAccounts(ctx context.Context, tenantID string) ([]*domain.Ac
 	return out, rows.Err()
 }
 
+func (s *Store) GetAccount(ctx context.Context, id string) (*domain.Account, error) {
+	var data string
+	if err := s.db.QueryRowContext(ctx, `SELECT data FROM accounts WHERE id=?`, id).Scan(&data); err != nil {
+		return nil, err
+	}
+	a := &domain.Account{}
+	if err := json.Unmarshal([]byte(data), a); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
 func (s *Store) GetAccountSecret(ctx context.Context, id string) (AccountSecret, error) {
 	var blob []byte
 	err := s.db.QueryRowContext(ctx, `SELECT credential_blob FROM accounts WHERE id=?`, id).Scan(&blob)

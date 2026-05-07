@@ -25,12 +25,12 @@ func (s *Server) handleAccountForm(w http.ResponseWriter, r *http.Request) {
 	tenants, _ := s.deps.Store.ListDynTenants(r.Context())
 	yamlGroups := s.deps.Cfg.Groups
 	s.render(w, r, "account_form.html", map[string]any{
-		"Active":     "accounts",
-		"Title":      "添加账号",
-		"Account":   &domain.Account{Provider: "chatgpt", PlanTier: "plus"},
-		"Groups":     groups,
-		"YamlGroups": yamlGroups,
-		"Tenants":    tenants,
+		"Active":      "accounts",
+		"Title":       "添加账号",
+		"Account":     &domain.Account{Provider: "chatgpt", PlanTier: "plus"},
+		"Groups":      groups,
+		"YamlGroups":  yamlGroups,
+		"Tenants":     tenants,
 		"YamlTenants": s.deps.Cfg.Tenants,
 	})
 }
@@ -52,6 +52,7 @@ func (s *Server) handleAccountCreatePost(w http.ResponseWriter, r *http.Request)
 		ID:             id,
 		TenantID:       tenantID,
 		Provider:       r.FormValue("provider"),
+		Email:          accountEmailFromImport(r.FormValue("email"), r.FormValue("session_token")),
 		PlanTier:       r.FormValue("plan_tier"),
 		StealthProfile: defaultStr(r.FormValue("stealth_profile"), "chrome_124_windows"),
 		UA:             r.FormValue("ua"),
@@ -172,28 +173,34 @@ func (s *Server) allModelsForProvider(provider string) []string {
 	// 2. Config YAML groups for this provider
 	for _, g := range s.deps.Cfg.Groups {
 		if g.Provider == provider {
-			for _, m := range g.Models { add(m) }
-			for _, m := range g.ModelWhitelist { add(m) }
+			for _, m := range g.Models {
+				add(m)
+			}
+			for _, m := range g.ModelWhitelist {
+				add(m)
+			}
 		}
 	}
 	// 3. Hard-coded fallback per provider (from CPA models.json)
 	fallbacks := map[string][]string{
-		"chatgpt": {"gpt-5.2","gpt-5.3-codex","gpt-5.3-codex-spark","gpt-5.4","gpt-5.4-mini","gpt-5.5","gpt-image-2","codex-auto-review"},
-		"claude":  {"claude-opus-4-7","claude-opus-4-6","claude-opus-4-5-20251101","claude-opus-4-20250514","claude-sonnet-4-6","claude-sonnet-4-5-20250929","claude-sonnet-4-20250514","claude-3-7-sonnet-20250219","claude-haiku-4-5-20251001","claude-3-5-haiku-20241022"},
-		"gemini":  {"gemini-2.5-pro","gemini-2.5-flash","gemini-2.5-flash-lite","gemini-3-pro-preview","gemini-3.1-pro-preview","gemini-3-flash-preview","gemini-3.1-flash-lite-preview"},
+		"chatgpt": {"gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-image-2", "codex-auto-review"},
+		"claude":  {"claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5-20251101", "claude-opus-4-20250514", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929", "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219", "claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022"},
+		"gemini":  {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"},
 	}
-	for _, m := range fallbacks[provider] { add(m) }
+	for _, m := range fallbacks[provider] {
+		add(m)
+	}
 	return out
 }
 
 func (s *Server) handleGroupForm(w http.ResponseWriter, r *http.Request) {
 	tenants, _ := s.deps.Store.ListDynTenants(r.Context())
 	s.render(w, r, "group_form.html", map[string]any{
-		"Active":           "groups",
-		"Title":            "添加分组",
-		"Tenants":          tenants,
-		"YamlTenants":      s.deps.Cfg.Tenants,
-		"AllModelsByProv":  map[string][]string{
+		"Active":      "groups",
+		"Title":       "添加分组",
+		"Tenants":     tenants,
+		"YamlTenants": s.deps.Cfg.Tenants,
+		"AllModelsByProv": map[string][]string{
 			"chatgpt": s.allModelsForProvider("chatgpt"),
 			"claude":  s.allModelsForProvider("claude"),
 			"gemini":  s.allModelsForProvider("gemini"),
@@ -568,13 +575,13 @@ func (s *Server) handleGroupEditForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "group_form.html", map[string]any{
-		"Active":          "groups",
-		"Title":           "编辑分组 · " + id,
-		"Tenants":         tenants,
-		"YamlTenants":     s.deps.Cfg.Tenants,
-		"Group":           found,
-		"FormAction":      "/groups/" + url.PathEscape(id) + "/edit",
-		"IsEdit":          true,
+		"Active":      "groups",
+		"Title":       "编辑分组 · " + id,
+		"Tenants":     tenants,
+		"YamlTenants": s.deps.Cfg.Tenants,
+		"Group":       found,
+		"FormAction":  "/groups/" + url.PathEscape(id) + "/edit",
+		"IsEdit":      true,
 		"AllModelsByProv": map[string][]string{
 			"chatgpt": s.allModelsForProvider("chatgpt"),
 			"claude":  s.allModelsForProvider("claude"),
@@ -593,18 +600,18 @@ func (s *Server) handleGroupEditPost(w http.ResponseWriter, r *http.Request) {
 	whitelist := splitCSV(r.FormValue("model_whitelist"))
 	aliases := parseAliasMap(r.FormValue("model_aliases"))
 	g := store.DynGroup{
-		ID:              id,
-		TenantID:        defaultStr(r.FormValue("tenant_id"), "default"),
-		Provider:        r.FormValue("provider"),
-		Models:          models,
-		ModelAliases:    aliases,
-		ModelWhitelist:  whitelist,
-		AccountIDs:      splitCSV(r.FormValue("account_ids")),
-		SystemPrompt:    r.FormValue("system_prompt"),
+		ID:               id,
+		TenantID:         defaultStr(r.FormValue("tenant_id"), "default"),
+		Provider:         r.FormValue("provider"),
+		Models:           models,
+		ModelAliases:     aliases,
+		ModelWhitelist:   whitelist,
+		AccountIDs:       splitCSV(r.FormValue("account_ids")),
+		SystemPrompt:     r.FormValue("system_prompt"),
 		SystemPromptMode: defaultStr(r.FormValue("system_prompt_mode"), "prepend"),
-		ReasoningEffort: r.FormValue("reasoning_effort"),
-		ForcedModel:     r.FormValue("forced_model"),
-		UpdatedAt:       time.Now(),
+		ReasoningEffort:  r.FormValue("reasoning_effort"),
+		ForcedModel:      r.FormValue("forced_model"),
+		UpdatedAt:        time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {
 		http.Error(w, err.Error(), 500)
@@ -653,6 +660,7 @@ func (s *Server) handleAccountEditPost(w http.ResponseWriter, r *http.Request) {
 	}
 	a.TenantID = defaultStr(r.FormValue("tenant_id"), a.TenantID)
 	a.Provider = defaultStr(r.FormValue("provider"), a.Provider)
+	a.Email = accountEmailFromImport(r.FormValue("email"), r.FormValue("session_token"))
 	a.PlanTier = r.FormValue("plan_tier")
 	a.StealthProfile = defaultStr(r.FormValue("stealth_profile"), a.StealthProfile)
 	a.UA = r.FormValue("ua")
@@ -675,4 +683,3 @@ func (s *Server) handleAccountEditPost(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/accounts/"+url.PathEscape(id), http.StatusSeeOther)
 }
-

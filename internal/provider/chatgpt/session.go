@@ -9,8 +9,8 @@
 //     `eyJ`. We GET https://chatgpt.com/api/auth/session ourselves, with the
 //     cookie set, parse the JSON, and use the accessToken returned.
 //
-// The cache is keyed by account id; we persist nothing here (refreshing on
-// startup is fine).
+// The cache is keyed by account id. The provider persists refreshed sessions
+// after Resolve returns a rotated token.
 package chatgpt
 
 import (
@@ -33,6 +33,8 @@ type sessionInfo struct {
 	Expires      time.Time
 	AccountID    string
 	PlanType     string
+	Email        string
+	IDToken      string
 }
 
 type sessionResolver struct {
@@ -56,7 +58,7 @@ func newSessionResolver() *sessionResolver {
 // Resolve returns a non-expired access token for the supplied raw secret. The
 // secret can be either the JSON session blob (Format 1) or the raw next-auth
 // cookie (Format 2). accountID is just a cache key; pass any stable string.
-func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, ua string) (sessionInfo, error) {
+func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refreshToken, ua string) (sessionInfo, error) {
 	if cached, ok := r.cache.Load(accountID); ok {
 		if info, ok := cached.(sessionInfo); ok && time.Until(info.Expires) > 2*time.Minute {
 			log.Printf("[chatgpt-session] account=%s cache hit, expires=%v, access_token_len=%d", accountID, info.Expires, len(info.AccessToken))
@@ -66,38 +68,114 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, ua str
 	// Try refresh first if we have a refresh_token from a previous fetch.
 	if cached, ok := r.cache.Load(accountID); ok && r.refreshFn != nil {
 		if info, ok := cached.(sessionInfo); ok && info.RefreshToken != "" {
-			newAccess, newRefresh, idTok, expIn, err := r.refreshFn(ctx, info.RefreshToken)
-			if err == nil && newAccess != "" {
-				exp := time.Now().Add(time.Duration(expIn) * time.Second)
-				if exp.IsZero() || expIn == 0 {
-					exp = jwtExpiry(newAccess)
-					if exp.IsZero() {
-						exp = time.Now().Add(50 * time.Minute)
-					}
-				}
-				updated := sessionInfo{
-					AccessToken:  newAccess,
-					RefreshToken: newRefresh,
-					Expires:      exp,
-					AccountID:    info.AccountID,
-					PlanType:     info.PlanType,
-				}
+			updated, err := r.refresh(ctx, info)
+			if err == nil {
 				r.cache.Store(accountID, updated)
-				_ = idTok
 				return updated, nil
 			}
 		}
 	}
+	if strings.TrimSpace(secret) == "" && refreshToken != "" && r.refreshFn != nil {
+		updated, err := r.refresh(ctx, sessionInfo{RefreshToken: refreshToken})
+		if err != nil {
+			return sessionInfo{}, fmt.Errorf("refresh token: %w", err)
+		}
+		r.cache.Store(accountID, updated)
+		return updated, nil
+	}
 	log.Printf("[chatgpt-session] account=%s cache miss/expired, fetching fresh (secret_len=%d)", accountID, len(secret))
 	info, err := r.fetchFresh(ctx, secret, ua)
 	if err != nil {
+		if refreshToken != "" && r.refreshFn != nil {
+			updated, refreshErr := r.refresh(ctx, sessionInfo{RefreshToken: refreshToken})
+			if refreshErr == nil {
+				r.cache.Store(accountID, updated)
+				return updated, nil
+			}
+		}
 		log.Printf("[chatgpt-session] account=%s fetchFresh error: %v", accountID, err)
 		return sessionInfo{}, err
 	}
+	if refreshToken != "" {
+		info.RefreshToken = refreshToken
+	}
 	log.Printf("[chatgpt-session] account=%s fetchFresh ok: access_token_len=%d, account_id=%q, plan=%q, expires=%v",
 		accountID, len(info.AccessToken), info.AccountID, info.PlanType, info.Expires)
+
+	if time.Until(info.Expires) <= 2*time.Minute {
+		if r.refreshFn == nil || info.RefreshToken == "" {
+			if time.Until(info.Expires) > 0 {
+				r.cache.Store(accountID, info)
+				return info, nil
+			}
+			return sessionInfo{}, errors.New("chatgpt: access token expired and no refresh_token available")
+		}
+		updated, err := r.refresh(ctx, info)
+		if err != nil {
+			if time.Until(info.Expires) > 0 {
+				r.cache.Store(accountID, info)
+				return info, nil
+			}
+			return sessionInfo{}, fmt.Errorf("refresh token: %w", err)
+		}
+		r.cache.Store(accountID, updated)
+		return updated, nil
+	}
 	r.cache.Store(accountID, info)
 	return info, nil
+}
+
+func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo) (sessionInfo, error) {
+	if r.refreshFn == nil {
+		return sessionInfo{}, errors.New("refresh callback not configured")
+	}
+	newAccess, newRefresh, idTok, expIn, err := r.refreshFn(ctx, info.RefreshToken)
+	if err != nil {
+		return sessionInfo{}, err
+	}
+	if newAccess == "" {
+		return sessionInfo{}, errors.New("empty access_token in refresh response")
+	}
+	exp := time.Time{}
+	if expIn > 0 {
+		exp = time.Now().Add(time.Duration(expIn) * time.Second)
+	}
+	if exp.IsZero() {
+		exp = jwtExpiry(newAccess)
+		if exp.IsZero() {
+			exp = time.Now().Add(50 * time.Minute)
+		}
+	}
+	if newRefresh == "" {
+		newRefresh = info.RefreshToken
+	}
+	if idTok == "" {
+		idTok = info.IDToken
+	}
+	accountID := info.AccountID
+	planType := info.PlanType
+	email := info.Email
+	if idTok != "" {
+		claimAccount, claimPlan, claimEmail := codexClaims(idTok)
+		if accountID == "" {
+			accountID = claimAccount
+		}
+		if planType == "" {
+			planType = claimPlan
+		}
+		if email == "" {
+			email = claimEmail
+		}
+	}
+	return sessionInfo{
+		AccessToken:  newAccess,
+		RefreshToken: newRefresh,
+		Expires:      exp,
+		AccountID:    accountID,
+		PlanType:     planType,
+		Email:        email,
+		IDToken:      idTok,
+	}, nil
 }
 
 func (r *sessionResolver) fetchFresh(ctx context.Context, secret, ua string) (sessionInfo, error) {
@@ -179,6 +257,8 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		Expires:      exp,
 		AccountID:    raw.Account.ID,
 		PlanType:     raw.Account.PlanType,
+		Email:        raw.User.Email,
+		IDToken:      raw.IDToken,
 	}, nil
 }
 
@@ -203,6 +283,47 @@ func jwtExpiry(jwt string) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(claim.Exp, 0)
+}
+
+func codexClaims(jwt string) (accountID, planType, email string) {
+	parts := strings.Split(jwt, ".")
+	if len(parts) < 2 {
+		return
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(addB64Padding(parts[1]))
+		if err != nil {
+			return
+		}
+	}
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &nested); err != nil {
+		return
+	}
+	if a, ok := nested["https://api.openai.com/auth"]; ok {
+		var inner struct {
+			ChatGPTAccountID string `json:"chatgpt_account_id"`
+			ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+		}
+		_ = json.Unmarshal(a, &inner)
+		accountID = inner.ChatGPTAccountID
+		planType = inner.ChatGPTPlanType
+	}
+	if e, ok := nested["email"]; ok {
+		_ = json.Unmarshal(e, &email)
+	}
+	return
+}
+
+func addB64Padding(s string) string {
+	switch len(s) % 4 {
+	case 2:
+		return s + "=="
+	case 3:
+		return s + "="
+	}
+	return s
 }
 
 func snippet(b []byte) string {

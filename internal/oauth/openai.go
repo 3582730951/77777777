@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +70,13 @@ func (m *Manager) SetStore(s PendingStore) {
 
 // Start creates a new OAuth flow and returns the authorize URL.
 func (m *Manager) Start(provider Provider, tenantID, note string) (*PendingAuth, string, error) {
+	return m.StartWithRelayBase(provider, tenantID, note, "")
+}
+
+// StartWithRelayBase creates a new OAuth flow and embeds the admin origin in
+// state so a localhost callback handled by another process can relay the code
+// back to the server that created the enrollment.
+func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBase string) (*PendingAuth, string, error) {
 	cfg := ConfigFor(provider)
 	if cfg == nil {
 		return nil, "", fmt.Errorf("unknown provider: %s", provider)
@@ -106,6 +114,7 @@ func (m *Manager) Start(provider Provider, tenantID, note string) (*PendingAuth,
 	} else {
 		state = base64.RawURLEncoding.EncodeToString(stateBytes)
 	}
+	state = encodeRelayState(provider, state, relayBase)
 
 	id := randHex(12)
 	p := &PendingAuth{
@@ -166,6 +175,71 @@ func (m *Manager) Start(provider Provider, tenantID, note string) (*PendingAuth,
 	}
 
 	return p, authorize, nil
+}
+
+func encodeRelayState(provider Provider, state, relayBase string) string {
+	relayBase = strings.TrimRight(strings.TrimSpace(relayBase), "/")
+	if relayBase == "" {
+		return state
+	}
+	u, err := url.Parse(relayBase)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return state
+	}
+	switch provider {
+	case ProviderCodex:
+		return state + hex.EncodeToString([]byte(relayBase))
+	default:
+		return state + "." + base64.RawURLEncoding.EncodeToString([]byte(relayBase))
+	}
+}
+
+func RelayBaseFromState(provider Provider, state string) (string, bool) {
+	var raw []byte
+	var err error
+	switch provider {
+	case ProviderCodex:
+		if len(state) <= 64 || (len(state)-64)%2 != 0 {
+			return "", false
+		}
+		raw, err = hex.DecodeString(state[64:])
+	default:
+		idx := strings.LastIndex(state, ".")
+		if idx < 0 || idx == len(state)-1 {
+			return "", false
+		}
+		raw, err = base64.RawURLEncoding.DecodeString(state[idx+1:])
+	}
+	if err != nil || len(raw) == 0 {
+		return "", false
+	}
+	base := strings.TrimRight(string(raw), "/")
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", false
+	}
+	return base, true
+}
+
+func RelayCallbackURL(provider Provider, callbackQuery url.Values) (string, bool) {
+	state := callbackQuery.Get("state")
+	if state == "" {
+		return "", false
+	}
+	base, ok := RelayBaseFromState(provider, state)
+	if !ok {
+		return "", false
+	}
+	q := url.Values{}
+	for _, key := range []string{"code", "state", "error", "error_description"} {
+		if values, ok := callbackQuery[key]; ok {
+			for _, value := range values {
+				q.Add(key, value)
+			}
+		}
+	}
+	q.Set("provider", string(provider))
+	return base + "/accounts/oauth/callback/relay?" + q.Encode(), true
 }
 
 func (m *Manager) FindByState(state string) (*PendingAuth, bool) {

@@ -265,6 +265,7 @@ func (s *Scheduler) Snapshot() []SlotView {
 		out = append(out, SlotView{
 			AccountID:       sl.Account.ID,
 			Provider:        sl.Account.Provider,
+			Email:           sl.Account.Email,
 			TenantID:        sl.Account.TenantID,
 			PlanTier:        sl.Account.PlanTier,
 			State:           string(sl.Account.State),
@@ -310,6 +311,7 @@ func (s *Scheduler) SnapshotCached(ttl time.Duration) []SlotView {
 type SlotView struct {
 	AccountID    string
 	Provider     string
+	Email        string
 	TenantID     string
 	PlanTier     string
 	State        string

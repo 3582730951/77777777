@@ -20,11 +20,11 @@ import (
 
 	"github.com/tidwall/gjson"
 
-	"github.com/llm-pool/gateway/internal/transport"
 	"github.com/llm-pool/gateway/internal/billing"
 	"github.com/llm-pool/gateway/internal/domain"
 	"github.com/llm-pool/gateway/internal/protocol/ir"
 	"github.com/llm-pool/gateway/internal/store"
+	"github.com/llm-pool/gateway/internal/transport"
 )
 
 const (
@@ -57,6 +57,23 @@ type Provider struct {
 
 func (p *Provider) SetStore(s *store.Store) { p.store = s }
 
+// RefreshCredential resolves the stored OAuth blob and refreshes it when due
+// without calling quota or model endpoints.
+func (p *Provider) RefreshCredential(ctx context.Context, acc *domain.Account) error {
+	if p.Mode == ModeMock {
+		return nil
+	}
+	if p.store == nil {
+		return errors.New("store not wired")
+	}
+	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		return fmt.Errorf("get secret: %w", err)
+	}
+	_, err = p.resolveSession(ctx, acc, sec)
+	return err
+}
+
 func New(mode string) *Provider {
 	if mode == "" {
 		mode = ModeMock
@@ -69,6 +86,68 @@ func New(mode string) *Provider {
 }
 
 func (p *Provider) Name() string { return "claude" }
+
+func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
+	if err != nil {
+		return sessionInfo{}, err
+	}
+	if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
+		log.Printf("[claude-session] account=%s persist refreshed session: %v", acc.ID, err)
+	}
+	return info, nil
+}
+
+func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret, info sessionInfo) error {
+	if p.store == nil || info.AccessToken == "" {
+		return nil
+	}
+	changed := false
+	next := sec
+	if shouldPersistClaudeSession(sec.SessionToken, info) {
+		next.SessionToken = buildClaudeSessionJSON(info)
+		changed = true
+	}
+	if info.RefreshToken != "" && next.RefreshToken != info.RefreshToken {
+		next.RefreshToken = info.RefreshToken
+		changed = true
+	}
+	if info.Email != "" && acc.Email == "" {
+		acc.Email = info.Email
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	acc.UpdatedAt = time.Now()
+	return p.store.UpsertAccount(ctx, acc, next)
+}
+
+func shouldPersistClaudeSession(existing string, info sessionInfo) bool {
+	old, err := parseClaudeSessionJSON([]byte(existing))
+	if err != nil {
+		return true
+	}
+	return old.AccessToken != info.AccessToken ||
+		old.RefreshToken != info.RefreshToken ||
+		old.AccountUUID != info.AccountUUID ||
+		old.Organization != info.Organization ||
+		old.Email != info.Email ||
+		!old.Expires.Truncate(time.Second).Equal(info.Expires.Truncate(time.Second))
+}
+
+func buildClaudeSessionJSON(info sessionInfo) string {
+	out := map[string]any{
+		"access_token":      info.AccessToken,
+		"refresh_token":     info.RefreshToken,
+		"organization_uuid": info.Organization,
+		"account_uuid":      info.AccountUUID,
+		"email":             info.Email,
+		"expires_at":        info.Expires.Format(time.RFC3339),
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
 
 func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
 	switch p.Mode {
@@ -91,7 +170,7 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 	if err != nil {
 		return fmt.Errorf("get secret: %w", err)
 	}
-	_, err = p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
+	_, err = p.resolveSession(ctx, acc, sec)
 	return err
 }
 
@@ -193,7 +272,7 @@ func (p *Provider) fetchOAuthUsage(ctx context.Context, acc *domain.Account) err
 	if err != nil {
 		return err
 	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
+	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
 		return err
 	}
@@ -328,7 +407,7 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	if err != nil {
 		return nil, fmt.Errorf("get secret: %w", err)
 	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
+	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
 		return nil, fmt.Errorf("resolve session: %w", err)
 	}
@@ -700,9 +779,9 @@ func mapModel(m string) string {
 		return "claude-sonnet-4-6"
 	}
 	overrides := map[string]string{
-		"claude-sonnet-4-5":  "claude-sonnet-4-5-20250929",
-		"claude-opus-4-5":    "claude-opus-4-5-20251101",
-		"claude-haiku-4-5":   "claude-haiku-4-5-20251001",
+		"claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
+		"claude-opus-4-5":   "claude-opus-4-5-20251101",
+		"claude-haiku-4-5":  "claude-haiku-4-5-20251001",
 	}
 	if v, ok := overrides[m]; ok {
 		return v
@@ -744,7 +823,7 @@ var toolNameMap = map[string]string{
 	"todowrite": "TodoWrite", "todoread": "TodoRead",
 	"task": "Task", "taskread": "TaskRead",
 	"notebookedit": "NotebookEdit",
-	"question": "Question", "skill": "Skill",
+	"question":     "Question", "skill": "Skill",
 	"agent": "Agent",
 }
 

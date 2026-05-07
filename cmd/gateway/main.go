@@ -50,6 +50,7 @@ import (
 	"github.com/llm-pool/gateway/internal/scheduler"
 	"github.com/llm-pool/gateway/internal/server"
 	"github.com/llm-pool/gateway/internal/store"
+	"github.com/llm-pool/gateway/internal/tokenrefresh"
 )
 
 func main() {
@@ -83,6 +84,9 @@ func main() {
 		logger.Error("bootstrap admin", "err", err)
 	}
 
+	oauthMgr := oauth.New()
+	oauthMgr.SetStore(st)
+
 	resolver := auth.NewDynamicResolver(st)
 	resolver.LoadFromConfig(cfg)
 	if err := resolver.Reload(context.Background(), cfg); err != nil {
@@ -98,6 +102,7 @@ func main() {
 	}
 	chatgptProv := chatgpt.New(mode)
 	chatgptProv.SetStore(st)
+	chatgptProv.SetRefreshFunc(oauthMgr.RefreshCodex)
 	providers.Register(chatgptProv)
 
 	claudeProv := claude.New(mode)
@@ -218,6 +223,10 @@ func main() {
 		}
 	}
 
+	refreshInterval := envDuration("TOKEN_REFRESH_INTERVAL", 5*time.Minute, logger)
+	tokenRefresher := tokenrefresh.New(st, providers, sched, logger, refreshInterval)
+	go tokenRefresher.Run(rootCtx)
+
 	prober := scheduler.NewProber(sched, cfg.Scheduler.Prober.BackgroundInterval, probeFn)
 	go prober.Run(rootCtx)
 	go sched.RunGC(rootCtx)
@@ -305,8 +314,6 @@ func main() {
 		Audit:    auditLog,
 	})
 	adminSrv.SetEnrollment(enrollment.New())
-	oauthMgr := oauth.New()
-	oauthMgr.SetStore(st)
 	adminSrv.SetOAuth(oauthMgr)
 	adminSrv.StartLocalCallbackListeners()
 	adminHTTP := &http.Server{
@@ -494,6 +501,21 @@ func parseSize(s string) (int64, error) {
 		return 0, err
 	}
 	return n * mul, nil
+}
+
+func envDuration(name string, fallback time.Duration, log *slog.Logger) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		if log != nil {
+			log.Warn("duration env parse", "name", name, "value", value, "err", err)
+		}
+		return fallback
+	}
+	return d
 }
 
 func fatal(f string, args ...any) {

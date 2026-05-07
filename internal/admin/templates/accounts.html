@@ -10,7 +10,15 @@
 .acct-card{padding:16px;cursor:pointer;transition:box-shadow 0.2s var(--ease)}
 .acct-card:hover{box-shadow:var(--s2)}
 .acct-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.acct-id-wrap{display:flex;min-width:0;align-items:center;gap:6px}
 .acct-id{font-family:"SF Mono",Menlo,monospace;font-size:11px;font-weight:600;color:var(--fg)}
+.email-toggle{display:inline-flex;width:24px;height:24px;align-items:center;justify-content:center;border:1px solid var(--hairline);
+  border-radius:6px;background:transparent;color:var(--fg-muted);cursor:pointer}
+.email-toggle:hover{color:var(--fg);background:var(--sep)}
+.email-toggle svg{width:14px;height:14px}
+.account-email{margin-top:4px;font-family:"SF Mono",Menlo,monospace;font-size:11px;color:var(--fg-muted);word-break:break-all}
+.table-id-cell{display:flex;min-width:180px;flex-direction:column;gap:3px}
+.table-id-main{display:flex;align-items:center;gap:6px}
 .acct-meta{display:flex;gap:6px;align-items:center;margin-bottom:10px;font-size:11px}
 .conf-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .quota-row{margin-bottom:6px}
@@ -77,9 +85,19 @@
           <div class="card acct-card" data-provider="{{.Provider}}" data-confidence="{{.Confidence}}" data-healthy="{{.Healthy}}"
                onclick="location.href='/accounts/{{.AccountID}}'">
             <div class="acct-hd">
-              <a href="/accounts/{{.AccountID}}" class="acct-id" onclick="event.stopPropagation()">{{.AccountID}}</a>
+              <div class="acct-id-wrap">
+                <a href="/accounts/{{.AccountID}}" class="acct-id" onclick="event.stopPropagation()">{{.AccountID}}</a>
+                <button type="button" class="email-toggle" data-email="{{.Email}}" aria-label="显示注册邮箱" title="显示注册邮箱"
+                        onclick="toggleAccountEmail(event,this)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2.1 12s3.6-6.5 9.9-6.5 9.9 6.5 9.9 6.5-3.6 6.5-9.9 6.5S2.1 12 2.1 12Z"></path>
+                    <circle cx="12" cy="12" r="2.8"></circle>
+                  </svg>
+                </button>
+              </div>
               <span class="provider-tag provider-{{.Provider}}" style="font-size:9px">{{.Provider}}</span>
             </div>
+            <div class="account-email" hidden></div>
             <div class="acct-meta">
               <span class="conf-dot" style="background:{{if .Healthy}}{{confColor .Confidence}}{{else}}var(--err){{end}}"></span>
               <span class="muted">{{confLabel .Confidence}}</span>
@@ -136,7 +154,21 @@
               <tbody>
               {{range .Slots}}
                 <tr data-provider="{{.Provider}}" data-confidence="{{.Confidence}}" data-healthy="{{.Healthy}}">
-                  <td><a href="/accounts/{{.AccountID}}" class="mono" style="font-size:12px">{{.AccountID}}</a></td>
+                  <td>
+                    <div class="table-id-cell">
+                      <div class="table-id-main">
+                        <a href="/accounts/{{.AccountID}}" class="mono" style="font-size:12px">{{.AccountID}}</a>
+                        <button type="button" class="email-toggle" data-email="{{.Email}}" aria-label="显示注册邮箱" title="显示注册邮箱"
+                                onclick="toggleAccountEmail(event,this)">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M2.1 12s3.6-6.5 9.9-6.5 9.9 6.5 9.9 6.5-3.6 6.5-9.9 6.5S2.1 12 2.1 12Z"></path>
+                            <circle cx="12" cy="12" r="2.8"></circle>
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="account-email" hidden></div>
+                    </div>
+                  </td>
                   <td><span class="provider-tag provider-{{.Provider}}">{{.Provider}}</span></td>
                   <td class="muted tiny">{{or .TenantID "—"}}</td>
                   <td class="tiny muted">{{or .PlanTier "—"}}</td>
@@ -190,6 +222,19 @@
 function toggleTheme(){document.body.classList.toggle('theme-dark')}
 
 let _provFilter='all',_stateFilter='all';
+
+function toggleAccountEmail(event,btn){
+  event.stopPropagation();
+  const holder=btn.closest('.acct-card')?.querySelector('.account-email')||
+    btn.closest('.table-id-cell')?.querySelector('.account-email');
+  if(!holder)return;
+  const showing=!holder.hidden;
+  holder.hidden=showing;
+  btn.classList.toggle('active',!showing);
+  btn.setAttribute('aria-label',showing?'显示注册邮箱':'隐藏注册邮箱');
+  btn.setAttribute('title',showing?'显示注册邮箱':'隐藏注册邮箱');
+  if(!showing)holder.textContent=btn.dataset.email||'未记录邮箱';
+}
 
 function setView(view,btn){
   document.querySelectorAll('.view-toggle .vt-btn').forEach(b=>b.classList.remove('active'));

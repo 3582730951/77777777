@@ -9,12 +9,12 @@ type Tenant struct {
 }
 
 type Group struct {
-	ID         string
-	TenantID   string
-	Provider   string
-	APIKeys    []string
-	Models     []string
-	AccountIDs []string
+	ID              string
+	TenantID        string
+	Provider        string
+	APIKeys         []string
+	Models          []string
+	AccountIDs      []string
 	ModelAliases    map[string]string
 	ModelWhitelist  []string
 	APIKeyOverrides map[string]APIKeyOverride
@@ -29,9 +29,9 @@ type Group struct {
 	// ForcedModel overrides the model for all requests in this group.
 	// Client's requested model is ignored when this is set.
 	// Useful for pinning a group to a specific model or aliasing across providers.
-	ForcedModel      string
-	SourcePlatform   string
-	AutoRegister     bool
+	ForcedModel    string
+	SourcePlatform string
+	AutoRegister   bool
 }
 
 type APIKeyOverride struct {
@@ -94,6 +94,7 @@ type Account struct {
 	ID             string
 	TenantID       string
 	Provider       string
+	Email          string
 	CredentialBlob []byte
 	StealthProfile string
 	UA             string
@@ -142,13 +143,13 @@ type ModelCapability struct {
 }
 
 type HealthState struct {
-	EWMALatency  float64
-	SuccessRate  float64
-	InflightReqs int
-	Confidence   AvailConfidence
-	Breaker      BreakerState
-	OpenUntil    time.Time
-	FailCount    int
+	EWMALatency   float64
+	SuccessRate   float64
+	InflightReqs  int
+	Confidence    AvailConfidence
+	Breaker       BreakerState
+	OpenUntil     time.Time
+	FailCount     int
 	LastSuccessAt time.Time
 	LastFailureAt time.Time
 }

@@ -51,6 +51,24 @@ func (p *Provider) SetRefreshFunc(f func(ctx context.Context, refreshToken strin
 	p.resolver.SetRefreshFunc(f)
 }
 
+// RefreshCredential resolves the stored session and refreshes it when the
+// access token is expired or close to expiry. It deliberately avoids quota
+// endpoints so the background keepalive loop stays cheap.
+func (p *Provider) RefreshCredential(ctx context.Context, acc *domain.Account) error {
+	if p.Mode == ModeMock {
+		return nil
+	}
+	if p.store == nil {
+		return errors.New("store not wired")
+	}
+	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		return fmt.Errorf("get secret: %w", err)
+	}
+	_, err = p.resolveSession(ctx, acc, sec)
+	return err
+}
+
 func New(mode string) *Provider {
 	if mode == "" {
 		mode = ModeMock
@@ -63,6 +81,88 @@ func New(mode string) *Provider {
 }
 
 func (p *Provider) Name() string { return "chatgpt" }
+
+func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA)
+	if err != nil {
+		return sessionInfo{}, err
+	}
+	if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
+		log.Printf("[chatgpt-session] account=%s persist refreshed session: %v", acc.ID, err)
+	}
+	return info, nil
+}
+
+func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret, info sessionInfo) error {
+	if p.store == nil || info.AccessToken == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(sec.SessionToken)
+	rawCookieWithoutRefresh := trimmed != "" && !strings.HasPrefix(trimmed, "{") && info.RefreshToken == ""
+
+	changed := false
+	next := sec
+	if !rawCookieWithoutRefresh && shouldPersistChatGPTSession(sec.SessionToken, info) {
+		next.SessionToken = buildChatGPTSessionJSON(info)
+		changed = true
+	}
+	if info.RefreshToken != "" && next.RefreshToken != info.RefreshToken {
+		next.RefreshToken = info.RefreshToken
+		changed = true
+	}
+	if info.Email != "" && acc.Email == "" {
+		acc.Email = info.Email
+		changed = true
+	}
+	if info.PlanType != "" && acc.PlanTier == "" {
+		acc.PlanTier = info.PlanType
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	acc.UpdatedAt = time.Now()
+	return p.store.UpsertAccount(ctx, acc, next)
+}
+
+func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
+	trimmed := strings.TrimSpace(existing)
+	if trimmed == "" {
+		return true
+	}
+	if !strings.HasPrefix(trimmed, "{") {
+		return info.RefreshToken != ""
+	}
+	old, err := parseSessionJSON([]byte(trimmed))
+	if err != nil {
+		return true
+	}
+	return old.AccessToken != info.AccessToken ||
+		old.RefreshToken != info.RefreshToken ||
+		old.IDToken != info.IDToken ||
+		old.AccountID != info.AccountID ||
+		old.PlanType != info.PlanType ||
+		old.Email != info.Email
+}
+
+func buildChatGPTSessionJSON(info sessionInfo) string {
+	out := map[string]any{
+		"user": map[string]string{
+			"id":    info.AccountID,
+			"email": info.Email,
+		},
+		"expires": info.Expires.Format(time.RFC3339),
+		"account": map[string]string{
+			"id":       info.AccountID,
+			"planType": info.PlanType,
+		},
+		"accessToken":  info.AccessToken,
+		"refreshToken": info.RefreshToken,
+		"idToken":      info.IDToken,
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
 
 func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
 	switch p.Mode {
@@ -85,7 +185,7 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 	if err != nil {
 		return fmt.Errorf("get secret: %w", err)
 	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, acc.UA)
+	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
 		return err
 	}
@@ -129,7 +229,7 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 		return nil, err
 	}
 	log.Printf("[chatgpt-discover] account=%s secret loaded, session_token_len=%d, ua=%q", acc.ID, len(sec.SessionToken), acc.UA)
-	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, acc.UA)
+	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
 		log.Printf("[chatgpt-discover] account=%s Resolve error: %v", acc.ID, err)
 		// Detect ban from session error
@@ -597,7 +697,7 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	if err != nil {
 		return nil, fmt.Errorf("get secret: %w", err)
 	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, acc.UA)
+	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
 		return nil, fmt.Errorf("resolve session: %w", err)
 	}
@@ -656,15 +756,12 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	if err != nil {
 		return nil, 0, fmt.Errorf("get secret: %w", err)
 	}
-	acc, _ := p.store.ListAccounts(rctx, "")
-	var ua string
-	for _, a := range acc {
-		if a.ID == accountID {
-			ua = a.UA
-			break
-		}
+	acc, err := p.store.GetAccount(rctx, accountID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get account: %w", err)
 	}
-	info, err := p.resolver.Resolve(rctx, accountID, sec.SessionToken, ua)
+	ua := acc.UA
+	info, err := p.resolveSession(rctx, acc, sec)
 	if err != nil {
 		return nil, 0, fmt.Errorf("resolve session: %w", err)
 	}

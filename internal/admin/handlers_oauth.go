@@ -58,6 +58,10 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request, 
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		if relayURL, ok := oauth.RelayCallbackURL(cfg.ID, r.URL.Query()); ok {
+			http.Redirect(w, r, relayURL, http.StatusSeeOther)
+			return
+		}
 		renderCallbackPage(w, "error", "OAuth provider returned: "+errParam+" - "+r.URL.Query().Get("error_description"))
 		return
 	}
@@ -67,6 +71,10 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request, 
 	}
 	p, ok := s.oauth.FindByState(state)
 	if !ok {
+		if relayURL, ok := oauth.RelayCallbackURL(cfg.ID, r.URL.Query()); ok {
+			http.Redirect(w, r, relayURL, http.StatusSeeOther)
+			return
+		}
 		renderCallbackPage(w, "error", "Unknown or expired state token. Please restart enrollment from the admin UI.")
 		return
 	}
@@ -76,15 +84,60 @@ func (s *Server) handleProviderCallback(w http.ResponseWriter, r *http.Request, 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.oauth.Exchange(p, code); err != nil {
-		renderCallbackPage(w, "error", "Token exchange failed: "+err.Error())
-		return
-	}
-	if err := s.persistOAuthAccount(ctx, p); err != nil {
-		renderCallbackPage(w, "error", "Save account failed: "+err.Error())
+	if err := s.completeOAuthCallback(ctx, p, code); err != nil {
+		renderCallbackPage(w, "error", err.Error())
 		return
 	}
 	renderCallbackPage(w, "ok", string(cfg.ID)+" account enrolled. You can close this tab; the admin UI will auto-redirect.")
+}
+
+func (s *Server) handleOAuthRelayCallback(w http.ResponseWriter, r *http.Request) {
+	if s.oauth == nil {
+		renderCallbackPage(w, "error", "OAuth manager not wired.")
+		return
+	}
+	provider := oauth.Provider(r.URL.Query().Get("provider"))
+	cfg := oauth.ConfigFor(provider)
+	if cfg == nil {
+		renderCallbackPage(w, "error", "Unknown OAuth provider.")
+		return
+	}
+	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		renderCallbackPage(w, "error", "OAuth provider returned: "+errParam+" - "+r.URL.Query().Get("error_description"))
+		return
+	}
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+	if state == "" || code == "" {
+		renderCallbackPage(w, "error", "Missing state or code in callback URL.")
+		return
+	}
+	p, ok := s.oauth.FindByState(state)
+	if !ok {
+		renderCallbackPage(w, "error", "Unknown or expired state token. Please restart enrollment from the admin UI.")
+		return
+	}
+	if p.Provider != provider {
+		renderCallbackPage(w, "error", "State/provider mismatch")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.completeOAuthCallback(ctx, p, code); err != nil {
+		renderCallbackPage(w, "error", err.Error())
+		return
+	}
+	renderCallbackPage(w, "ok", string(cfg.ID)+" account enrolled. You can close this tab; the admin UI will auto-redirect.")
+}
+
+func (s *Server) completeOAuthCallback(ctx context.Context, p *oauth.PendingAuth, code string) error {
+	if err := s.oauth.Exchange(p, code); err != nil {
+		return errors.New("Token exchange failed: " + err.Error())
+	}
+	if err := s.persistOAuthAccount(ctx, p); err != nil {
+		return errors.New("Save account failed: " + err.Error())
+	}
+	return nil
 }
 
 func renderCallbackPage(w http.ResponseWriter, kind, msg string) {
@@ -121,6 +174,7 @@ func (s *Server) persistOAuthAccount(ctx context.Context, p *oauth.PendingAuth) 
 		ID:             id,
 		TenantID:       p.TenantID,
 		Provider:       provider,
+		Email:          p.Email,
 		PlanTier:       p.PlanType,
 		StealthProfile: "chrome_124_windows",
 		UA:             "codex_cli_rs/0.45.0",
@@ -174,7 +228,7 @@ func (s *Server) handleOAuthStartPost(w http.ResponseWriter, r *http.Request) {
 		tenantID = "default"
 	}
 	note := r.FormValue("note")
-	p, authURL, err := s.oauth.Start(provider, tenantID, note)
+	p, authURL, err := s.oauth.StartWithRelayBase(provider, tenantID, note, adminPublicBaseURL(r))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -262,6 +316,35 @@ func (s *Server) handleOAuthPasteCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	http.Redirect(w, r, "/accounts/"+p.AccountID, http.StatusSeeOther)
+}
+
+func adminPublicBaseURL(r *http.Request) string {
+	proto := firstCSV(r.Header.Get("X-Forwarded-Proto"))
+	if proto == "" {
+		if strings.EqualFold(r.Header.Get("X-Forwarded-Ssl"), "on") || strings.EqualFold(r.Header.Get("X-Forwarded-Scheme"), "https") {
+			proto = "https"
+		} else if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	host := firstCSV(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	prefix := strings.TrimRight(firstCSV(r.Header.Get("X-Forwarded-Prefix")), "/")
+	if prefix == "/" {
+		prefix = ""
+	}
+	return strings.TrimRight(proto+"://"+host+prefix, "/")
+}
+
+func firstCSV(value string) string {
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
 }
 
 var _ = json.Marshal

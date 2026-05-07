@@ -29,9 +29,9 @@ import (
 )
 
 const (
-	claudeTokenURL   = "https://api.anthropic.com/v1/oauth/token"
-	claudeClientID   = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	refreshSkew      = 3 * time.Minute
+	claudeTokenURL = "https://api.anthropic.com/v1/oauth/token"
+	claudeClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	refreshSkew    = 3 * time.Minute
 )
 
 type sessionInfo struct {
@@ -39,15 +39,16 @@ type sessionInfo struct {
 	RefreshToken string
 	Expires      time.Time
 	AccountUUID  string
+	Organization string
 	Email        string
 }
 
 // QuotaSnapshot holds usage data from /api/oauth/usage and response headers.
 type QuotaSnapshot struct {
 	// From /api/oauth/usage (primary source, same as Claude Code CLI)
-	FiveHourUtilization int64     // 0-100 percent
+	FiveHourUtilization int64 // 0-100 percent
 	FiveHourReset       time.Time
-	SevenDayUtilization int64     // 0-100 percent
+	SevenDayUtilization int64 // 0-100 percent
 	SevenDayReset       time.Time
 	// Dynamic tier windows (all tiers from the API response)
 	TierMap map[string]tierEntry
@@ -72,12 +73,12 @@ type tierEntry struct {
 }
 
 type sessionResolver struct {
-	mu           sync.Mutex
-	cache        map[string]sessionInfo
-	quotas       map[string]QuotaSnapshot
-	refreshing   map[string]bool // per-account refresh lock to prevent concurrent refreshes
-	lastRefresh  map[string]time.Time // throttle refresh frequency
-	httpClient   *http.Client
+	mu          sync.Mutex
+	cache       map[string]sessionInfo
+	quotas      map[string]QuotaSnapshot
+	refreshing  map[string]bool      // per-account refresh lock to prevent concurrent refreshes
+	lastRefresh map[string]time.Time // throttle refresh frequency
+	httpClient  *http.Client
 }
 
 func newSessionResolver() *sessionResolver {
@@ -118,7 +119,10 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, sessionJSON, r
 	// Parse the stored JSON first.
 	info, err := parseClaudeSessionJSON([]byte(sessionJSON))
 	if err != nil {
-		return sessionInfo{}, err
+		if refreshToken == "" {
+			return sessionInfo{}, err
+		}
+		info = sessionInfo{RefreshToken: refreshToken}
 	}
 	// refreshToken arg overrides what's in JSON if provided.
 	if refreshToken != "" {
@@ -172,6 +176,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, sessionJSON, r
 	}
 	// Preserve metadata from original.
 	refreshed.AccountUUID = info.AccountUUID
+	refreshed.Organization = info.Organization
 	refreshed.Email = info.Email
 
 	r.mu.Lock()
@@ -186,6 +191,7 @@ func parseClaudeSessionJSON(body []byte) (sessionInfo, error) {
 		RefreshToken string          `json:"refresh_token"`
 		ExpiresAt    json.RawMessage `json:"expires_at"`
 		AccountUUID  string          `json:"account_uuid"`
+		Organization string          `json:"organization_uuid"`
 		Email        string          `json:"email"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -203,6 +209,7 @@ func parseClaudeSessionJSON(body []byte) (sessionInfo, error) {
 		RefreshToken: raw.RefreshToken,
 		Expires:      exp,
 		AccountUUID:  raw.AccountUUID,
+		Organization: raw.Organization,
 		Email:        raw.Email,
 	}, nil
 }

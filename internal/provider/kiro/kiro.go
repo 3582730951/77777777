@@ -30,12 +30,12 @@ const (
 )
 
 var modelMapping = map[string]string{
-	"claude-haiku-4-5":          "claude-haiku-4.5",
-	"claude-opus-4-7":           "claude-opus-4.7",
-	"claude-opus-4-6":           "claude-opus-4.6",
-	"claude-sonnet-4-6":         "claude-sonnet-4.6",
-	"claude-opus-4-5":           "claude-opus-4.5",
-	"claude-sonnet-4-5":         "claude-sonnet-4.5",
+	"claude-haiku-4-5":           "claude-haiku-4.5",
+	"claude-opus-4-7":            "claude-opus-4.7",
+	"claude-opus-4-6":            "claude-opus-4.6",
+	"claude-sonnet-4-6":          "claude-sonnet-4.6",
+	"claude-opus-4-5":            "claude-opus-4.5",
+	"claude-sonnet-4-5":          "claude-sonnet-4.5",
 	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
 }
 
@@ -76,6 +76,16 @@ func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Requ
 }
 
 func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
+	if p.Mode == "mock" {
+		return nil
+	}
+	_, _, err := p.ensureAccessToken(ctx, acc)
+	return err
+}
+
+// RefreshCredential refreshes Kiro's cached access token and persists a
+// rotated refresh token if the service returns one.
+func (p *Provider) RefreshCredential(ctx context.Context, acc *domain.Account) error {
 	if p.Mode == "mock" {
 		return nil
 	}

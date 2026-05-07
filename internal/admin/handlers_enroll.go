@@ -99,11 +99,11 @@ func (s *Server) handleAccountEnrollStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSONStatus(w, 200, map[string]any{
-		"id":          p.ID,
-		"state":       string(p.State),
-		"account_id":  p.AccountID,
-		"error":       p.Error,
-		"expires_at":  p.ExpiresAt,
+		"id":           p.ID,
+		"state":        string(p.State),
+		"account_id":   p.AccountID,
+		"error":        p.Error,
+		"expires_at":   p.ExpiresAt,
 		"completed_at": p.CompletedAt,
 	})
 }
@@ -179,6 +179,7 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 		ID:             accID,
 		TenantID:       p.TenantID,
 		Provider:       p.Provider,
+		Email:          accountEmailFromImport("", sess),
 		StealthProfile: "chrome_124_windows",
 		UA:             payload.UA,
 		State:          domain.StateActive,

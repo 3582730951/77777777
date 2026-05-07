@@ -43,12 +43,17 @@
                     <option value="pro"   {{if eq .Account.PlanTier "pro"}}selected{{end}}>Pro</option>
                     <option value="free"  {{if eq .Account.PlanTier "free"}}selected{{end}}>Free</option>
                   </select></div>
+                <div class="field"><label>注册邮箱</label>
+                  <input type="email" name="email" value="{{.Account.Email}}" placeholder="name@example.com"/></div>
+              </div>
+              <div class="form-row c2">
                 <div class="field"><label>TLS Profile</label>
                   <select name="stealth_profile">
                     <option value="chrome_124_windows">Chrome 124 Windows</option>
                     <option value="chrome_120_mac">Chrome 120 Mac</option>
                     <option value="firefox_125_linux">Firefox 125 Linux</option>
                   </select></div>
+                <div></div>
               </div>
 
               <div class="form-section">

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -321,6 +322,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/login", s.handleLoginPage)
 	r.Post("/login", s.handleLogin)
 	r.Get("/logout", s.handleLogout)
+	r.Get("/accounts/oauth/callback/relay", s.handleOAuthRelayCallback)
 
 	// Tenant portal: username + password login.
 	r.Get("/portal/login", s.handlePortalLoginPage)
@@ -484,11 +486,12 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	for _, a := range accs {
 		seen[a.ID] = true
 		if sl, ok := slotByID[a.ID]; ok {
+			sl.Email = a.Email
 			merged = append(merged, sl)
 		} else {
 			merged = append(merged, scheduler.SlotView{
 				AccountID: a.ID, Provider: a.Provider,
-				TenantID: a.TenantID, PlanTier: a.PlanTier,
+				Email: a.Email, TenantID: a.TenantID, PlanTier: a.PlanTier,
 				State: string(a.State), Confidence: "likely_available",
 			})
 		}
@@ -498,6 +501,12 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			merged = append(merged, sl)
 		}
 	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Healthy != merged[j].Healthy {
+			return merged[i].Healthy
+		}
+		return merged[i].AccountID < merged[j].AccountID
+	})
 	s.render(w, r, "accounts.html", map[string]any{
 		"Active": "accounts",
 		"Title":  "账号池",

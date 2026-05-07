@@ -41,6 +41,7 @@ func (s *Server) handleAccountsBulkImport(w http.ResponseWriter, r *http.Request
 				ID:             id,
 				TenantID:       req.TenantID,
 				Provider:       req.Provider,
+				Email:          accountEmailFromImport(req.Email, req.SessionToken),
 				PlanTier:       req.PlanTier,
 				StealthProfile: req.StealthProfile,
 				UA:             req.UA,

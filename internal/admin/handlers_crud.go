@@ -328,6 +328,7 @@ type accountView struct {
 	ID             string                   `json:"id"`
 	TenantID       string                   `json:"tenant_id"`
 	Provider       string                   `json:"provider"`
+	Email          string                   `json:"email,omitempty"`
 	State          string                   `json:"state"`
 	PlanTier       string                   `json:"plan_tier"`
 	StealthProfile string                   `json:"stealth_profile"`
@@ -368,7 +369,7 @@ func (s *Server) handleListAccountsAPI(w http.ResponseWriter, r *http.Request) {
 	for _, a := range accs {
 		v := accountView{
 			ID: a.ID, TenantID: a.TenantID, Provider: a.Provider,
-			State: string(a.State), PlanTier: a.PlanTier,
+			Email: a.Email, State: string(a.State), PlanTier: a.PlanTier,
 			StealthProfile: a.StealthProfile, UA: a.UA, Proxy: a.Proxy,
 			Models: a.Quota.DiscoveredModels,
 		}
@@ -407,7 +408,12 @@ func (s *Server) handleListAccountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, v)
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].Healthy != views[j].Healthy {
+			return views[i].Healthy
+		}
+		return views[i].ID < views[j].ID
+	})
 	writeJSONStatus(w, 200, views)
 }
 
@@ -415,6 +421,7 @@ type createAccountReq struct {
 	ID             string `json:"id"`
 	TenantID       string `json:"tenant_id"`
 	Provider       string `json:"provider"`
+	Email          string `json:"email"`
 	PlanTier       string `json:"plan_tier"`
 	StealthProfile string `json:"stealth_profile"`
 	UA             string `json:"ua"`
@@ -444,6 +451,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		ID:             req.ID,
 		TenantID:       req.TenantID,
 		Provider:       req.Provider,
+		Email:          accountEmailFromImport(req.Email, req.SessionToken),
 		PlanTier:       req.PlanTier,
 		StealthProfile: req.StealthProfile,
 		UA:             req.UA,
@@ -464,7 +472,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	s.deps.Sched.Register(a)
 	s.crud.Audit.Log("info", "account", req.ID, "", "account created")
 	writeJSONStatus(w, 201, accountView{
-		ID: a.ID, TenantID: a.TenantID, Provider: a.Provider,
+		ID: a.ID, TenantID: a.TenantID, Provider: a.Provider, Email: a.Email,
 		State: string(a.State), PlanTier: a.PlanTier,
 		StealthProfile: a.StealthProfile, UA: a.UA, Proxy: a.Proxy,
 	})
@@ -484,6 +492,9 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PlanTier != "" {
 		a.PlanTier = req.PlanTier
+	}
+	if req.Email != "" || req.SessionToken != "" {
+		a.Email = accountEmailFromImport(req.Email, req.SessionToken)
 	}
 	if req.UA != "" {
 		a.UA = req.UA
@@ -868,6 +879,7 @@ func (s *Server) handleKiroEnroll(w http.ResponseWriter, r *http.Request) {
 		ID:        accID,
 		TenantID:  tenantID,
 		Provider:  "kiro",
+		Email:     accountEmailFromImport(req.Email, ""),
 		PlanTier:  "free",
 		State:     domain.StateActive,
 		CreatedAt: time.Now(),

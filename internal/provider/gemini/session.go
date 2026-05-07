@@ -35,6 +35,7 @@ type sessionInfo struct {
 	RefreshToken string
 	Expires      time.Time
 	Email        string
+	IDToken      string
 }
 
 type sessionResolver struct {
@@ -61,7 +62,10 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, sessionJSON, r
 
 	info, err := parseGeminiSessionJSON([]byte(sessionJSON))
 	if err != nil {
-		return sessionInfo{}, err
+		if refreshToken == "" {
+			return sessionInfo{}, err
+		}
+		info = sessionInfo{RefreshToken: refreshToken}
 	}
 	if refreshToken != "" {
 		info.RefreshToken = refreshToken
@@ -85,6 +89,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, sessionJSON, r
 		return sessionInfo{}, fmt.Errorf("refresh token: %w", err)
 	}
 	refreshed.Email = info.Email
+	refreshed.IDToken = info.IDToken
 
 	r.mu.Lock()
 	r.cache[accountID] = refreshed
@@ -96,6 +101,7 @@ func parseGeminiSessionJSON(body []byte) (sessionInfo, error) {
 	var raw struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
 		ExpiresAt    string `json:"expires_at"`
 		Email        string `json:"email"`
 	}
@@ -116,6 +122,7 @@ func parseGeminiSessionJSON(body []byte) (sessionInfo, error) {
 		RefreshToken: raw.RefreshToken,
 		Expires:      exp,
 		Email:        raw.Email,
+		IDToken:      raw.IDToken,
 	}, nil
 }
 
