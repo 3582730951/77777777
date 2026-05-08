@@ -99,19 +99,21 @@ var GeminiConfig = ProviderConfig{
 	},
 }
 
-// Kiro Desktop Auth. The flow is PKCE with Kiro's desktop auth service:
-// /login returns an authorization code to localhost, then /exchangeToken
-// returns accessToken + refreshToken used by the Kiro provider.
+// Kiro uses AWS IAM Identity Center OIDC with PKCE. We register a short-lived
+// public client at flow start, then use its clientId/clientSecret for exchange
+// and later refreshes.
 var KiroConfig = ProviderConfig{
 	ID:           ProviderKiro,
 	DisplayName:  "Kiro",
-	AuthorizeURL: "https://prod.us-east-1.auth.desktop.kiro.dev/login",
-	TokenURL:     "https://prod.us-east-1.auth.desktop.kiro.dev/exchangeToken",
+	AuthorizeURL: "https://oidc.us-east-1.amazonaws.com/authorize",
+	TokenURL:     "https://oidc.us-east-1.amazonaws.com/token",
 	RedirectURI:  "http://127.0.0.1:19876/oauth/callback",
 	CallbackPort: 19876,
 	CallbackPath: "/oauth/callback",
+	Scope:        "codewhisperer:completions codewhisperer:analysis codewhisperer:conversations codewhisperer:transformations codewhisperer:taskassist",
 	ExtraParams: map[string]string{
-		"idp": "BuilderId",
+		"issuer_url": "https://view.awsapps.com/start",
+		"region":     "us-east-1",
 	},
 }
 

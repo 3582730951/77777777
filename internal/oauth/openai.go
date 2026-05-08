@@ -22,26 +22,35 @@ import (
 
 // PendingAuth tracks one OAuth flow in progress.
 type PendingAuth struct {
-	ID           string
-	Provider     Provider
-	State        string
-	CodeVerifier string
-	RedirectURI  string
-	TenantID     string
-	Note         string
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	Status       string // pending / success / failed
-	AccessToken  string
-	RefreshToken string
-	IDToken      string
-	AccountID    string
-	Email        string
-	PlanType     string
-	Organization string
-	ProfileArn   string
-	ExpiresAt2   time.Time
-	ErrorMessage string
+	ID                string
+	Provider          Provider
+	State             string
+	CodeVerifier      string
+	RedirectURI       string
+	TenantID          string
+	Note              string
+	CreatedAt         time.Time
+	ExpiresAt         time.Time
+	Status            string // pending / success / failed
+	AccessToken       string
+	RefreshToken      string
+	IDToken           string
+	AccountID         string
+	Email             string
+	PlanType          string
+	Organization      string
+	ProfileArn        string
+	OAuthClientID     string
+	OAuthClientSecret string
+	OAuthRegion       string
+	ExpiresAt2        time.Time
+	ErrorMessage      string
+}
+
+type pendingAuthData struct {
+	OAuthClientID     string `json:"oauth_client_id,omitempty"`
+	OAuthClientSecret string `json:"oauth_client_secret,omitempty"`
+	OAuthRegion       string `json:"oauth_region,omitempty"`
 }
 
 // PendingStore is implemented by store.Store to persist pending OAuth flows.
@@ -130,18 +139,6 @@ func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBas
 		ExpiresAt:    time.Now().Add(30 * time.Minute),
 		Status:       "pending",
 	}
-	m.mu.Lock()
-	m.pending[id] = p
-	m.gcLocked()
-	m.mu.Unlock()
-
-	// Persist to DB so flows survive restarts
-	if m.store != nil {
-		_ = m.store.UpsertPendingOAuth(context.Background(),
-			id, string(provider), state, verifier, cfg.RedirectURI,
-			tenantID, note, "pending", "",
-			p.CreatedAt.Unix(), p.ExpiresAt.Unix())
-	}
 
 	var authorize string
 	switch provider {
@@ -160,12 +157,26 @@ func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBas
 			state,
 		)
 	case ProviderKiro:
+		region := cfg.ExtraParams["region"]
+		if region == "" {
+			region = "us-east-1"
+		}
+		clientID, clientSecret, err := registerKiroOIDCClient(context.Background(), region, cfg.RedirectURI)
+		if err != nil {
+			return nil, "", err
+		}
+		p.OAuthClientID = clientID
+		p.OAuthClientSecret = clientSecret
+		p.OAuthRegion = region
+
 		q := url.Values{}
-		q.Set("idp", cfg.ExtraParams["idp"])
-		q.Set("redirectUri", cfg.RedirectURI)
-		q.Set("codeChallenge", challenge)
-		q.Set("codeChallengeMethod", "S256")
+		q.Set("response_type", "code")
+		q.Set("client_id", clientID)
+		q.Set("redirect_uri", cfg.RedirectURI)
+		q.Set("scopes", cfg.Scope)
 		q.Set("state", state)
+		q.Set("code_challenge", challenge)
+		q.Set("code_challenge_method", "S256")
 		authorize = cfg.AuthorizeURL + "?" + q.Encode()
 	default:
 		// Codex and Gemini use standard url.Values encoding.
@@ -183,7 +194,96 @@ func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBas
 		authorize = cfg.AuthorizeURL + "?" + q.Encode()
 	}
 
+	m.mu.Lock()
+	m.pending[id] = p
+	m.gcLocked()
+	m.mu.Unlock()
+
+	// Persist to DB so flows survive restarts.
+	if m.store != nil {
+		_ = m.store.UpsertPendingOAuth(context.Background(),
+			id, string(provider), state, verifier, cfg.RedirectURI,
+			tenantID, note, "pending", p.dataJSON(),
+			p.CreatedAt.Unix(), p.ExpiresAt.Unix())
+	}
+
 	return p, authorize, nil
+}
+
+func (p *PendingAuth) dataJSON() string {
+	data := pendingAuthData{
+		OAuthClientID:     p.OAuthClientID,
+		OAuthClientSecret: p.OAuthClientSecret,
+		OAuthRegion:       p.OAuthRegion,
+	}
+	if data.OAuthClientID == "" && data.OAuthClientSecret == "" && data.OAuthRegion == "" {
+		return ""
+	}
+	b, _ := json.Marshal(data)
+	return string(b)
+}
+
+func (p *PendingAuth) applyData(data string) {
+	if data == "" {
+		return
+	}
+	var d pendingAuthData
+	if err := json.Unmarshal([]byte(data), &d); err != nil {
+		return
+	}
+	p.OAuthClientID = d.OAuthClientID
+	p.OAuthClientSecret = d.OAuthClientSecret
+	p.OAuthRegion = d.OAuthRegion
+}
+
+var registerKiroOIDCClient = registerKiroOIDCClientDefault
+
+func registerKiroOIDCClientDefault(ctx context.Context, region, redirectURI string) (clientID, clientSecret string, err error) {
+	if region == "" {
+		region = "us-east-1"
+	}
+	cfg := ConfigFor(ProviderKiro)
+	if cfg == nil {
+		return "", "", errors.New("kiro config missing")
+	}
+	scopes := strings.Fields(cfg.Scope)
+	payload, _ := json.Marshal(map[string]any{
+		"clientName":   "llm-pool-kiro",
+		"clientType":   "public",
+		"scopes":       scopes,
+		"grantTypes":   []string{"authorization_code", "refresh_token"},
+		"issuerUrl":    cfg.ExtraParams["issuer_url"],
+		"redirectUris": []string{redirectURI},
+	})
+	endpoint := fmt.Sprintf("https://oidc.%s.amazonaws.com/client/register", region)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("kiro oidc register: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("kiro oidc register %d: %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		ClientID     string `json:"clientId"`
+		ClientSecret string `json:"clientSecret"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", "", fmt.Errorf("decode kiro oidc register: %w", err)
+	}
+	if out.ClientID == "" || out.ClientSecret == "" {
+		return "", "", errors.New("kiro oidc register returned empty client credentials")
+	}
+	return out.ClientID, out.ClientSecret, nil
 }
 
 func encodeRelayState(provider Provider, state, relayBase string) string {
@@ -261,7 +361,7 @@ func (m *Manager) FindByState(state string) (*PendingAuth, bool) {
 	}
 	// Fallback: check persistent store (survives restarts)
 	if m.store != nil {
-		id, provider, cv, ruri, tid, note, status, _, createdAt, expiresAt, err :=
+		id, provider, cv, ruri, tid, note, status, data, createdAt, expiresAt, err :=
 			m.store.FindPendingOAuthByState(context.Background(), state)
 		if err == nil && status == "pending" && time.Unix(expiresAt, 0).After(time.Now()) {
 			p := &PendingAuth{
@@ -276,6 +376,7 @@ func (m *Manager) FindByState(state string) (*PendingAuth, bool) {
 				ExpiresAt:    time.Unix(expiresAt, 0),
 				Status:       "pending",
 			}
+			p.applyData(data)
 			m.pending[id] = p
 			return p, true
 		}
@@ -292,7 +393,7 @@ func (m *Manager) Get(id string) (*PendingAuth, bool) {
 	}
 	// Fallback: check persistent store
 	if m.store != nil {
-		provider, state, cv, ruri, tid, note, status, _, createdAt, expiresAt, err :=
+		provider, state, cv, ruri, tid, note, status, data, createdAt, expiresAt, err :=
 			m.store.GetPendingOAuth(context.Background(), id)
 		if err == nil {
 			p = &PendingAuth{
@@ -307,6 +408,7 @@ func (m *Manager) Get(id string) (*PendingAuth, bool) {
 				ExpiresAt:    time.Unix(expiresAt, 0),
 				Status:       status,
 			}
+			p.applyData(data)
 			m.pending[id] = p
 			return p, true
 		}
@@ -342,7 +444,15 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 	case ProviderKiro:
+		if p.OAuthClientID == "" || p.OAuthClientSecret == "" {
+			err := errors.New("kiro oauth client credentials missing; restart enrollment")
+			m.fail(p, err.Error())
+			return err
+		}
 		body := map[string]interface{}{
+			"clientId":     p.OAuthClientID,
+			"clientSecret": p.OAuthClientSecret,
+			"grantType":    "authorization_code",
 			"code":         stripStateFragment(authCode),
 			"codeVerifier": p.CodeVerifier,
 			"redirectUri":  cfg.RedirectURI,
@@ -635,10 +745,13 @@ func (m *Manager) buildGeminiSession(p *PendingAuth) string {
 
 func (m *Manager) buildKiroSession(p *PendingAuth) string {
 	out := map[string]interface{}{
-		"accessToken":  p.AccessToken,
-		"refreshToken": p.RefreshToken,
-		"profileArn":   p.ProfileArn,
-		"expires_at":   p.ExpiresAt2.Format(time.RFC3339),
+		"accessToken":   p.AccessToken,
+		"refreshToken":  p.RefreshToken,
+		"profileArn":    p.ProfileArn,
+		"client_id":     p.OAuthClientID,
+		"client_secret": p.OAuthClientSecret,
+		"region":        p.OAuthRegion,
+		"expires_at":    p.ExpiresAt2.Format(time.RFC3339),
 	}
 	b, _ := json.Marshal(out)
 	return string(b)

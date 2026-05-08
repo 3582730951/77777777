@@ -188,6 +188,15 @@ func (s *Server) persistOAuthAccount(ctx context.Context, p *oauth.PendingAuth) 
 		SessionToken: sessionJSON,
 		RefreshToken: p.RefreshToken,
 	}
+	if p.Provider == oauth.ProviderKiro {
+		a.PlanTier = defaultStr(a.PlanTier, "kiro")
+		a.UA = "KiroIDE/0.11.63"
+		sec.Cookies, _ = json.Marshal(map[string]string{
+			"client_id":     p.OAuthClientID,
+			"client_secret": p.OAuthClientSecret,
+			"region":        p.OAuthRegion,
+		})
+	}
 	if err := s.deps.Store.UpsertAccount(ctx, a, sec); err != nil {
 		return err
 	}

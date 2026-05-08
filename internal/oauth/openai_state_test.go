@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"net/url"
 	"strings"
 	"testing"
@@ -44,7 +45,19 @@ func TestRelayCallbackURLCopiesCallbackQuery(t *testing.T) {
 	}
 }
 
-func TestKiroStartBuildsDesktopAuthURL(t *testing.T) {
+func TestKiroStartBuildsOIDCAuthorizeURL(t *testing.T) {
+	oldRegister := registerKiroOIDCClient
+	registerKiroOIDCClient = func(ctx context.Context, region, redirectURI string) (string, string, error) {
+		if region != "us-east-1" {
+			t.Fatalf("region = %q", region)
+		}
+		if redirectURI != KiroConfig.RedirectURI {
+			t.Fatalf("redirectURI = %q", redirectURI)
+		}
+		return "kiro-client-id", "kiro-client-secret", nil
+	}
+	defer func() { registerKiroOIDCClient = oldRegister }()
+
 	m := New()
 	p, authURL, err := m.StartWithRelayBase(ProviderKiro, "default", "", "https://admin.example.com")
 	if err != nil {
@@ -61,19 +74,22 @@ func TestKiroStartBuildsDesktopAuthURL(t *testing.T) {
 		t.Fatalf("authorize target = %q", got)
 	}
 	q := u.Query()
-	if q.Get("idp") != "BuilderId" {
-		t.Fatalf("idp = %q", q.Get("idp"))
+	if q.Get("client_id") != "kiro-client-id" {
+		t.Fatalf("client_id = %q", q.Get("client_id"))
 	}
-	if q.Get("redirectUri") != KiroConfig.RedirectURI {
-		t.Fatalf("redirectUri = %q", q.Get("redirectUri"))
+	if q.Get("redirect_uri") != KiroConfig.RedirectURI {
+		t.Fatalf("redirect_uri = %q", q.Get("redirect_uri"))
 	}
-	if q.Get("codeChallenge") == "" || q.Get("codeChallengeMethod") != "S256" {
+	if q.Get("code_challenge") == "" || q.Get("code_challenge_method") != "S256" {
 		t.Fatalf("missing PKCE params: %s", u.RawQuery)
 	}
-	if q.Get("client_id") != "" {
-		t.Fatalf("kiro desktop auth must not include client_id: %s", u.RawQuery)
+	if q.Get("scopes") != KiroConfig.Scope {
+		t.Fatalf("scopes = %q", q.Get("scopes"))
 	}
 	if _, ok := RelayBaseFromState(ProviderKiro, q.Get("state")); !ok {
 		t.Fatalf("kiro state should carry relay base: %q", q.Get("state"))
+	}
+	if p.OAuthClientID != "kiro-client-id" || p.OAuthClientSecret != "kiro-client-secret" || p.OAuthRegion != "us-east-1" {
+		t.Fatalf("kiro client fields not saved on pending auth: %+v", p)
 	}
 }
