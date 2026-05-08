@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +56,7 @@ func (s *Server) mountCrud(r chi.Router) {
 
 		// Accounts
 		r.Get("/api/admin/accounts", s.handleListAccountsAPI)
+		r.Get("/api/admin/accounts/export", s.handleExportAccountsAPI)
 		r.Post("/api/admin/accounts", s.handleCreateAccount)
 		r.Patch("/api/admin/accounts/{id}", s.handleUpdateAccount)
 		r.Delete("/api/admin/accounts/{id}", s.handleDeleteAccount)
@@ -889,20 +891,28 @@ func (s *Server) handleKiroEnroll(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, err.Error())
 		return
 	}
-	if req.RefreshToken == "" || req.ClientID == "" || req.ClientSecret == "" {
-		errJSON(w, 400, "provide refresh_token, client_id, and client_secret")
+	if req.RefreshToken == "" {
+		errJSON(w, 400, "provide refresh_token")
+		return
+	}
+	if (req.ClientID == "") != (req.ClientSecret == "") {
+		errJSON(w, 400, "provide both client_id and client_secret, or neither")
 		return
 	}
 	tenantID := req.TenantID
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	accID := "acc-kiro-" + req.RefreshToken[len(req.RefreshToken)-8:]
+	tokenHash := sha256.Sum256([]byte(req.RefreshToken))
+	accID := "acc-kiro-" + fmt.Sprintf("%x", tokenHash[:])[:12]
 
-	oidcCreds, _ := json.Marshal(map[string]string{
-		"client_id":     req.ClientID,
-		"client_secret": req.ClientSecret,
-	})
+	var oidcCreds []byte
+	if req.ClientID != "" && req.ClientSecret != "" {
+		oidcCreds, _ = json.Marshal(map[string]string{
+			"client_id":     req.ClientID,
+			"client_secret": req.ClientSecret,
+		})
+	}
 
 	a := &domain.Account{
 		ID:        accID,

@@ -1,5 +1,5 @@
-// Package oauth implements the OAuth flows for the three subscription
-// providers our pool supports: OpenAI Codex, Anthropic Claude, Google Gemini.
+// Package oauth implements the OAuth flows for the subscription providers our
+// pool supports: OpenAI Codex, Anthropic Claude, Google Gemini, and Kiro.
 //
 // Each provider has its own:
 //   - ClientID + ClientSecret (where applicable)
@@ -22,6 +22,7 @@ const (
 	ProviderCodex  Provider = "codex"
 	ProviderClaude Provider = "claude"
 	ProviderGemini Provider = "gemini"
+	ProviderKiro   Provider = "kiro"
 )
 
 // ProviderConfig is the static config per provider.
@@ -98,6 +99,22 @@ var GeminiConfig = ProviderConfig{
 	},
 }
 
+// Kiro Desktop Auth. The flow is PKCE with Kiro's desktop auth service:
+// /login returns an authorization code to localhost, then /exchangeToken
+// returns accessToken + refreshToken used by the Kiro provider.
+var KiroConfig = ProviderConfig{
+	ID:           ProviderKiro,
+	DisplayName:  "Kiro",
+	AuthorizeURL: "https://prod.us-east-1.auth.desktop.kiro.dev/login",
+	TokenURL:     "https://prod.us-east-1.auth.desktop.kiro.dev/exchangeToken",
+	RedirectURI:  "http://127.0.0.1:19876/oauth/callback",
+	CallbackPort: 19876,
+	CallbackPath: "/oauth/callback",
+	ExtraParams: map[string]string{
+		"idp": "BuilderId",
+	},
+}
+
 func firstEnv(keys ...string) string {
 	for _, key := range keys {
 		if value := os.Getenv(key); value != "" {
@@ -116,11 +133,13 @@ func ConfigFor(p Provider) *ProviderConfig {
 		return &ClaudeConfig
 	case ProviderGemini:
 		return &GeminiConfig
+	case ProviderKiro:
+		return &KiroConfig
 	}
 	return nil
 }
 
 // AllProviders returns every supported provider for UI dropdowns.
 func AllProviders() []ProviderConfig {
-	return []ProviderConfig{CodexConfig, ClaudeConfig, GeminiConfig}
+	return []ProviderConfig{CodexConfig, ClaudeConfig, GeminiConfig, KiroConfig}
 }

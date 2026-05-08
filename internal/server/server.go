@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -203,6 +204,23 @@ const (
 
 const requestBodyReadChunk = 32 << 10
 
+var requestBodyChunkPool = sync.Pool{
+	New: func() any {
+		return make([]byte, requestBodyReadChunk)
+	},
+}
+
+func acquireRequestBodyChunk() []byte {
+	return requestBodyChunkPool.Get().([]byte)[:requestBodyReadChunk]
+}
+
+func releaseRequestBodyChunk(buf []byte) {
+	if cap(buf) < requestBodyReadChunk {
+		return
+	}
+	requestBodyChunkPool.Put(buf[:requestBodyReadChunk])
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -270,7 +288,8 @@ func (g *Gateway) readAllGatedWithCapacity(ctx context.Context, reader io.Reader
 		}
 	}
 	body := make([]byte, 0, initialCap)
-	chunk := make([]byte, requestBodyReadChunk)
+	chunk := acquireRequestBodyChunk()
+	defer releaseRequestBodyChunk(chunk)
 	var total int64
 	for {
 		n, err := reader.Read(chunk)
@@ -537,6 +556,10 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 			AccountIDs: res.Group.AccountIDs,
 		}
 	}
+	kiroFallback := false
+	if res.Federation == nil {
+		pickReq, kiroFallback = g.claudeKiroFallbackPick(pickReq, res)
+	}
 
 	encoder := newEncoderForProto(inboundProto, w, originalModel, req.Stream)
 	encoder.WriteHeaders()
@@ -577,6 +600,7 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 	}
 
 	var lastAccountID string
+	var lastProvider string
 
 	err = mux.Run(failoverCtx,
 		func(attempt int) (<-chan ir.Event, func(), error) {
@@ -585,9 +609,10 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 				return nil, func() {}, perr
 			}
 			lastAccountID = slot.Account.ID
+			lastProvider = slot.Account.Provider
 			g.sched.IncInflight(slot.Account.ID)
 			prov := staticProv
-			if res.Federation != nil {
+			if res.Federation != nil || (res.Group != nil && slot.Account.Provider != res.Group.Provider) {
 				var ok bool
 				prov, ok = g.providers.Get(slot.Account.Provider)
 				if !ok {
@@ -651,6 +676,9 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 		mTenantID = res.Federation.TenantID
 		mProvider = "federation"
 	}
+	if lastProvider != "" && (res.Federation != nil || kiroFallback) {
+		mProvider = lastProvider
+	}
 
 	metrics.RequestDuration.WithLabelValues(mGroupID, mProvider, originalModel).Observe(dur)
 	status := "ok"
@@ -699,6 +727,28 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 	if status == "ok" && lastAccountID != "" && g.QuotaRefreshFunc != nil {
 		go g.QuotaRefreshFunc(lastAccountID)
 	}
+}
+
+func (g *Gateway) claudeKiroFallbackPick(primary scheduler.PickRequest, res auth.Resolved) (scheduler.PickRequest, bool) {
+	if res.Group == nil || res.Group.Provider != "claude" || g.sched == nil || g.providers == nil {
+		return primary, false
+	}
+	if g.sched.HasUsable(primary) {
+		return primary, false
+	}
+	if _, ok := g.providers.Get("kiro"); !ok {
+		return primary, false
+	}
+	fallback := primary
+	fallback.Provider = "kiro"
+	fallback.Providers = nil
+	fallback.AccountIDs = nil
+	fallback.PreferredAccountID = ""
+	fallback.ExcludeAccountIDs = nil
+	if !g.sched.HasUsable(fallback) {
+		return primary, false
+	}
+	return fallback, true
 }
 
 // EventWriter abstracts the per-protocol encoder so the gateway can stream

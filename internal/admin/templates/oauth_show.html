@@ -34,7 +34,7 @@
           </div>
           <div class="card-body flex-col items-center gap-16" style="padding-top:24px">
             <a href="{{.AuthURL}}" target="_blank" class="big-btn">
-              {{if .Cfg}}{{if eq .Cfg.ID "codex"}}🤖{{else if eq .Cfg.ID "claude"}}🧠{{else}}✨{{end}}
+              {{if .Cfg}}{{if eq .Cfg.ID "codex"}}🤖{{else if eq .Cfg.ID "claude"}}🧠{{else if eq .Cfg.ID "kiro"}}K{{else}}✨{{end}}
               Login with {{.Cfg.DisplayName}}{{else}}⚡ 开始登录{{end}}
             </a>
             <div class="url-box w-full">{{.AuthURL}}</div>

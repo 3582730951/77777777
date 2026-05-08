@@ -30,6 +30,7 @@
                     <option value="chatgpt" {{if eq .Account.Provider "chatgpt"}}selected{{end}}>chatgpt (OpenAI)</option>
                     <option value="claude"  {{if eq .Account.Provider "claude"}}selected{{end}}>claude (Anthropic)</option>
                     <option value="gemini"  {{if eq .Account.Provider "gemini"}}selected{{end}}>gemini (Google)</option>
+                    <option value="kiro"    {{if eq .Account.Provider "kiro"}}selected{{end}}>kiro (Kiro)</option>
                   </select></div>
                 <div class="field"><label>租户</label>
                   <select name="tenant_id">

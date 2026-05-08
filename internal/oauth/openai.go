@@ -39,6 +39,7 @@ type PendingAuth struct {
 	Email        string
 	PlanType     string
 	Organization string
+	ProfileArn   string
 	ExpiresAt2   time.Time
 	ErrorMessage string
 }
@@ -158,6 +159,14 @@ func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBas
 			challenge,
 			state,
 		)
+	case ProviderKiro:
+		q := url.Values{}
+		q.Set("idp", cfg.ExtraParams["idp"])
+		q.Set("redirectUri", cfg.RedirectURI)
+		q.Set("codeChallenge", challenge)
+		q.Set("codeChallengeMethod", "S256")
+		q.Set("state", state)
+		authorize = cfg.AuthorizeURL + "?" + q.Encode()
 	default:
 		// Codex and Gemini use standard url.Values encoding.
 		q := url.Values{}
@@ -312,10 +321,11 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 		return fmt.Errorf("unknown provider: %s", p.Provider)
 	}
 
-	// Claude uses a JSON body, Codex/Gemini use form-encoded.
+	// Claude and Kiro use JSON bodies, Codex/Gemini use form-encoded.
 	var req *http.Request
 	var err error
-	if p.Provider == ProviderClaude {
+	switch p.Provider {
+	case ProviderClaude:
 		body := map[string]interface{}{
 			"grant_type":    "authorization_code",
 			"client_id":     cfg.ClientID,
@@ -331,7 +341,20 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-	} else {
+	case ProviderKiro:
+		body := map[string]interface{}{
+			"code":         stripStateFragment(authCode),
+			"codeVerifier": p.CodeVerifier,
+			"redirectUri":  cfg.RedirectURI,
+		}
+		jsonBody, _ := json.Marshal(body)
+		req, err = http.NewRequest("POST", cfg.TokenURL, bytes.NewReader(jsonBody))
+		if err != nil {
+			m.fail(p, err.Error())
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+	default:
 		form := url.Values{}
 		form.Set("grant_type", "authorization_code")
 		form.Set("code", authCode)
@@ -354,6 +377,8 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 		req.Header.Set("User-Agent", "axios/1.13.6")
 	case ProviderCodex:
 		req.Header.Set("User-Agent", "codex-cli/0.91.0")
+	case ProviderKiro:
+		req.Header.Set("User-Agent", "KiroIDE/0.11.63")
 	default:
 		req.Header.Set("User-Agent", "codex-cli/0.91.0")
 	}
@@ -380,6 +405,8 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 		return m.parseClaudeToken(p, body)
 	case ProviderGemini:
 		return m.parseGeminiToken(p, body)
+	case ProviderKiro:
+		return m.parseKiroToken(p, body)
 	}
 	return fmt.Errorf("unhandled provider: %s", p.Provider)
 }
@@ -495,6 +522,56 @@ func (m *Manager) parseGeminiToken(p *PendingAuth, body []byte) error {
 	return nil
 }
 
+func (m *Manager) parseKiroToken(p *PendingAuth, body []byte) error {
+	var tok struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+		ProfileArn   string `json:"profileArn"`
+		ExpiresIn    int    `json:"expiresIn"`
+		SnakeAccess  string `json:"access_token"`
+		SnakeRefresh string `json:"refresh_token"`
+		SnakeProfile string `json:"profile_arn"`
+		SnakeExpires int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil {
+		m.fail(p, "decode kiro token: "+err.Error())
+		return err
+	}
+	if tok.AccessToken == "" {
+		tok.AccessToken = tok.SnakeAccess
+	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = tok.SnakeRefresh
+	}
+	if tok.ProfileArn == "" {
+		tok.ProfileArn = tok.SnakeProfile
+	}
+	if tok.ExpiresIn == 0 {
+		tok.ExpiresIn = tok.SnakeExpires
+	}
+	if tok.AccessToken == "" {
+		m.fail(p, "empty accessToken")
+		return errors.New("empty accessToken")
+	}
+	if tok.RefreshToken == "" {
+		m.fail(p, "empty refreshToken")
+		return errors.New("empty refreshToken")
+	}
+	m.mu.Lock()
+	p.AccessToken = tok.AccessToken
+	p.RefreshToken = tok.RefreshToken
+	p.ProfileArn = tok.ProfileArn
+	p.PlanType = "kiro"
+	if tok.ExpiresIn <= 0 {
+		tok.ExpiresIn = 3600
+	}
+	p.ExpiresAt2 = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	p.Status = "success"
+	m.mu.Unlock()
+	m.markSuccess(p)
+	return nil
+}
+
 // BuildSessionJSON renders the obtained tokens into a JSON shape that the
 // chatgpt provider's session resolver understands. For Claude/Gemini we use
 // shapes their own provider modules will recognise.
@@ -506,6 +583,8 @@ func (m *Manager) BuildSessionJSON(p *PendingAuth) string {
 		return m.buildClaudeSession(p)
 	case ProviderGemini:
 		return m.buildGeminiSession(p)
+	case ProviderKiro:
+		return m.buildKiroSession(p)
 	}
 	return ""
 }
@@ -549,6 +628,17 @@ func (m *Manager) buildGeminiSession(p *PendingAuth) string {
 		"id_token":      p.IDToken,
 		"email":         p.Email,
 		"expires_at":    p.ExpiresAt2.Format(time.RFC3339),
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+func (m *Manager) buildKiroSession(p *PendingAuth) string {
+	out := map[string]interface{}{
+		"accessToken":  p.AccessToken,
+		"refreshToken": p.RefreshToken,
+		"profileArn":   p.ProfileArn,
+		"expires_at":   p.ExpiresAt2.Format(time.RFC3339),
 	}
 	b, _ := json.Marshal(out)
 	return string(b)

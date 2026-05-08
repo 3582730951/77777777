@@ -70,6 +70,35 @@ func (p *captureProvider) Discover(context.Context, *domain.Account) (*domain.Qu
 	return &domain.QuotaState{}, nil
 }
 
+type namedCaptureProvider struct {
+	name       string
+	mu         sync.Mutex
+	calls      int
+	accountIDs []string
+}
+
+func (p *namedCaptureProvider) Name() string { return p.name }
+
+func (p *namedCaptureProvider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
+	p.mu.Lock()
+	p.calls++
+	p.accountIDs = append(p.accountIDs, acc.ID)
+	p.mu.Unlock()
+	out := make(chan ir.Event, 2)
+	go func() {
+		defer close(out)
+		out <- ir.Event{Kind: ir.EvTextDelta, Text: "ok"}
+		out <- ir.Event{Kind: ir.EvDone, FinishReason: "stop"}
+	}()
+	return out, nil
+}
+
+func (p *namedCaptureProvider) Probe(context.Context, *domain.Account) error { return nil }
+
+func (p *namedCaptureProvider) Discover(context.Context, *domain.Account) (*domain.QuotaState, error) {
+	return &domain.QuotaState{}, nil
+}
+
 type failingProvider struct {
 	err error
 }
@@ -284,5 +313,85 @@ func TestGatewayMarksBannedAccountFromInvokeError(t *testing.T) {
 	_, err := sched.Pick(context.Background(), scheduler.PickRequest{Provider: "failing", TenantID: "default"})
 	if err == nil {
 		t.Fatal("banned account should not remain schedulable")
+	}
+}
+
+func TestClaudeGroupFallsBackToKiroWhenNoClaudeAccountUsable(t *testing.T) {
+	cfg := &config.Root{}
+	cfg.Server.WriteTimeout = 5 * time.Second
+	cfg.Server.MaxRequestBytes = 512 << 20
+	cfg.Server.RequestBodyMemoryBudget = 512 << 20
+	cfg.Server.RateLimitRPM = 300
+	cfg.Server.RateLimitBurst = 60
+	cfg.Scheduler.Retry.MaxAttempts = 1
+	cfg.Scheduler.Failover.NeverFail.Enabled = false
+	cfg.Tenants = []config.Tenant{{ID: "default", Name: "Default"}}
+	cfg.Groups = []config.Group{{
+		ID:             "claude",
+		TenantID:       "default",
+		Provider:       "claude",
+		APIKeys:        []string{"sk-test"},
+		Models:         []string{"claude-sonnet-4-6"},
+		ModelWhitelist: []string{"claude-sonnet-4-6"},
+		AccountIDs:     []string{"claude-empty"},
+	}}
+
+	resolver := auth.NewResolver()
+	resolver.LoadFromConfig(cfg)
+	sched := scheduler.New(cfg.Scheduler)
+	sched.Register(&domain.Account{
+		ID:       "claude-empty",
+		TenantID: "default",
+		Provider: "claude",
+		State:    domain.StateActive,
+		Quota: domain.QuotaState{
+			ShortWindow: domain.QuotaWindow{Limit: 100, Used: 100, ResetAt: time.Now().Add(time.Hour), Confidence: 1},
+			LongWindow:  domain.QuotaWindow{Limit: 100, Used: 1, ResetAt: time.Now().Add(24 * time.Hour), Confidence: 1},
+		},
+	})
+	sched.Register(&domain.Account{
+		ID:       "kiro-ready",
+		TenantID: "default",
+		Provider: "kiro",
+		State:    domain.StateActive,
+	})
+	claudeProv := &namedCaptureProvider{name: "claude"}
+	kiroProv := &namedCaptureProvider{name: "kiro"}
+	providers := provider.NewRegistry()
+	providers.Register(claudeProv)
+	providers.Register(kiroProv)
+
+	gw := NewGateway(Deps{
+		Cfg:       cfg,
+		Resolver:  resolver,
+		Sched:     sched,
+		Providers: providers,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	r := chi.NewRouter()
+	gw.Mount(r)
+
+	body := `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"test"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer sk-test")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	claudeProv.mu.Lock()
+	claudeCalls := claudeProv.calls
+	claudeProv.mu.Unlock()
+	kiroProv.mu.Lock()
+	kiroCalls := kiroProv.calls
+	kiroAccounts := append([]string{}, kiroProv.accountIDs...)
+	kiroProv.mu.Unlock()
+
+	if claudeCalls != 0 {
+		t.Fatalf("claude provider should not be invoked when no account is usable, calls=%d", claudeCalls)
+	}
+	if kiroCalls != 1 || len(kiroAccounts) != 1 || kiroAccounts[0] != "kiro-ready" {
+		t.Fatalf("kiro fallback not used correctly: calls=%d accounts=%v", kiroCalls, kiroAccounts)
 	}
 }

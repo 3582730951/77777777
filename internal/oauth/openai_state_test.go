@@ -43,3 +43,37 @@ func TestRelayCallbackURLCopiesCallbackQuery(t *testing.T) {
 		t.Fatalf("relay query was not preserved: %s", u.RawQuery)
 	}
 }
+
+func TestKiroStartBuildsDesktopAuthURL(t *testing.T) {
+	m := New()
+	p, authURL, err := m.StartWithRelayBase(ProviderKiro, "default", "", "https://admin.example.com")
+	if err != nil {
+		t.Fatalf("start kiro oauth: %v", err)
+	}
+	if p.Provider != ProviderKiro {
+		t.Fatalf("provider = %s", p.Provider)
+	}
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parse auth url: %v", err)
+	}
+	if got := u.Scheme + "://" + u.Host + u.Path; got != KiroConfig.AuthorizeURL {
+		t.Fatalf("authorize target = %q", got)
+	}
+	q := u.Query()
+	if q.Get("idp") != "BuilderId" {
+		t.Fatalf("idp = %q", q.Get("idp"))
+	}
+	if q.Get("redirectUri") != KiroConfig.RedirectURI {
+		t.Fatalf("redirectUri = %q", q.Get("redirectUri"))
+	}
+	if q.Get("codeChallenge") == "" || q.Get("codeChallengeMethod") != "S256" {
+		t.Fatalf("missing PKCE params: %s", u.RawQuery)
+	}
+	if q.Get("client_id") != "" {
+		t.Fatalf("kiro desktop auth must not include client_id: %s", u.RawQuery)
+	}
+	if _, ok := RelayBaseFromState(ProviderKiro, q.Get("state")); !ok {
+		t.Fatalf("kiro state should carry relay base: %q", q.Get("state"))
+	}
+}

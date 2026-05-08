@@ -6,7 +6,7 @@
 <title>OAuth 一键登录 · LLM Pool</title>
 <link rel="stylesheet" href="/static/app.css?v=2">
 <style>
-.provider-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.provider-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
 .provider-card{display:flex;flex-direction:column;align-items:center;gap:8px;
   padding:22px 14px;background:var(--bg);border:2px solid var(--hairline);
   border-radius:var(--r-md);cursor:pointer;transition:all var(--dur) var(--ease);text-align:center;
@@ -55,13 +55,14 @@
                     {{if eq .ID "codex"}}checked{{end}}>
                   <div class="check">✓</div>
                   <div class="prov-icon">
-                    {{if eq .ID "codex"}}🤖{{else if eq .ID "claude"}}🧠{{else if eq .ID "gemini"}}✨{{end}}
+                    {{if eq .ID "codex"}}🤖{{else if eq .ID "claude"}}🧠{{else if eq .ID "gemini"}}✨{{else if eq .ID "kiro"}}K{{end}}
                   </div>
                   <div class="prov-name">{{.DisplayName}}</div>
                   <div class="prov-desc">
                     {{if eq .ID "codex"}}消耗 Codex 独立配额<br>Plus 账号即可{{end}}
                     {{if eq .ID "claude"}}消耗 Claude Code 配额<br>Pro/Max 账号{{end}}
                     {{if eq .ID "gemini"}}消耗 Code Assist 配额<br>Gemini Advanced{{end}}
+                    {{if eq .ID "kiro"}}消耗 Kiro / Builder ID 配额<br>可作为 Claude fallback{{end}}
                   </div>
                   <div class="prov-meta">port :{{.CallbackPort}}</div>
                 </div>
@@ -91,6 +92,14 @@
                   <div class="prov-name">Google Gemini</div>
                   <div class="prov-desc">消耗 Code Assist 配额</div>
                   <div class="prov-meta">port :8085</div>
+                </div>
+                <div class="provider-card" onclick="selectProvider('kiro',this)">
+                  <input type="radio" name="provider" value="kiro">
+                  <div class="check">✓</div>
+                  <div class="prov-icon">K</div>
+                  <div class="prov-name">Kiro</div>
+                  <div class="prov-desc">消耗 Kiro / Builder ID 配额</div>
+                  <div class="prov-meta">port :19876</div>
                 </div>
                 {{end}}
               </div>
@@ -141,6 +150,14 @@
               </div>
               <div class="divider"></div>
               <div class="flex items-start gap-12">
+                <span style="font-size:20px">K</span>
+                <div>
+                  <div class="bold small">Kiro</div>
+                  <div class="tiny muted mt-4">走 <code>q.us-east-1.amazonaws.com/generateAssistantResponse</code>，用于 Kiro 账号池和 Claude 组无可用账号时的自动 fallback</div>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="flex items-start gap-12">
                 <span style="font-size:20px">✨</span>
                 <div>
                   <div class="bold small">Google Gemini</div>
@@ -155,7 +172,7 @@
             <div class="card-body flex-col gap-10">
               <div class="flex items-start gap-8">
                 <span>🖥️</span>
-                <div class="small"><b>本机直连</b>：网关已监听 :1455 / :54545 / :8085，浏览器登录后自动跳回，本页自动变绿</div>
+                <div class="small"><b>本机直连</b>：网关已监听 :1455 / :54545 / :8085 / :19876，浏览器登录后自动跳回，本页自动变绿</div>
               </div>
               <div class="flex items-start gap-8">
                 <span>🌐</span>

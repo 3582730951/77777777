@@ -20,9 +20,9 @@ import (
 // SetOAuth wires the OAuth manager (called from main.go).
 func (s *Server) SetOAuth(m *oauth.Manager) { s.oauth = m }
 
-// StartLocalCallbackListeners starts the three OAuth callback HTTP listeners
-// (Codex :1455, Claude :54545, Gemini :8085). Same handler logic for all —
-// they look up the pending flow by `state` and exchange the code.
+// StartLocalCallbackListeners starts every configured OAuth callback listener.
+// Same handler logic for all — they look up the pending flow by `state` and
+// exchange the code.
 func (s *Server) StartLocalCallbackListeners() {
 	if s.oauth == nil {
 		return
@@ -169,6 +169,8 @@ func (s *Server) persistOAuthAccount(ctx context.Context, p *oauth.PendingAuth) 
 		provider = "claude"
 	case oauth.ProviderGemini:
 		provider = "gemini"
+	case oauth.ProviderKiro:
+		provider = "kiro"
 	}
 	a := &domain.Account{
 		ID:             id,

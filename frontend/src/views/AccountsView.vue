@@ -18,6 +18,7 @@
           <option value="tavily">Tavily</option>
           <option value="openblocklabs">OpenBlockLabs</option>
         </select>
+        <button @click="exportAccounts" class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg text-sm">Export</button>
         <button @click="refresh" class="px-3 py-1.5 bg-primary text-white rounded-lg text-sm">Refresh</button>
       </div>
     </div>
@@ -249,6 +250,13 @@ async function probe(id: string) {
 async function discover(id: string) {
   await accountsAPI.discover(id)
   refresh()
+}
+
+function exportAccounts() {
+  const params = new URLSearchParams()
+  if (filterProvider.value) params.set('provider', filterProvider.value)
+  const suffix = params.toString()
+  window.open(`/api/admin/accounts/export${suffix ? `?${suffix}` : ''}`, '_blank')
 }
 
 onMounted(refresh)

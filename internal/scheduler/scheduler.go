@@ -549,6 +549,16 @@ func (s *Scheduler) Pick(ctx context.Context, req PickRequest) (*Slot, error) {
 	return s.neverFail(ctx, candidates, req)
 }
 
+// HasUsable reports whether a request has at least one immediately selectable
+// account without entering the never-fail probe/wait path.
+func (s *Scheduler) HasUsable(req PickRequest) bool {
+	candidates := s.candidates(req)
+	if len(candidates) == 0 {
+		return false
+	}
+	return len(s.filterUsable(candidates, req)) > 0
+}
+
 func (s *Scheduler) candidates(req PickRequest) []*Slot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
