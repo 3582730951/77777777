@@ -139,9 +139,11 @@
   window.renderConfidenceDonut = function (host, buckets) {
     if (!buckets || !Array.isArray(buckets)) return;
     host.innerHTML = "";
+    host.style.height = "auto";
     const W = host.clientWidth || host.offsetWidth || 320;
-    const H = 220;
-    const cx = W / 2, cy = H / 2 + 6, r = Math.min(W, H) / 2 - 18, ir = r - 22;
+    const configuredH = Number(host.dataset.chartHeight || 0);
+    const H = configuredH > 0 ? configuredH : 132;
+    const cx = W / 2, cy = H / 2, r = Math.max(34, Math.min(W, H) / 2 - 10), ir = Math.max(18, r - 18);
 
     const colors = {
       healthy: "#30d158",
@@ -153,6 +155,8 @@
     const total = buckets.reduce((a, b) => a + (b.count || 0), 0);
 
     const svg = makeSvg(W, H, null, {pxSize: true});
+    svg.style.maxWidth = "100%";
+    svg.style.height = H + "px";
     host.appendChild(svg);
 
     let start = -Math.PI / 2;
@@ -614,11 +618,14 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
 
     host.style.height = "auto";
     const W = host.clientWidth || host.offsetWidth || 600;
-    const H = Math.max(140, Math.min(220, (host.clientHeight || host.offsetHeight || 200) - 34));
-    const pad = { l: 58, r: 12, t: 12, b: 24 };
+    const configuredH = Number(host.dataset.chartHeight || 0);
+    const H = configuredH > 0 ? configuredH : Math.max(140, Math.min(220, (host.clientHeight || host.offsetHeight || 200) - 34));
+    const compact = host.classList.contains("compact-chart-host") || configuredH > 0;
+    const pad = compact ? { l: 46, r: 8, t: 8, b: 18 } : { l: 58, r: 12, t: 12, b: 24 };
     const iW = W - pad.l - pad.r, iH = H - pad.t - pad.b;
     const svg = makeSvg(W, H, null, {pxSize: true});
     svg.style.maxWidth = "100%";
+    svg.style.height = H + "px";
 
     const inTk = data.map(d => d.input_tokens || d.input || 0);
     const outTk = data.map(d => d.output_tokens || d.output || 0);
@@ -652,7 +659,7 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
     for (let i = 0; i <= 3; i++) {
       const y = pad.t + iH * i / 3;
       svg.appendChild(el("line", { x1: pad.l, x2: W - pad.r, y1: y, y2: y, stroke: "rgba(127,127,127,0.12)", "stroke-width": "1" }));
-      const label = el("text", { x: pad.l - 6, y: y + 4, "text-anchor": "end", "font-size": "9", fill: "currentColor", opacity: "0.4" });
+      const label = el("text", { x: pad.l - 6, y: y + 4, "text-anchor": "end", "font-size": compact ? "8" : "9", fill: "currentColor", opacity: "0.4" });
       label.textContent = fmtTokens(Math.round(inMax - inMax * i / 3));
       svg.appendChild(label);
     }
@@ -690,7 +697,8 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
 
     host.style.height = "auto";
     const W = host.clientWidth || host.offsetWidth || 200;
-    const pieSize = Math.min(W, 140);
+    const configuredSize = Number(host.dataset.pieSize || 0);
+    const pieSize = Math.min(W, configuredSize > 0 ? configuredSize : 140);
     const cx = pieSize / 2, cy = pieSize / 2, r = pieSize / 2 - 8, ir = r - 20;
     const svg = makeSvg(pieSize, pieSize);
 
@@ -729,7 +737,7 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
 
     const legend = document.createElement("div");
     legend.className = "donut-legend";
-    legend.style.cssText = "margin-top:8px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px 12px;max-width:100%";
+    legend.style.cssText = "grid-template-columns:repeat(auto-fit,minmax(92px,1fr));margin-top:8px";
     for (const [prov, count] of entries) {
       const row = document.createElement("div");
       row.className = "legend-row";
