@@ -172,6 +172,7 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 		if promptApplied {
 			attemptBody = applyGroupSystemPromptToResponsesBody(attemptBody, res.Group)
 		}
+		attemptBody = enhanceCyberContextRawBody(attemptBody, res.Group.ID)
 		promptEffective := responsesSystemPromptEffective(res.Group, promptApplied, promptKnownInjected)
 
 		g.sched.IncInflight(slot.Account.ID)
@@ -1129,6 +1130,7 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 			if promptApplied {
 				attemptBody = applyGroupSystemPromptToResponsesBody(attemptBody, res.Group)
 			}
+			attemptBody = enhanceCyberContextRawBody(attemptBody, res.Group.ID)
 			promptEffective := responsesSystemPromptEffective(res.Group, promptApplied, promptKnownInjected)
 
 			g.sched.IncInflight(slot.Account.ID)

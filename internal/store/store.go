@@ -241,6 +241,7 @@ func (s *Store) ListTenants(ctx context.Context) ([]domain.Tenant, error) {
 
 type AccountSecret struct {
 	Cookies      []byte `json:"cookies,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
 	SessionToken string `json:"session_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 }
