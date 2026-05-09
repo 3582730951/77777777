@@ -108,20 +108,24 @@ func mergeWithYAML(cfg *config.Root, tenants []store.Tenant, groups []store.DynG
 			if g.SystemPrompt != "" {
 				out.Groups[idx].SystemPrompt = g.SystemPrompt
 				out.Groups[idx].SystemPromptMode = g.SystemPromptMode
+				out.Groups[idx].SystemPromptInjection = g.SystemPromptInjection
+			} else if g.SystemPromptInjection != "" {
+				out.Groups[idx].SystemPromptInjection = g.SystemPromptInjection
 			}
 			continue
 		}
 		out.Groups = append(out.Groups, config.Group{
-			ID:              g.ID,
-			TenantID:        g.TenantID,
-			Provider:        g.Provider,
-			Models:          g.Models,
-			ModelAliases:    g.ModelAliases,
-			ModelWhitelist:  g.ModelWhitelist,
-			AccountIDs:      g.AccountIDs,
-			APIKeys:         keysByGroup[g.ID],
-			SystemPrompt:    g.SystemPrompt,
-			SystemPromptMode: g.SystemPromptMode,
+			ID:                    g.ID,
+			TenantID:              g.TenantID,
+			Provider:              g.Provider,
+			Models:                g.Models,
+			ModelAliases:          g.ModelAliases,
+			ModelWhitelist:        g.ModelWhitelist,
+			AccountIDs:            g.AccountIDs,
+			APIKeys:               keysByGroup[g.ID],
+			SystemPrompt:          g.SystemPrompt,
+			SystemPromptMode:      g.SystemPromptMode,
+			SystemPromptInjection: g.SystemPromptInjection,
 		})
 	}
 	return &out

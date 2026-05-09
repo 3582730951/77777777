@@ -157,6 +157,31 @@ func TestAdminUser(t *testing.T) {
 	}
 }
 
+func TestSettingsCRUD(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	if value, ok, err := s.GetSetting(ctx, SettingRemoteChatAccountID); err != nil || ok || value != "" {
+		t.Fatalf("empty setting = value %q ok %v err %v", value, ok, err)
+	}
+	if err := s.SetSetting(ctx, SettingRemoteChatAccountID, "acc-1"); err != nil {
+		t.Fatal(err)
+	}
+	value, ok, err := s.GetSetting(ctx, SettingRemoteChatAccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || value != "acc-1" {
+		t.Fatalf("setting = value %q ok %v", value, ok)
+	}
+	if err := s.DeleteSetting(ctx, SettingRemoteChatAccountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.GetSetting(ctx, SettingRemoteChatAccountID); err != nil || ok {
+		t.Fatalf("deleted setting ok=%v err=%v", ok, err)
+	}
+}
+
 func TestAuditLog(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -255,16 +280,16 @@ func TestRequestSamples(t *testing.T) {
 	ctx := context.Background()
 
 	sample := RequestSample{
-		At:          time.Now(),
-		TenantID:    "t1",
-		Provider:    "claude",
-		Model:       "claude-3",
-		AccountID:   "a1",
-		CacheHit:    true,
-		LatencyMs:   200,
-		InputTokens: 100,
+		At:           time.Now(),
+		TenantID:     "t1",
+		Provider:     "claude",
+		Model:        "claude-3",
+		AccountID:    "a1",
+		CacheHit:     true,
+		LatencyMs:    200,
+		InputTokens:  100,
 		OutputTokens: 50,
-		Status:      "ok",
+		Status:       "ok",
 	}
 	if err := s.AppendRequestSample(ctx, sample); err != nil {
 		t.Fatal(err)

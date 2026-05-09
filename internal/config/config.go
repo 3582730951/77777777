@@ -89,8 +89,13 @@ type Group struct {
 	AccountIDs       []string                  `yaml:"account_ids"`
 	SystemPrompt     string                    `yaml:"system_prompt"`
 	SystemPromptMode string                    `yaml:"system_prompt_mode"`
-	SourcePlatform   string                    `yaml:"source_platform"`
-	AutoRegister     bool                      `yaml:"auto_register"`
+	// SystemPromptInjection controls when ChatGPT Responses passthrough injects
+	// SystemPrompt. Empty/"always" preserves the current behavior.
+	// "thread_once" injects once per known ChatGPT Responses thread, then
+	// reinjects after compact or account replay.
+	SystemPromptInjection string `yaml:"system_prompt_injection"`
+	SourcePlatform        string `yaml:"source_platform"`
+	AutoRegister          bool   `yaml:"auto_register"`
 }
 
 type Federation struct {
@@ -169,7 +174,7 @@ type Scheduler struct {
 }
 
 type TokenOptimizer struct {
-	Mode                        string `yaml:"mode"` // off | safe | aggressive
+	Mode                        string `yaml:"mode"` // off | cleanup | guarded | safe | aggressive
 	MinToolOutputBytes          int    `yaml:"min_tool_output_bytes"`
 	MaxOptimizedToolOutputBytes int    `yaml:"max_optimized_tool_output_bytes"`
 	HeadLines                   int    `yaml:"head_lines"`
@@ -303,7 +308,7 @@ func defaults() *Root {
 	r.Scheduler.Quota.DrainThreshold = 0.10
 	r.Scheduler.Quota.CostPower = 2.0
 
-	r.TokenOptimizer.Mode = "safe"
+	r.TokenOptimizer.Mode = "off"
 	r.TokenOptimizer.MinToolOutputBytes = 32 << 10
 	r.TokenOptimizer.MaxOptimizedToolOutputBytes = 64 << 10
 	r.TokenOptimizer.HeadLines = 80

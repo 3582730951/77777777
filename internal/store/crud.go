@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,11 +13,18 @@ import (
 	"github.com/llm-pool/gateway/internal/domain"
 )
 
+const SettingRemoteChatAccountID = "remote_chat.account_id"
+
 // extendMigrate adds the tables introduced after the MVP store: tenants
 // master keys, dynamic groups, api keys, quota samples, persona bundles
 // remain in store.go's migrate(); these are additive and idempotent.
 func (s *Store) extendMigrate() error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS tenant_secrets (
 			tenant_id TEXT PRIMARY KEY,
 			master_key_hash TEXT NOT NULL,
@@ -120,6 +128,7 @@ func (s *Store) extendMigrate() error {
 		`ALTER TABLE request_samples ADD COLUMN cache_hit INTEGER DEFAULT 0`,
 		`ALTER TABLE dyn_groups ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dyn_groups ADD COLUMN system_prompt_mode TEXT NOT NULL DEFAULT 'prepend'`,
+		`ALTER TABLE dyn_groups ADD COLUMN system_prompt_injection TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dyn_groups ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dyn_groups ADD COLUMN forced_model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_samples ADD COLUMN cache_read_tokens INTEGER DEFAULT 0`,
@@ -134,6 +143,34 @@ func (s *Store) extendMigrate() error {
 		}
 	}
 	return tx.Commit()
+}
+
+// GetSetting returns a small application-level setting.
+func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key=?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+// SetSetting upserts a small application-level setting.
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO app_settings(key, value, updated_at) VALUES(?,?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		key, value, time.Now().Unix())
+	return err
+}
+
+// DeleteSetting removes an application-level setting.
+func (s *Store) DeleteSetting(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_settings WHERE key=?`, key)
+	return err
 }
 
 // ----- Tenants -----
@@ -224,39 +261,41 @@ func (s *Store) VerifyTenantMasterKey(ctx context.Context, key string) (string, 
 // ----- Dynamic Groups -----
 
 type DynGroup struct {
-	ID               string
-	TenantID         string
-	Provider         string
-	Models           []string
-	ModelAliases     map[string]string
-	ModelWhitelist   []string
-	AccountIDs       []string
-	SystemPrompt     string
-	SystemPromptMode string
-	ReasoningEffort  string
-	ForcedModel      string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    string
+	TenantID              string
+	Provider              string
+	Models                []string
+	ModelAliases          map[string]string
+	ModelWhitelist        []string
+	AccountIDs            []string
+	SystemPrompt          string
+	SystemPromptMode      string
+	SystemPromptInjection string
+	ReasoningEffort       string
+	ForcedModel           string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 func (g DynGroup) ToDomain() domain.Group {
 	return domain.Group{
-		ID:               g.ID,
-		TenantID:         g.TenantID,
-		Provider:         g.Provider,
-		Models:           g.Models,
-		ModelAliases:     g.ModelAliases,
-		ModelWhitelist:   g.ModelWhitelist,
-		AccountIDs:       g.AccountIDs,
-		SystemPrompt:     g.SystemPrompt,
-		SystemPromptMode: g.SystemPromptMode,
-		ReasoningEffort:  g.ReasoningEffort,
-		ForcedModel:      g.ForcedModel,
+		ID:                    g.ID,
+		TenantID:              g.TenantID,
+		Provider:              g.Provider,
+		Models:                g.Models,
+		ModelAliases:          g.ModelAliases,
+		ModelWhitelist:        g.ModelWhitelist,
+		AccountIDs:            g.AccountIDs,
+		SystemPrompt:          g.SystemPrompt,
+		SystemPromptMode:      g.SystemPromptMode,
+		SystemPromptInjection: g.SystemPromptInjection,
+		ReasoningEffort:       g.ReasoningEffort,
+		ForcedModel:           g.ForcedModel,
 	}
 }
 
 func (s *Store) ListDynGroups(ctx context.Context, tenantID string) ([]DynGroup, error) {
-	q := `SELECT id, tenant_id, provider, models_json, model_aliases_json, model_whitelist_json, account_ids_json, system_prompt, system_prompt_mode, reasoning_effort, forced_model, created_at, updated_at FROM dyn_groups`
+	q := `SELECT id, tenant_id, provider, models_json, model_aliases_json, model_whitelist_json, account_ids_json, system_prompt, system_prompt_mode, system_prompt_injection, reasoning_effort, forced_model, created_at, updated_at FROM dyn_groups`
 	args := []any{}
 	if tenantID != "" {
 		q += ` WHERE tenant_id=?`
@@ -273,7 +312,7 @@ func (s *Store) ListDynGroups(ctx context.Context, tenantID string) ([]DynGroup,
 		var g DynGroup
 		var modelsJSON, aliasesJSON, whitelistJSON, accountsJSON string
 		var ct, ut int64
-		if err := rows.Scan(&g.ID, &g.TenantID, &g.Provider, &modelsJSON, &aliasesJSON, &whitelistJSON, &accountsJSON, &g.SystemPrompt, &g.SystemPromptMode, &g.ReasoningEffort, &g.ForcedModel, &ct, &ut); err != nil {
+		if err := rows.Scan(&g.ID, &g.TenantID, &g.Provider, &modelsJSON, &aliasesJSON, &whitelistJSON, &accountsJSON, &g.SystemPrompt, &g.SystemPromptMode, &g.SystemPromptInjection, &g.ReasoningEffort, &g.ForcedModel, &ct, &ut); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(modelsJSON), &g.Models)
@@ -300,23 +339,27 @@ func (s *Store) UpsertDynGroup(ctx context.Context, g DynGroup) error {
 	if g.AccountIDs == nil {
 		g.AccountIDs = []string{}
 	}
+	if g.SystemPromptInjection == "always" {
+		g.SystemPromptInjection = ""
+	}
 	mb, _ := json.Marshal(g.Models)
 	ab, _ := json.Marshal(g.ModelAliases)
 	wb, _ := json.Marshal(g.ModelWhitelist)
 	ib, _ := json.Marshal(g.AccountIDs)
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO dyn_groups(id, tenant_id, provider, models_json, model_aliases_json, model_whitelist_json, account_ids_json, system_prompt, system_prompt_mode, reasoning_effort, forced_model, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO dyn_groups(id, tenant_id, provider, models_json, model_aliases_json, model_whitelist_json, account_ids_json, system_prompt, system_prompt_mode, system_prompt_injection, reasoning_effort, forced_model, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   tenant_id=excluded.tenant_id, provider=excluded.provider,
 		   models_json=excluded.models_json, model_aliases_json=excluded.model_aliases_json,
 		   model_whitelist_json=excluded.model_whitelist_json, account_ids_json=excluded.account_ids_json,
 		   system_prompt=excluded.system_prompt, system_prompt_mode=excluded.system_prompt_mode,
+		   system_prompt_injection=excluded.system_prompt_injection,
 		   reasoning_effort=excluded.reasoning_effort, forced_model=excluded.forced_model,
 		   updated_at=excluded.updated_at`,
 		g.ID, g.TenantID, g.Provider, string(mb), string(ab), string(wb), string(ib),
-		g.SystemPrompt, g.SystemPromptMode, g.ReasoningEffort, g.ForcedModel, now, now)
+		g.SystemPrompt, g.SystemPromptMode, g.SystemPromptInjection, g.ReasoningEffort, g.ForcedModel, now, now)
 	return err
 }
 

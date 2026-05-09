@@ -153,6 +153,8 @@ func (g *Gateway) Mount(r chi.Router) {
 
 	r.Post("/v1/chat/completions", g.handleOpenAI)
 	r.Post("/v1/completions", g.handleOpenAI)
+	r.Post("/v1/remote-chat", g.handleRemoteChat)
+	r.Post("/v1/remote-chat/completions", g.handleRemoteChat)
 	r.Post("/v1/messages", g.handleAnthropic)
 	r.Post("/v1beta/models/{model}:generateContent", g.handleGemini)
 	r.Post("/v1beta/models/{model}:streamGenerateContent", g.handleGemini)
@@ -435,24 +437,7 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 	normalize.Request(req)
 
 	// Inject group-level system prompt (used by security / specialised groups).
-	if res.Group != nil && res.Group.SystemPrompt != "" {
-		switch res.Group.SystemPromptMode {
-		case "replace":
-			req.System = res.Group.SystemPrompt
-		case "append":
-			if req.System == "" {
-				req.System = res.Group.SystemPrompt
-			} else {
-				req.System = req.System + "\n\n" + res.Group.SystemPrompt
-			}
-		default: // "prepend" is the default
-			if req.System == "" {
-				req.System = res.Group.SystemPrompt
-			} else {
-				req.System = res.Group.SystemPrompt + "\n\n" + req.System
-			}
-		}
-	}
+	applyGroupSystemPrompt(req, res.Group)
 
 	// Non-Claude providers don't natively understand Claude Code's plan mode,
 	// multi-agent, or interactive tools. Inject a brief behavioral hint so

@@ -67,13 +67,24 @@ def _atomic_write(filepath: str, content: str):
     dir_path = os.path.dirname(filepath)
     fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
     try:
-        os.write(fd, content.encode("utf-8"))
-        os.close(fd)
+        with os.fdopen(fd, "w") as f:
+            fd = -1
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, filepath)
+        os.chmod(filepath, 0o600)
     except Exception:
-        os.close(fd) if not os.path.exists(tmp_path) else None
-        if os.path.exists(tmp_path):
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
             os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
 
 

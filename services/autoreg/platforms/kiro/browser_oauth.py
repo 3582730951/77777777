@@ -12,22 +12,47 @@ from core.oauth_browser import (
 from platforms.kiro.core import KIRO, KiroRegister, UA, _uuid
 
 
-def _exchange_callback_tokens(reg: KiroRegister, callback_url: str):
+def _extract_callback_authorization(callback_url: str, expected_state: str) -> tuple[str, str]:
     parsed = urlparse(callback_url)
+    expected = urlparse(KIRO)
+    if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc or parsed.path != "/signin/oauth":
+        raise RuntimeError("Kiro OAuth 回调地址不正确")
+
     query = parse_qs(parsed.query)
-    auth_code = (query.get("code") or [""])[0]
-    redirect_state = (query.get("state") or [""])[0]
-    if not auth_code:
+    auth_codes = query.get("code") or []
+    redirect_states = query.get("state") or []
+    if not auth_codes:
         raise RuntimeError("Kiro OAuth 回调里缺少 code")
-    if redirect_state and redirect_state != reg.state:
+    if len(auth_codes) != 1:
+        raise RuntimeError("Kiro OAuth 回调里的 code 参数数量不正确")
+    if not redirect_states:
+        raise RuntimeError("Kiro OAuth 回调里缺少 state")
+    if len(redirect_states) != 1:
+        raise RuntimeError("Kiro OAuth 回调里的 state 参数数量不正确")
+    auth_code = auth_codes[0]
+    redirect_state = redirect_states[0]
+    if redirect_state != expected_state:
         raise RuntimeError("Kiro OAuth state 不匹配")
+    return auth_code, redirect_state
+
+
+def _is_expected_oauth_callback_url(url: str, expected_state: str) -> bool:
+    try:
+        _extract_callback_authorization(url, expected_state)
+        return True
+    except RuntimeError:
+        return False
+
+
+def _exchange_callback_tokens(reg: KiroRegister, callback_url: str):
+    auth_code, redirect_state = _extract_callback_authorization(callback_url, reg.state)
 
     exchange_body = cbor2.dumps({
         "code": auth_code,
         "codeVerifier": reg.cv,
         "idp": "BuilderId",
         "redirectUri": f"{KIRO}/signin/oauth",
-        "state": redirect_state or reg.state,
+        "state": redirect_state,
     })
     exchange_headers = {
         **UA,
@@ -97,7 +122,7 @@ def register_with_browser_oauth(
                 log_fn(f"请确认最终登录账号邮箱为: {email_hint}")
 
         callback_url = browser.wait_for_url(
-            lambda url: url.startswith(f"{KIRO}/signin/oauth") and "code=" in url,
+            lambda url: _is_expected_oauth_callback_url(url, reg.state),
             timeout=timeout,
         )
         if not callback_url:

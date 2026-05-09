@@ -19,8 +19,9 @@ type Group struct {
 	ModelWhitelist  []string
 	APIKeyOverrides map[string]APIKeyOverride
 	// SystemPrompt is injected into every request for this group.
-	SystemPrompt     string
-	SystemPromptMode string // "prepend" | "append" | "replace"
+	SystemPrompt          string
+	SystemPromptMode      string // "prepend" | "append" | "replace"
+	SystemPromptInjection string // "always" | "thread_once" (ChatGPT Responses only)
 	// ReasoningEffort overrides the client's reasoning_effort for all requests in this group.
 	// Codex: "low" | "medium" | "high" | "xhigh"
 	// Claude: "none" | "low" | "medium" | "high" | "max" (mapped to budget_tokens)

@@ -265,8 +265,10 @@ scheduler:
     cost_power: 2.0
 
 token_optimizer:
-  # off | safe | aggressive. Safe only compresses large tool/function outputs.
-  mode: safe
+  # ChatGPT Responses only. off preserves direct Codex request bodies.
+  # cleanup strips ANSI/progress noise; guarded is RTK-inspired local filtering.
+  # Never optimizes group system_prompt, request instructions, user messages, or model params.
+  mode: off
   min_tool_output_bytes: 32768
   max_optimized_tool_output_bytes: 65536
   head_lines: 80

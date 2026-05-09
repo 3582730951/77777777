@@ -8,7 +8,7 @@ import json
 import os
 import signal
 import subprocess
-from pathlib import Path
+import tempfile
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -36,14 +36,37 @@ def _read_credentials() -> list[dict]:
 
 
 def _write_credentials(creds: list[dict]) -> None:
-    os.makedirs(os.path.dirname(CREDENTIALS_FILE), exist_ok=True)
-    with open(CREDENTIALS_FILE, "w") as f:
-        json.dump(creds, f, indent=2, ensure_ascii=False)
+    directory = os.path.dirname(CREDENTIALS_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".credentials-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            fd = -1
+            json.dump(creds, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, CREDENTIALS_FILE)
+        os.chmod(CREDENTIALS_FILE, 0o600)
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _mask_token(token: str) -> str:
-    if not token or len(token) <= 16:
-        return token
+    if not token:
+        return ""
+    if len(token) <= 16:
+        return "***"
     return f"{token[:8]}...{token[-6:]}"
 
 

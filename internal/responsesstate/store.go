@@ -23,23 +23,27 @@ type Store struct {
 }
 
 type Session struct {
-	ResponseID string
-	AccountID  string
-	ThreadKey  string
-	Transcript []json.RawMessage
-	CreatedAt  time.Time
-	LastSeen   time.Time
-	Bytes      int64
+	ResponseID           string
+	AccountID            string
+	ThreadKey            string
+	Transcript           []json.RawMessage
+	SystemPromptInjected bool
+	RequireSystemPrompt  bool
+	CreatedAt            time.Time
+	LastSeen             time.Time
+	Bytes                int64
 }
 
 type ThreadAffinity struct {
-	ThreadKey  string
-	AccountID  string
-	ResponseID string
-	Transcript []json.RawMessage
-	CreatedAt  time.Time
-	LastSeen   time.Time
-	Bytes      int64
+	ThreadKey            string
+	AccountID            string
+	ResponseID           string
+	Transcript           []json.RawMessage
+	SystemPromptInjected bool
+	RequireSystemPrompt  bool
+	CreatedAt            time.Time
+	LastSeen             time.Time
+	Bytes                int64
 }
 
 func New(limit int, ttl time.Duration) *Store {
@@ -88,6 +92,8 @@ func (s *Store) Lookup(responseID string) (Session, bool) {
 				thread.LastSeen = time.Now()
 				out.Transcript = cloneTranscript(thread.Transcript)
 				out.Bytes = thread.Bytes
+				out.SystemPromptInjected = out.SystemPromptInjected || thread.SystemPromptInjected
+				out.RequireSystemPrompt = out.RequireSystemPrompt || thread.RequireSystemPrompt
 			}
 		}
 	}
@@ -111,11 +117,13 @@ func (s *Store) LookupThread(threadKey string) (ThreadAffinity, bool) {
 	}
 	cur.LastSeen = time.Now()
 	return ThreadAffinity{
-		ThreadKey:  cur.ThreadKey,
-		AccountID:  cur.AccountID,
-		ResponseID: cur.ResponseID,
-		CreatedAt:  cur.CreatedAt,
-		LastSeen:   cur.LastSeen,
+		ThreadKey:            cur.ThreadKey,
+		AccountID:            cur.AccountID,
+		ResponseID:           cur.ResponseID,
+		SystemPromptInjected: cur.SystemPromptInjected,
+		RequireSystemPrompt:  cur.RequireSystemPrompt,
+		CreatedAt:            cur.CreatedAt,
+		LastSeen:             cur.LastSeen,
 	}, true
 }
 
@@ -139,17 +147,23 @@ func (s *Store) LookupThreadTranscript(threadKey string) (Session, bool) {
 		return Session{}, false
 	}
 	return Session{
-		ResponseID: cur.ResponseID,
-		AccountID:  cur.AccountID,
-		ThreadKey:  cur.ThreadKey,
-		Transcript: cloneTranscript(cur.Transcript),
-		CreatedAt:  cur.CreatedAt,
-		LastSeen:   cur.LastSeen,
-		Bytes:      cur.Bytes,
+		ResponseID:           cur.ResponseID,
+		AccountID:            cur.AccountID,
+		ThreadKey:            cur.ThreadKey,
+		Transcript:           cloneTranscript(cur.Transcript),
+		SystemPromptInjected: cur.SystemPromptInjected,
+		RequireSystemPrompt:  cur.RequireSystemPrompt,
+		CreatedAt:            cur.CreatedAt,
+		LastSeen:             cur.LastSeen,
+		Bytes:                cur.Bytes,
 	}, true
 }
 
 func (s *Store) Record(responseID, accountID string, transcript []json.RawMessage) {
+	s.RecordWithPrompt(responseID, accountID, transcript, false)
+}
+
+func (s *Store) RecordWithPrompt(responseID, accountID string, transcript []json.RawMessage, systemPromptInjected bool) {
 	if responseID == "" || accountID == "" || len(transcript) == 0 {
 		return
 	}
@@ -162,20 +176,25 @@ func (s *Store) Record(responseID, accountID string, transcript []json.RawMessag
 		s.totalBytes -= old.Bytes
 	}
 	s.byID[responseID] = &Session{
-		ResponseID: responseID,
-		AccountID:  accountID,
-		Transcript: cloned,
-		CreatedAt:  now,
-		LastSeen:   now,
-		Bytes:      bytes,
+		ResponseID:           responseID,
+		AccountID:            accountID,
+		Transcript:           cloned,
+		SystemPromptInjected: systemPromptInjected,
+		CreatedAt:            now,
+		LastSeen:             now,
+		Bytes:                bytes,
 	}
 	s.totalBytes += bytes
 	s.evict(responseID)
 }
 
 func (s *Store) RecordWithThread(responseID, accountID, threadKey string, transcript []json.RawMessage) {
+	s.RecordWithThreadPrompt(responseID, accountID, threadKey, transcript, false)
+}
+
+func (s *Store) RecordWithThreadPrompt(responseID, accountID, threadKey string, transcript []json.RawMessage, systemPromptInjected bool) {
 	if threadKey == "" {
-		s.Record(responseID, accountID, transcript)
+		s.RecordWithPrompt(responseID, accountID, transcript, systemPromptInjected)
 		return
 	}
 	if responseID == "" || accountID == "" || len(transcript) == 0 {
@@ -190,23 +209,25 @@ func (s *Store) RecordWithThread(responseID, accountID, threadKey string, transc
 		s.totalBytes -= old.Bytes
 	}
 	s.byID[responseID] = &Session{
-		ResponseID: responseID,
-		AccountID:  accountID,
-		ThreadKey:  threadKey,
-		CreatedAt:  now,
-		LastSeen:   now,
+		ResponseID:           responseID,
+		AccountID:            accountID,
+		ThreadKey:            threadKey,
+		SystemPromptInjected: systemPromptInjected,
+		CreatedAt:            now,
+		LastSeen:             now,
 	}
 	if old, ok := s.byThread[threadKey]; ok {
 		s.totalBytes -= old.Bytes
 	}
 	s.byThread[threadKey] = &ThreadAffinity{
-		ThreadKey:  threadKey,
-		AccountID:  accountID,
-		ResponseID: responseID,
-		Transcript: cloned,
-		CreatedAt:  now,
-		LastSeen:   now,
-		Bytes:      bytes,
+		ThreadKey:            threadKey,
+		AccountID:            accountID,
+		ResponseID:           responseID,
+		Transcript:           cloned,
+		SystemPromptInjected: systemPromptInjected,
+		CreatedAt:            now,
+		LastSeen:             now,
+		Bytes:                bytes,
 	}
 	s.totalBytes += bytes
 	s.evict(responseID)
@@ -217,6 +238,10 @@ func (s *Store) RecordWithThread(responseID, accountID, threadKey string, transc
 // even if an older response id mapping has expired or its transcript was
 // released. The key should already be scoped by caller tenant/group/provider.
 func (s *Store) RecordThread(threadKey, accountID string) {
+	s.RecordThreadPrompt(threadKey, accountID, false)
+}
+
+func (s *Store) RecordThreadPrompt(threadKey, accountID string, systemPromptInjected bool) {
 	if threadKey == "" || accountID == "" {
 		return
 	}
@@ -229,14 +254,19 @@ func (s *Store) RecordThread(threadKey, accountID string) {
 		old.ResponseID = ""
 		old.Transcript = nil
 		old.Bytes = 0
+		old.SystemPromptInjected = systemPromptInjected
+		if systemPromptInjected {
+			old.RequireSystemPrompt = false
+		}
 		old.LastSeen = now
 		return
 	}
 	s.byThread[threadKey] = &ThreadAffinity{
-		ThreadKey: threadKey,
-		AccountID: accountID,
-		CreatedAt: now,
-		LastSeen:  now,
+		ThreadKey:            threadKey,
+		AccountID:            accountID,
+		SystemPromptInjected: systemPromptInjected,
+		CreatedAt:            now,
+		LastSeen:             now,
 	}
 	s.evictThreads(threadKey)
 }
@@ -245,6 +275,10 @@ func (s *Store) RecordThread(threadKey, accountID string) {
 // has been released under byte pressure. This preserves previous_response_id
 // routing to the same upstream account without retaining another long context.
 func (s *Store) RecordAccount(responseID, accountID string) {
+	s.RecordAccountWithPrompt(responseID, accountID, false)
+}
+
+func (s *Store) RecordAccountWithPrompt(responseID, accountID string, systemPromptInjected bool) {
 	if responseID == "" || accountID == "" {
 		return
 	}
@@ -259,14 +293,61 @@ func (s *Store) RecordAccount(responseID, accountID string) {
 				thread.ResponseID = ""
 				thread.Transcript = nil
 				thread.Bytes = 0
+				thread.SystemPromptInjected = systemPromptInjected
+				if systemPromptInjected {
+					thread.RequireSystemPrompt = false
+				}
 			}
 		}
 	}
 	s.byID[responseID] = &Session{
-		ResponseID: responseID,
-		AccountID:  accountID,
-		CreatedAt:  now,
-		LastSeen:   now,
+		ResponseID:           responseID,
+		AccountID:            accountID,
+		SystemPromptInjected: systemPromptInjected,
+		CreatedAt:            now,
+		LastSeen:             now,
+	}
+	s.evict(responseID)
+}
+
+func (s *Store) RequireSystemPromptForThread(threadKey string) {
+	if threadKey == "" {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.byThread[threadKey]; ok {
+		cur.RequireSystemPrompt = true
+		cur.LastSeen = now
+		return
+	}
+	s.byThread[threadKey] = &ThreadAffinity{
+		ThreadKey:           threadKey,
+		RequireSystemPrompt: true,
+		CreatedAt:           now,
+		LastSeen:            now,
+	}
+	s.evictThreads(threadKey)
+}
+
+func (s *Store) RequireSystemPromptForResponse(responseID string) {
+	if responseID == "" {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.byID[responseID]; ok {
+		cur.RequireSystemPrompt = true
+		cur.LastSeen = now
+		return
+	}
+	s.byID[responseID] = &Session{
+		ResponseID:          responseID,
+		RequireSystemPrompt: true,
+		CreatedAt:           now,
+		LastSeen:            now,
 	}
 	s.evict(responseID)
 }
@@ -384,13 +465,15 @@ func cloneSession(in *Session) Session {
 		return Session{}
 	}
 	return Session{
-		ResponseID: in.ResponseID,
-		AccountID:  in.AccountID,
-		ThreadKey:  in.ThreadKey,
-		Transcript: cloneTranscript(in.Transcript),
-		CreatedAt:  in.CreatedAt,
-		LastSeen:   in.LastSeen,
-		Bytes:      in.Bytes,
+		ResponseID:           in.ResponseID,
+		AccountID:            in.AccountID,
+		ThreadKey:            in.ThreadKey,
+		Transcript:           cloneTranscript(in.Transcript),
+		SystemPromptInjected: in.SystemPromptInjected,
+		RequireSystemPrompt:  in.RequireSystemPrompt,
+		CreatedAt:            in.CreatedAt,
+		LastSeen:             in.LastSeen,
+		Bytes:                in.Bytes,
 	}
 }
 

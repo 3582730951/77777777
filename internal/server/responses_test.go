@@ -225,6 +225,75 @@ func TestApplyGroupSystemPromptToResponsesBodyInsertsMissingInstructions(t *test
 	}
 }
 
+func TestResponsesThreadOnceSkipsKnownThreadAndReinjectsAfterCompact(t *testing.T) {
+	cfg := &config.Root{}
+	cfg.Scheduler.Retry.MaxAttempts = 1
+	cfg.Scheduler.Failover.HeadBuffer.MaxBytes = 4096
+	cfg.Scheduler.Failover.HeadBuffer.MaxEvents = 2
+	sched := scheduler.New(cfg.Scheduler)
+	sched.Register(&domain.Account{
+		ID:       "acc-1",
+		TenantID: "cyber",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	})
+	raw := &captureRawProvider{name: "chatgpt", responseIDs: []string{"resp-1", "resp-2", "resp-3"}}
+	reg := provider.NewRegistry()
+	reg.Register(raw)
+	gw := NewGateway(Deps{
+		Cfg:       cfg,
+		Sched:     sched,
+		Providers: reg,
+	})
+	group := &domain.Group{
+		ID:                    "openai_cyber",
+		TenantID:              "cyber",
+		Provider:              "chatgpt",
+		AccountIDs:            []string{"acc-1"},
+		SystemPrompt:          "group-policy",
+		SystemPromptInjection: "thread_once",
+	}
+
+	firstBody := `{"model":"gpt-5.5","prompt_cache_key":"thread-stable","instructions":"codex-base","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(firstBody))
+	req = req.WithContext(context.WithValue(req.Context(), ctxResolved, auth.Resolved{Group: group, APIKey: "sk-test"}))
+	rec := httptest.NewRecorder()
+	gw.handleResponses(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if inst := gjson.GetBytes(raw.calls[0].body, "instructions").String(); inst != "group-policy\n\ncodex-base" {
+		t.Fatalf("first request should inject group prompt, got %q", inst)
+	}
+
+	secondBody := `{"model":"gpt-5.5","prompt_cache_key":"thread-stable","previous_response_id":"resp-1","instructions":"codex-base","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"second"}]}],"stream":true}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(secondBody))
+	req = req.WithContext(context.WithValue(req.Context(), ctxResolved, auth.Resolved{Group: group, APIKey: "sk-test"}))
+	rec = httptest.NewRecorder()
+	gw.handleResponses(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if inst := gjson.GetBytes(raw.calls[1].body, "instructions").String(); inst != "codex-base" {
+		t.Fatalf("known thread should not repeat group prompt, got %q", inst)
+	}
+
+	compactBody := []byte(`{"model":"gpt-5.5","prompt_cache_key":"thread-stable","previous_response_id":"resp-2","instructions":"compact-base","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"compact"}]}],"stream":false}`)
+	gw.requireResponsesSystemPromptAfterCompact(compactBody, group)
+
+	thirdBody := `{"model":"gpt-5.5","prompt_cache_key":"thread-stable","previous_response_id":"resp-2","instructions":"codex-base","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"after compact"}]}],"stream":true}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(thirdBody))
+	req = req.WithContext(context.WithValue(req.Context(), ctxResolved, auth.Resolved{Group: group, APIKey: "sk-test"}))
+	rec = httptest.NewRecorder()
+	gw.handleResponses(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("third status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if inst := gjson.GetBytes(raw.calls[2].body, "instructions").String(); inst != "group-policy\n\ncodex-base" {
+		t.Fatalf("first request after compact should reinject group prompt, got %q", inst)
+	}
+}
+
 func TestResponsesPassthroughScrubsClientMetadataBeforeRawInvoke(t *testing.T) {
 	cfg := &config.Root{}
 	cfg.Scheduler.Retry.MaxAttempts = 1
@@ -544,12 +613,18 @@ type captureRawCall struct {
 }
 
 type captureRawProvider struct {
+	name        string
 	body        []byte
 	calls       []captureRawCall
 	responseIDs []string
 }
 
-func (p *captureRawProvider) Name() string { return "raw" }
+func (p *captureRawProvider) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return "raw"
+}
 
 func (p *captureRawProvider) Invoke(context.Context, *domain.Account, *ir.Request) (<-chan ir.Event, error) {
 	out := make(chan ir.Event)

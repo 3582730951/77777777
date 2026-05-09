@@ -8,7 +8,7 @@ v10 = v8 核心 + HAR 深度分析修复:
   ★ Step 4a 后从 workflow-csrf-token 提取 signupCsrfToken 更新 directory-csrf-token
 pip install curl_cffi cbor2 jwcrypto
 """
-import re,uuid,json,random,string,time,base64,hashlib,secrets
+import os,re,uuid,json,random,string,time,base64,hashlib,secrets
 import struct,binascii,math
 from urllib.parse import urlparse,parse_qs,quote as url_quote,urlencode
 import cbor2
@@ -210,6 +210,68 @@ def _pwd(): return secrets.token_urlsafe(12)+"!A1"
 def _uuid(): return str(uuid.uuid4())
 def _ubid():
     return f"{random.randint(100,999)}-{random.randint(1000000,9999999)}-{random.randint(1000000,9999999)}"
+def _mask_secret(value, head=6, tail=4):
+    if not value:
+        return ""
+    value = str(value)
+    if len(value) <= head + tail:
+        return "***"
+    return f"{value[:head]}...{value[-tail:]}"
+_SENSITIVE_LOG_KEYS = {
+    "access_token", "accesstoken", "refresh_token", "refreshtoken",
+    "session_token", "sessiontoken", "sso_session_token", "ssosessiontoken",
+    "bearer_token", "bearertoken", "csrf_token", "csrftoken",
+    "client_secret", "clientsecret", "password", "authorization", "cookie",
+    "code", "authcode", "code_verifier", "codeverifier",
+}
+def _redact_sensitive_for_log(value):
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            key_norm = str(k).replace("-", "_").lower()
+            key_compact = key_norm.replace("_", "")
+            if key_norm in _SENSITIVE_LOG_KEYS or key_compact in _SENSITIVE_LOG_KEYS:
+                out[k] = _mask_secret(v)
+            else:
+                out[k] = _redact_sensitive_for_log(v)
+        return out
+    if isinstance(value, list):
+        return [_redact_sensitive_for_log(v) for v in value]
+    return value
+def _safe_json_for_log(value, limit=300):
+    try:
+        text = json.dumps(_redact_sensitive_for_log(value), ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    return text[:limit]
+def _describe_set_cookie(header_value):
+    first_part = str(header_value).split(";", 1)[0].strip()
+    if "=" not in first_part:
+        return "<malformed>"
+    name, value = first_part.split("=", 1)
+    return f"{name.strip()}={_mask_secret(value.strip())}"
+def _safe_url_for_log(value, limit=140):
+    parsed = urlparse(str(value or ""))
+    if not parsed.scheme or not parsed.netloc:
+        return str(value or "")[:limit]
+    query = "?..." if parsed.query else ""
+    fragment = "#..." if parsed.fragment else ""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}{query}{fragment}"
+def _single_query_value(query, name):
+    values = query.get(name) or []
+    if len(values) != 1:
+        return None
+    return values[0]
+def _append_private_jsonl(path, record):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    finally:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 class KiroRegister:
     def __init__(self,proxy=None,tag="REG"):
@@ -237,6 +299,15 @@ class KiroRegister:
         self._step11_state=None        # step 11 redirect URL 中的 state
 
     def log(self,msg): print(f"[{self.tag}] {msg}")
+
+    def _validate_oauth_state(self, redirect_state):
+        if not redirect_state:
+            self.log("  ❌ OAuth 回调缺少 state")
+            return False
+        if redirect_state != self.state:
+            self.log(f"  ❌ OAuth state 不匹配: got={_mask_secret(redirect_state)} expected={_mask_secret(self.state)}")
+            return False
+        return True
 
     def _capture_cookies(self,resp):
         """捕获 Set-Cookie 响应头中的 cookies.
@@ -363,7 +434,7 @@ class KiroRegister:
         if d.get("workflowStateHandle"): self.wsh=d["workflowStateHandle"]
         if d.get("stepId") is not None: self.sid=d["stepId"]
         self.log(f"  → sid={self.sid} wsh={str(self.wsh)[:40]}...")
-        self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
+        self.log(f"  Resp: {_safe_json_for_log(d, 400)}")
         return d
 
     def _setup_profile_cookies(self):
@@ -417,7 +488,7 @@ class KiroRegister:
             self.log(f"  ❌ {r.status_code}: {r.text[:500]}"); return None
         try:
             d=r.json()
-            self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
+            self.log(f"  Resp: {_safe_json_for_log(d, 400)}")
             return d
         except: return {}
 
@@ -441,7 +512,7 @@ class KiroRegister:
         redir=d.get("redirectUrl")
         if not redir: self.log(f"  ❌ 无redirectUrl: {d}"); return None
         self._step1_redirect_url=redir
-        self.log(f"  ✅ {redir[:100]}...")
+        self.log(f"  ✅ {_safe_url_for_log(redir)}")
         return redir
 
     # ═══ Step 2: oidc → signin.aws → wsh ═══
@@ -449,7 +520,7 @@ class KiroRegister:
         self.log("Step 2: 重定向链...")
         r=self.s.get(redir_url,headers=UA,allow_redirects=True)
         view_url=str(r.url)
-        self.log(f"  2a final: {view_url[:120]}")
+        self.log(f"  2a final: {_safe_url_for_log(view_url)}")
         p=urlparse(view_url); qs=parse_qs(p.query)
         fqs=parse_qs(p.fragment.lstrip("#/?")) if p.fragment else {}
 
@@ -531,7 +602,7 @@ class KiroRegister:
         if not r: return None
         redir=r.get("redirect",{}).get("url")
         if redir:
-            self.log(f"  ✅ signup redirect: {redir[:100]}...")
+            self.log(f"  ✅ signup redirect: {_safe_url_for_log(redir)}")
             m=re.search(r"workflowStateHandle=([^&#]+)",redir)
             if m: self.wsh=m.group(1)
         return r
@@ -551,7 +622,7 @@ class KiroRegister:
         if not r: return None
         redir=r.get("redirect",{}).get("url","")
         if "profile.aws" in redir:
-            self.log(f"  ✅ profile redirect: {redir[:100]}...")
+            self.log(f"  ✅ profile redirect: {_safe_url_for_log(redir)}")
             m=re.search(r"workflowID=([^&#]+)",redir)
             if m:
                 self.profile_wf_id=m.group(1)
@@ -580,7 +651,7 @@ class KiroRegister:
         self.log(f"  Status: {r.status_code}")
         if r.status_code==200:
             d=r.json(); token=d.get("token","")
-            self.log(f"  ✅ awsd2c-token: {token[:60]}...")
+            self.log(f"  ✅ awsd2c-token: {_mask_secret(token)}")
             self._awsd2c_token=token
             try:
                 parts=token.split(".")
@@ -661,7 +732,7 @@ class KiroRegister:
         if not reg_code or not sign_in_state:
             self.log(f"  ❌ 缺少 registrationCode 或 signInState")
             return None
-        self.log(f"  ✅ registrationCode: {reg_code[:40]}...")
+        self.log(f"  ✅ registrationCode: {_mask_secret(reg_code)}")
         try:
             padded = sign_in_state + "=" * (4 - len(sign_in_state) % 4)
             decoded = json.loads(base64.b64decode(padded))
@@ -688,7 +759,7 @@ class KiroRegister:
         signup_url = (f"{SIGNIN}/platform/{DIR_ID}/signup"
                       f"?registrationCode={reg_code}"
                       f"&state={sign_in_state}")
-        self.log(f"  9a: GET {signup_url[:100]}...")
+        self.log(f"  9a: GET {_safe_url_for_log(signup_url)}")
         r = self.s.get(signup_url, headers={**UA, "accept": "text/html",
             "referer": f"{PROFILE}/"}, allow_redirects=True)
         self._capture_cookies(r)
@@ -736,7 +807,7 @@ class KiroRegister:
         # ★ v8 debug: 打印发送的 cookies (用 _safe_cookie_list 避免冲突)
         self.log("  发送的 cookies (signin.aws):")
         for name,val,dom,path in self._safe_cookie_list("signin.aws"):
-            self.log(f"    {name}={str(val)[:60]}... (domain={dom}, path={path})")
+            self.log(f"    {name}={_mask_secret(val)} (domain={dom}, path={path})")
 
         self.log(f"  POST {url}")
         r = self.s.post(url, headers=h, json=body)
@@ -748,7 +819,7 @@ class KiroRegister:
             return None
         d = r.json()
         self.log(f"  → sid={d.get('stepId')} wsh={d.get('workflowStateHandle','')[:40]}")
-        self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
+        self.log(f"  Resp: {_safe_json_for_log(d, 400)}")
         if d.get("stepId") != "get-new-password-for-password-creation":
             self.log(f"  ❌ 预期 get-new-password, 实际 {d.get('stepId')}")
             return None
@@ -876,14 +947,13 @@ class KiroRegister:
         if cleaned:
             self.log(f"  ★ 已清理 {cleaned} 个非裸域名 cookies")
 
-        # ★ v10 debug: 打印最终 cookies (关键 cookie 打印完整值)
+        # ★ v10 debug: 打印最终 cookies, 但不输出完整凭据值
         self.log("  10b cookies:")
         for name,val,dom,path in self._safe_cookie_list("signin.aws"):
             if name in ('directory-csrf-token', 'workflow-csrf-token', 'workflow-csrftoken', 'workflow-step-id'):
-                from urllib.parse import unquote as _uq
-                self.log(f"    {name}={_uq(str(val))} (d={dom} p={path})")
+                self.log(f"    {name}={_mask_secret(val)} (d={dom} p={path})")
             else:
-                self.log(f"    {name}={str(val)[:50]}... (d={dom} p={path})")
+                self.log(f"    {name}={_mask_secret(val)} (d={dom} p={path})")
 
         self.log(f"  10b: POST {url}")
         r = self.s.post(url, headers=h, json=body)
@@ -894,7 +964,7 @@ class KiroRegister:
             return None
         d = r.json()
         self.log(f"  → sid={d.get('stepId')}")
-        self.log(f"  Resp: {json.dumps(d,ensure_ascii=False)[:400]}")
+        self.log(f"  Resp: {_safe_json_for_log(d, 400)}")
         if d.get("stepId") != "end-of-user-registration-success":
             self.log(f"  ❌ 预期 end-of-user-registration-success")
             return None
@@ -915,7 +985,7 @@ class KiroRegister:
         if not redir:
             self.log("  ❌ 无 redirect URL")
             return None
-        self.log(f"  redirect: {redir[:120]}...")
+        self.log(f"  redirect: {_safe_url_for_log(redir)}")
         p = urlparse(redir)
         qs = parse_qs(p.query)
         login_wsh = qs.get("workflowStateHandle", [None])[0]
@@ -1031,7 +1101,7 @@ class KiroRegister:
                 sso_redirect = sso_resp.get("redirectUrl", "")
             else:
                 self.log(f"  ⚠️ sso-token 失败: {r.status_code}, body={r.text[:300]}")
-                self.log(f"  ⚠️ authCode={self._workflow_result_handle}, state={str(self._step11_state)[:60]}")
+                self.log(f"  ⚠️ authCode={_mask_secret(self._workflow_result_handle)}, state={_mask_secret(self._step11_state)}")
 
         # ── 12a-alt: sso-token 失败或数据不全，手动跟踪 OIDC redirect chain ──
         if not bearer_token and self._step1_redirect_url:
@@ -1043,11 +1113,11 @@ class KiroRegister:
             for hop in range(20):
                 r_hop = self.s.get(current_url, headers={**UA, "accept": "text/html"}, allow_redirects=False)
                 loc = r_hop.headers.get("location", "")
-                self.log(f"  [{hop}] {r_hop.status_code} {current_url[:80]}... → {loc[:80] if loc else '(no redirect)'}")
+                self.log(f"  [{hop}] {r_hop.status_code} {_safe_url_for_log(current_url, 80)} → {_safe_url_for_log(loc, 80) if loc else '(no redirect)'}")
                 # 捕获 portal.sso 设置的 session token（Set-Cookie 里的 x-amz-sso-token）
                 for h_name, h_val in r_hop.headers.items():
                     if h_name.lower() == "set-cookie":
-                        self.log(f"  [{hop}] Set-Cookie: {h_val[:100]}")
+                        self.log(f"  [{hop}] Set-Cookie: {_describe_set_cookie(h_val)}")
                         if "x-amz-sso-token" in h_val.lower() or "sso-token" in h_val.lower():
                             import http.cookies
                             c = http.cookies.SimpleCookie()
@@ -1055,15 +1125,18 @@ class KiroRegister:
                             for morsel_name, morsel in c.items():
                                 if "sso" in morsel_name.lower() and "token" in morsel_name.lower():
                                     sso_bearer_from_chain = morsel.value
-                                    self.log(f"  [{hop}] 捕获 SSO token: {morsel_name}={morsel.value[:40]}...")
+                                    self.log(f"  [{hop}] 捕获 SSO token: {morsel_name}={_mask_secret(morsel.value)}")
                 # 检查是否到了 kiro.dev 带 code
                 target = loc or str(getattr(r_hop, 'url', current_url))
                 if "kiro.dev" in target and "code=" in target:
                     p_t = urlparse(target)
                     qs_t = parse_qs(p_t.query)
-                    auth_code = qs_t.get("code", [None])[0]
-                    redirect_state = qs_t.get("state", [None])[0] or self.state
-                    self.log(f"  [{hop}] ✅ 拿到 auth code: {auth_code[:40]}...")
+                    auth_code = _single_query_value(qs_t, "code")
+                    redirect_state = _single_query_value(qs_t, "state")
+                    if not auth_code or not redirect_state:
+                        self.log("  ❌ OAuth redirect 参数数量不正确")
+                        return None
+                    self.log(f"  [{hop}] ✅ 拿到 auth code: {_mask_secret(auth_code)}")
                     break
                 if r_hop.status_code not in (301, 302, 303, 307):
                     # 检查 response body 里有没有 token
@@ -1072,7 +1145,7 @@ class KiroRegister:
                         t = body_data.get("token", "")
                         if t and not sso_bearer_from_chain:
                             sso_bearer_from_chain = t
-                            self.log(f"  [{hop}] 捕获 bearer token from body: {t[:40]}...")
+                            self.log(f"  [{hop}] 捕获 bearer token from body: {_mask_secret(t)}")
                     except Exception:
                         pass
                     break
@@ -1108,10 +1181,13 @@ class KiroRegister:
                             if "kiro.dev" in final2 and "code=" in final2:
                                 p2 = urlparse(final2)
                                 qs2 = parse_qs(p2.query)
-                                auth_code = qs2.get("code", [None])[0]
-                                redirect_state = qs2.get("state", [None])[0] or self.state
+                                auth_code = _single_query_value(qs2, "code")
+                                redirect_state = _single_query_value(qs2, "state")
+                                if not auth_code or not redirect_state:
+                                    self.log("  ❌ re-login OAuth redirect 参数数量不正确")
+                                    return None
                                 if auth_code:
-                                    self.log(f"  ✅ re-login 拿到 auth code: {auth_code[:40]}...")
+                                    self.log(f"  ✅ re-login 拿到 auth code: {_mask_secret(auth_code)}")
                                     return self._step12e_exchange_token(auth_code, redirect_state)
             self.log("  ❌ 直接重定向方式也未获取到 auth code")
             return None
@@ -1123,10 +1199,10 @@ class KiroRegister:
         bearer_token = sso_resp.get("token", "")
         sso_redirect = sso_resp.get("redirectUrl", "")
         if not bearer_token:
-            self.log(f"  ❌ 无 bearer token: {json.dumps(sso_resp, ensure_ascii=False)[:300]}")
+            self.log(f"  ❌ 无 bearer token: {_safe_json_for_log(sso_resp, 300)}")
             return None
-        self.log(f"  ✅ bearer token (sessionToken)={bearer_token[:60]}...")
-        self.log(f"  redirectUrl={sso_redirect[:120]}...")
+        self.log(f"  ✅ bearer token (sessionToken)={_mask_secret(bearer_token)}")
+        self.log(f"  redirectUrl={_safe_url_for_log(sso_redirect)}")
 
         # ── 12a2: GET redirectUrl → 建立 view.awsapps.com SSO session cookie ──
         if sso_redirect and 'view.awsapps.com' in sso_redirect:
@@ -1165,7 +1241,7 @@ class KiroRegister:
         if r.status_code == 200:
             try:
                 whoami = r.json()
-                self.log(f"  ✅ whoAmI: {json.dumps(whoami, ensure_ascii=False)[:200]}")
+                self.log(f"  ✅ whoAmI: {_safe_json_for_log(whoami, 200)}")
             except: pass
 
         # ── 12c: POST oidc/authentication_result ──
@@ -1192,9 +1268,9 @@ class KiroRegister:
         ar_resp = r.json()
         auth_location = ar_resp.get("location", "")
         if not auth_location:
-            self.log(f"  ❌ 无 location: {json.dumps(ar_resp, ensure_ascii=False)[:300]}")
+            self.log(f"  ❌ 无 location: {_safe_json_for_log(ar_resp, 300)}")
             return None
-        self.log(f"  ✅ location={auth_location[:120]}...")
+        self.log(f"  ✅ location={_safe_url_for_log(auth_location)}")
 
         # ── 12d: GET oidc/authorize?authorization_resumption_context=... ──
         self.log("  12d: GET authorize (follow redirect → code)...")
@@ -1205,21 +1281,20 @@ class KiroRegister:
         if not redirect_loc:
             self.log(f"  ❌ 无 redirect location, status={r.status_code}")
             return None
-        self.log(f"  ✅ redirect → {redirect_loc[:150]}...")
+        self.log(f"  ✅ redirect → {_safe_url_for_log(redirect_loc)}")
 
         # 从 redirect URL 提取 code 和 state
         p_loc = urlparse(redirect_loc)
         qs_loc = parse_qs(p_loc.query)
-        auth_code = qs_loc.get("code", [None])[0]
-        redirect_state = qs_loc.get("state", [None])[0]
+        auth_code = _single_query_value(qs_loc, "code")
+        redirect_state = _single_query_value(qs_loc, "state")
         if not auth_code:
-            self.log(f"  ❌ redirect URL 中无 code 参数")
+            self.log(f"  ❌ redirect URL 中 code 参数缺失或数量不正确")
             return None
-        if not redirect_state:
-            self.log(f"  ⚠️ redirect URL 中无 state 参数, 回退到 self.state")
-            redirect_state = self.state
-        self.log(f"  ✅ auth_code={auth_code[:60]}...")
-        self.log(f"  ✅ redirect_state={redirect_state[:60]}...")
+        if not self._validate_oauth_state(redirect_state):
+            return None
+        self.log(f"  ✅ auth_code={_mask_secret(auth_code)}")
+        self.log(f"  ✅ redirect_state={_mask_secret(redirect_state)}")
 
         # ── 12e: POST app.kiro.dev ExchangeToken (CBOR) ──
         self.log("  12e: POST ExchangeToken (CBOR)...")
@@ -1262,10 +1337,10 @@ class KiroRegister:
         kiro_csrf = resp_data.get("csrfToken", "")
         expires_in = resp_data.get("expiresIn", 0)
         if not access_token:
-            self.log(f"  ❌ 无 accessToken: {resp_data}")
+            self.log(f"  ❌ 无 accessToken: {_safe_json_for_log(resp_data)}")
             return None
-        self.log(f"  ✅ accessToken={access_token[:60]}...")
-        self.log(f"  ✅ csrfToken={kiro_csrf[:30]}...")
+        self.log(f"  ✅ accessToken={_mask_secret(access_token)}")
+        self.log(f"  ✅ csrfToken={_mask_secret(kiro_csrf)}")
         self.log(f"  expiresIn={expires_in}")
         return {
             "accessToken": access_token,
@@ -1344,7 +1419,7 @@ class KiroRegister:
                     time.sleep(1)
 
                 current_url = page.url
-                self.log(f"  当前 URL: {current_url[:100]}")
+                self.log(f"  当前 URL: {_safe_url_for_log(current_url)}")
 
                 # 如果在 signin.aws 登录页
                 if "signin.aws" in current_url:
@@ -1434,13 +1509,13 @@ class KiroRegister:
                         else:
                             self.log("  ⚠️ 无 OTP 回调，尝试继续...")
 
-                    self.log(f"  登录后 URL: {page.url[:100]}")
+                    self.log(f"  登录后 URL: {_safe_url_for_log(page.url)}")
 
                     # ★ 登录成功后，先访问 view.awsapps.com/start 建立 SSO session
                     self.log("  建立 SSO session...")
                     page.goto("https://view.awsapps.com/start", timeout=15000, wait_until="domcontentloaded")
                     time.sleep(5)
-                    self.log(f"  SSO session URL: {page.url[:100]}")
+                    self.log(f"  SSO session URL: {_safe_url_for_log(page.url)}")
 
                 # 打开 device 授权页面
                 device_url = f"https://view.awsapps.com/start/#/device?user_code={user_code}"
@@ -1543,6 +1618,11 @@ class KiroRegister:
 
     def _step12e_exchange_token(self, auth_code, redirect_state):
         """12e: POST ExchangeToken (CBOR) — 用 auth code + PKCE codeVerifier 换 accessToken"""
+        if not auth_code:
+            self.log("  ❌ ExchangeToken 缺少 auth code")
+            return None
+        if not self._validate_oauth_state(redirect_state):
+            return None
         self.log("  12e: POST ExchangeToken (CBOR)...")
         exchange_body = cbor2.dumps({
             "code": auth_code,
@@ -1571,7 +1651,7 @@ class KiroRegister:
         # Log ALL Set-Cookie headers for debugging
         for h_name, h_val in r.headers.items():
             if h_name.lower() == "set-cookie":
-                self.log(f"  Set-Cookie: {h_val[:180]}")
+                self.log(f"  Set-Cookie: {_describe_set_cookie(h_val)}")
         if r.status_code != 200:
             self.log(f"  ❌ ExchangeToken 失败: {r.status_code}")
             try: self.log(f"  {r.text[:500]}")
@@ -1586,7 +1666,7 @@ class KiroRegister:
         kiro_csrf = resp_data.get("csrfToken", "")
         expires_in = resp_data.get("expiresIn", 0)
         if not access_token:
-            self.log(f"  ❌ 无 accessToken: {resp_data}")
+            self.log(f"  ❌ 无 accessToken: {_safe_json_for_log(resp_data)}")
             return None
         # ★ 从 Set-Cookie 提取 refreshToken 和 SessionToken
         # 注意: curl_cffi 的 headers.items() 会合并同名头，必须用 get_list/multi_items
@@ -1603,11 +1683,11 @@ class KiroRegister:
                 cv_s = cv.strip()
                 if ck_s in ("RefreshToken","refreshToken") and cv_s:
                     refresh_token_from_cookie = cv_s
-                    self.log(f"  ★ refreshToken from Set-Cookie: {refresh_token_from_cookie[:40]}...")
+                    self.log(f"  ★ refreshToken from Set-Cookie: {_mask_secret(refresh_token_from_cookie)}")
                 elif ck_s == "SessionToken" and cv_s:
                     session_token_from_cookie = cv_s
-                    self.log(f"  ★ SessionToken from Set-Cookie: {session_token_from_cookie[:40]}...")
-        self.log(f"  ✅ accessToken={access_token[:40]}... csrfToken={kiro_csrf[:20]}... expiresIn={expires_in}")
+                    self.log(f"  ★ SessionToken from Set-Cookie: {_mask_secret(session_token_from_cookie)}")
+        self.log(f"  ✅ accessToken={_mask_secret(access_token)} csrfToken={_mask_secret(kiro_csrf)} expiresIn={expires_in}")
 
         # ── 12e2: 用 csrfToken + session 调 GetCredentials 获取 AWS OIDC token ──
         aws_bearer = ""
@@ -1636,15 +1716,15 @@ class KiroRegister:
                     aws_bearer = gc_data.get("bearerToken", "") or gc_data.get("accessToken", "") or gc_data.get("token", "")
                     self.log(f"  GetCredentials keys: {list(gc_data.keys())}")
                     if aws_bearer:
-                        self.log(f"  ✅ AWS bearer token: {aws_bearer[:40]}...")
+                        self.log(f"  ✅ AWS bearer token: {_mask_secret(aws_bearer)}")
                     else:
-                        self.log(f"  ⚠️ GetCredentials 无 bearerToken: {json.dumps(gc_data, default=str)[:300]}")
+                        self.log(f"  ⚠️ GetCredentials 无 bearerToken: {_safe_json_for_log(gc_data, 300)}")
                 except Exception as e:
                     self.log(f"  ❌ GetCredentials CBOR解析失败: {e}")
             else:
                 try:
                     err = cbor2.loads(gc_r.content)
-                    self.log(f"  ❌ GetCredentials: {json.dumps(err, default=str)[:200]}")
+                    self.log(f"  ❌ GetCredentials: {_safe_json_for_log(err, 200)}")
                 except:
                     self.log(f"  ❌ GetCredentials: {gc_r.text[:200]}")
 
@@ -1726,7 +1806,7 @@ class KiroRegister:
         if not client_id or not client_secret:
             self.log(f"  ❌ 无 clientId/clientSecret")
             return None
-        self.log(f"  ✅ clientId={client_id[:40]}...")
+        self.log(f"  ✅ clientId={_mask_secret(client_id)}")
 
         # ── 12g: POST oidc/device_authorization ──
         self.log("  12g: POST oidc/device_authorization...")
@@ -1751,7 +1831,7 @@ class KiroRegister:
             self.log(f"  ❌ 无 deviceCode/userCode")
             return None
         self.log(f"  ✅ userCode={user_code}")
-        self.log(f"  ✅ verificationUri={verification_uri[:100]}...")
+        self.log(f"  ✅ verificationUri={_safe_url_for_log(verification_uri)}")
 
         # ── 12h: 设备授权确认 (直接调用 oidc.amazonaws.com) ──
         # 真实流程 (来自浏览器抓包):
@@ -1866,8 +1946,8 @@ class KiroRegister:
 
         oidc_access = oidc_token.get("accessToken", "")
         refresh_token = oidc_token.get("refreshToken", "")
-        self.log(f"  ✅ OIDC accessToken={oidc_access[:60]}...")
-        self.log(f"  ✅ refreshToken={refresh_token[:60]}...")
+        self.log(f"  ✅ OIDC accessToken={_mask_secret(oidc_access)}")
+        self.log(f"  ✅ refreshToken={_mask_secret(refresh_token)}")
         return {
             "clientId": client_id,
             "clientSecret": client_secret,
@@ -2110,25 +2190,23 @@ def main():
     if ok:
         print(f"\n✅ 注册成功!")
         print(f"  邮箱: {info['email']}")
-        print(f"  密码: {info['password']}")
+        print(f"  密码: {_mask_secret(info['password'])}")
         if info.get('accessToken'):
-            print(f"  accessToken: {info['accessToken'][:60]}...")
-            print(f"  sessionToken: {info['sessionToken'][:60]}...")
+            print(f"  accessToken: {_mask_secret(info['accessToken'])}")
+            print(f"  sessionToken: {_mask_secret(info['sessionToken'])}")
         if info.get('refreshToken'):
-            print(f"  clientId: {info['clientId'][:40]}...")
-            print(f"  clientSecret: {info['clientSecret'][:40]}...")
-            print(f"  refreshToken: {info['refreshToken'][:60]}...")
-        with open("kiro_accounts.txt", "a") as f:
-            rec = json.dumps({
-                "email": info['email'],
-                "password": info['password'],
-                "accessToken": info.get('accessToken', ''),
-                "sessionToken": info.get('sessionToken', ''),
-                "clientId": info.get('clientId', ''),
-                "clientSecret": info.get('clientSecret', ''),
-                "refreshToken": info.get('refreshToken', ''),
-            }, ensure_ascii=False)
-            f.write(rec + "\n")
+            print(f"  clientId: {_mask_secret(info['clientId'])}")
+            print(f"  clientSecret: {_mask_secret(info['clientSecret'])}")
+            print(f"  refreshToken: {_mask_secret(info['refreshToken'])}")
+        _append_private_jsonl("kiro_accounts.txt", {
+            "email": info['email'],
+            "password": info['password'],
+            "accessToken": info.get('accessToken', ''),
+            "sessionToken": info.get('sessionToken', ''),
+            "clientId": info.get('clientId', ''),
+            "clientSecret": info.get('clientSecret', ''),
+            "refreshToken": info.get('refreshToken', ''),
+        })
         print("  已保存到 kiro_accounts.txt")
     else:
         print(f"\n❌ 注册失败: {info.get('error')}")

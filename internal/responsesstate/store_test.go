@@ -208,3 +208,36 @@ func TestThreadAffinityEvictionIsSeparateFromTranscriptBytes(t *testing.T) {
 		t.Fatalf("response id affinity should not be evicted by thread records: ok=%v resp=%+v", ok, resp)
 	}
 }
+
+func TestSystemPromptRequirementClearedByPromptAwareThreadRecord(t *testing.T) {
+	s := New(10, time.Minute)
+	s.RecordWithThreadPrompt("resp-1", "acc-1", "thread", []json.RawMessage{
+		json.RawMessage(`{"type":"message","role":"user"}`),
+	}, true)
+
+	thread, ok := s.LookupThread("thread")
+	if !ok {
+		t.Fatal("expected thread")
+	}
+	if !thread.SystemPromptInjected {
+		t.Fatal("thread should remember that group system prompt was injected")
+	}
+
+	s.RequireSystemPromptForThread("thread")
+	thread, ok = s.LookupThread("thread")
+	if !ok || !thread.RequireSystemPrompt {
+		t.Fatalf("thread should require prompt after compact: ok=%v thread=%+v", ok, thread)
+	}
+
+	s.RecordThreadPrompt("thread", "acc-1", true)
+	thread, ok = s.LookupThread("thread")
+	if !ok {
+		t.Fatal("expected thread after prompt-aware record")
+	}
+	if thread.RequireSystemPrompt {
+		t.Fatal("successful prompt-aware record should clear one-shot requirement")
+	}
+	if !thread.SystemPromptInjected {
+		t.Fatal("prompt-aware record should preserve injected state")
+	}
+}

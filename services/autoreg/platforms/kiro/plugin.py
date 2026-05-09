@@ -10,7 +10,7 @@ def _mask_secret(value: str) -> str:
     if not value:
         return ""
     if len(value) <= 12:
-        return value
+        return "***"
     return f"{value[:6]}...{value[-4:]}"
 
 
@@ -52,8 +52,9 @@ class KiroPlatform(BasePlatform):
         refresh_token = result.get("refreshToken", "")
         client_id = result.get("clientId", "")
         client_secret = result.get("clientSecret", "")
+        profile_arn = result.get("profileArn", "") or result.get("profile_arn", "")
         if refresh_token and client_id and client_secret:
-            self._auto_enroll_gateway(result["email"], refresh_token, client_id, client_secret)
+            self._auto_enroll_gateway(result["email"], refresh_token, client_id, client_secret, profile_arn)
 
         return RegistrationResult(
             email=result["email"],
@@ -68,11 +69,12 @@ class KiroPlatform(BasePlatform):
                 "oauthProvider": oauth_provider or result.get("oauthProvider", ""),
                 "clientId": client_id,
                 "clientSecret": client_secret,
+                "profileArn": profile_arn,
                 "refreshToken": refresh_token,
             },
         )
 
-    def _auto_enroll_gateway(self, email: str, refresh_token: str, client_id: str, client_secret: str):
+    def _auto_enroll_gateway(self, email: str, refresh_token: str, client_id: str, client_secret: str, profile_arn: str = ""):
         """Auto-enroll kiro account to llm-pool gateway."""
         import os, logging
         try:
@@ -84,6 +86,7 @@ class KiroPlatform(BasePlatform):
                     "refresh_token": refresh_token,
                     "client_id": client_id,
                     "client_secret": client_secret,
+                    "profile_arn": profile_arn,
                     "email": email,
                 },
                 timeout=10,

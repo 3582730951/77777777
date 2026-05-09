@@ -50,12 +50,12 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	defer releaseBody()
 	body = stealth.ScrubRequestBody(body)
-	body = g.optimizeResponsesToolOutputs(body)
 
 	if res.Group == nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("no_group", "resolved group missing"))
 		return
 	}
+	body = g.optimizeResponsesToolOutputs(body, res.Group.Provider)
 
 	// Try raw passthrough first (chatgpt provider).
 	prov, ok := g.providers.Get(res.Group.Provider)
@@ -79,13 +79,16 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 // handleResponsesPassthrough proxies the raw request to upstream and streams SSE back.
 func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Request, res auth.Resolved, body []byte, raw RawInvoker) {
 	start := time.Now()
-	body = applyGroupSystemPromptToResponsesBody(body, res.Group)
 	model := gjson.GetBytes(body, "model").String()
 	prevID := gjson.GetBytes(body, "previous_response_id").String()
 	prev, hasPrev := g.responses.Lookup(prevID)
 	threadKey := responsesThreadKey(body, res.Group)
 	threadAffinity, hasThreadAffinity := g.responses.LookupThread(threadKey)
 	threadReplay, hasThreadReplay := g.responses.LookupThreadTranscript(threadKey)
+	promptKnownInjected := (hasPrev && prev.SystemPromptInjected) ||
+		(hasThreadAffinity && threadAffinity.SystemPromptInjected)
+	promptRequired := (hasPrev && prev.RequireSystemPrompt) ||
+		(hasThreadAffinity && threadAffinity.RequireSystemPrompt)
 	currentInput := responsesInputItems(body)
 	replayTranscript := prev.Transcript
 	if len(replayTranscript) == 0 && hasThreadReplay {
@@ -165,6 +168,11 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 				attemptBody = expandedBody
 			}
 		}
+		promptApplied := shouldApplyResponsesSystemPrompt(res.Group, contextAccountID, slot.Account.ID, promptKnownInjected, promptRequired)
+		if promptApplied {
+			attemptBody = applyGroupSystemPromptToResponsesBody(attemptBody, res.Group)
+		}
+		promptEffective := responsesSystemPromptEffective(res.Group, promptApplied, promptKnownInjected)
 
 		g.sched.IncInflight(slot.Account.ID)
 		reader, status, err := raw.InvokeRaw(r.Context(), slot.Account.ID, attemptBody)
@@ -226,17 +234,17 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 			if (prevID == "" || hasReplay) && !result.TranscriptTooLarge {
 				finalTranscript := appendAssistantOutput(attemptTranscript, result.AssistantText, result.AssistantItems)
 				if threadKey != "" {
-					g.responses.RecordWithThread(result.ResponseID, slot.Account.ID, threadKey, finalTranscript)
+					g.responses.RecordWithThreadPrompt(result.ResponseID, slot.Account.ID, threadKey, finalTranscript, promptEffective)
 					storedThreadTranscript = true
 				} else {
-					g.responses.Record(result.ResponseID, slot.Account.ID, finalTranscript)
+					g.responses.RecordWithPrompt(result.ResponseID, slot.Account.ID, finalTranscript, promptEffective)
 				}
 			} else {
-				g.responses.RecordAccount(result.ResponseID, slot.Account.ID)
+				g.responses.RecordAccountWithPrompt(result.ResponseID, slot.Account.ID, promptEffective)
 			}
 		}
 		if threadKey != "" && !storedThreadTranscript {
-			g.responses.RecordThread(threadKey, slot.Account.ID)
+			g.responses.RecordThreadPrompt(threadKey, slot.Account.ID, promptEffective)
 		}
 		if g.QuotaRefreshFunc != nil {
 			go g.QuotaRefreshFunc(slot.Account.ID)
@@ -730,6 +738,44 @@ func applyGroupSystemPromptToResponsesBody(body []byte, group *domain.Group) []b
 	return insertTopLevelJSONField(body, "instructions", encoded)
 }
 
+func shouldApplyResponsesSystemPrompt(group *domain.Group, contextAccountID, selectedAccountID string, knownInjected, required bool) bool {
+	if group == nil || group.SystemPrompt == "" {
+		return false
+	}
+	if !isChatGPTResponsesThreadOnce(group) {
+		return true
+	}
+	if required {
+		return true
+	}
+	if contextAccountID != "" && selectedAccountID != "" && selectedAccountID != contextAccountID {
+		return true
+	}
+	return !knownInjected
+}
+
+func responsesSystemPromptEffective(group *domain.Group, applied, knownInjected bool) bool {
+	return group != nil && group.SystemPrompt != "" && (applied || knownInjected)
+}
+
+func isChatGPTResponsesThreadOnce(group *domain.Group) bool {
+	return group != nil &&
+		group.Provider == "chatgpt" &&
+		strings.EqualFold(strings.TrimSpace(group.SystemPromptInjection), "thread_once")
+}
+
+func (g *Gateway) requireResponsesSystemPromptAfterCompact(body []byte, group *domain.Group) {
+	if g == nil || g.responses == nil || !isChatGPTResponsesThreadOnce(group) {
+		return
+	}
+	if threadKey := responsesThreadKey(body, group); threadKey != "" {
+		g.responses.RequireSystemPromptForThread(threadKey)
+	}
+	if prevID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prevID != "" {
+		g.responses.RequireSystemPromptForResponse(prevID)
+	}
+}
+
 func combineSystemPrompt(current, groupPrompt, mode string) string {
 	if groupPrompt == "" {
 		return current
@@ -976,7 +1022,7 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		body = stealth.ScrubRequestBody(body)
-		body = g.optimizeResponsesToolOutputs(body)
+		body = g.optimizeResponsesToolOutputs(body, res.Group.Provider)
 
 		if !isRaw {
 			// Fallback: decode and serve through IR.
@@ -995,13 +1041,16 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 
 		// Raw passthrough via WebSocket.
 		wsStart := time.Now()
-		body = applyGroupSystemPromptToResponsesBody(body, res.Group)
 		model := gjson.GetBytes(body, "model").String()
 		prevID := gjson.GetBytes(body, "previous_response_id").String()
 		prev, hasPrev := g.responses.Lookup(prevID)
 		threadKey := responsesThreadKey(body, res.Group)
 		threadAffinity, hasThreadAffinity := g.responses.LookupThread(threadKey)
 		threadReplay, hasThreadReplay := g.responses.LookupThreadTranscript(threadKey)
+		promptKnownInjected := (hasPrev && prev.SystemPromptInjected) ||
+			(hasThreadAffinity && threadAffinity.SystemPromptInjected)
+		promptRequired := (hasPrev && prev.RequireSystemPrompt) ||
+			(hasThreadAffinity && threadAffinity.RequireSystemPrompt)
 		currentInput := responsesInputItems(body)
 		replayTranscript := prev.Transcript
 		if len(replayTranscript) == 0 && hasThreadReplay {
@@ -1076,6 +1125,11 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 					attemptBody = expandedBody
 				}
 			}
+			promptApplied := shouldApplyResponsesSystemPrompt(res.Group, contextAccountID, slot.Account.ID, promptKnownInjected, promptRequired)
+			if promptApplied {
+				attemptBody = applyGroupSystemPromptToResponsesBody(attemptBody, res.Group)
+			}
+			promptEffective := responsesSystemPromptEffective(res.Group, promptApplied, promptKnownInjected)
 
 			g.sched.IncInflight(slot.Account.ID)
 			reader, status, err := raw.InvokeRaw(r.Context(), slot.Account.ID, attemptBody)
@@ -1133,17 +1187,17 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 				if (prevID == "" || hasReplay) && !result.TranscriptTooLarge {
 					finalTranscript := appendAssistantOutput(attemptTranscript, result.AssistantText, result.AssistantItems)
 					if threadKey != "" {
-						g.responses.RecordWithThread(result.ResponseID, slot.Account.ID, threadKey, finalTranscript)
+						g.responses.RecordWithThreadPrompt(result.ResponseID, slot.Account.ID, threadKey, finalTranscript, promptEffective)
 						storedThreadTranscript = true
 					} else {
-						g.responses.Record(result.ResponseID, slot.Account.ID, finalTranscript)
+						g.responses.RecordWithPrompt(result.ResponseID, slot.Account.ID, finalTranscript, promptEffective)
 					}
 				} else {
-					g.responses.RecordAccount(result.ResponseID, slot.Account.ID)
+					g.responses.RecordAccountWithPrompt(result.ResponseID, slot.Account.ID, promptEffective)
 				}
 			}
 			if threadKey != "" && !storedThreadTranscript {
-				g.responses.RecordThread(threadKey, slot.Account.ID)
+				g.responses.RecordThreadPrompt(threadKey, slot.Account.ID, promptEffective)
 			}
 			if g.QuotaRefreshFunc != nil {
 				go g.QuotaRefreshFunc(slot.Account.ID)

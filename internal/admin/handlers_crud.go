@@ -64,6 +64,11 @@ func (s *Server) mountCrud(r chi.Router) {
 		r.Post("/api/admin/accounts/{id}/discover", s.handleDiscoverAccount)
 		r.Get("/api/admin/accounts/{id}/series", s.handleAccountSeries)
 
+		// Remote chat
+		r.Get("/api/admin/remote-chat/config", s.handleGetRemoteChatConfig)
+		r.Put("/api/admin/remote-chat/config", s.handleSetRemoteChatConfig)
+		r.Delete("/api/admin/remote-chat/config", s.handleClearRemoteChatConfig)
+
 		// API Keys
 		r.Get("/api/admin/api-keys", s.handleListAPIKeys)
 		r.Post("/api/admin/api-keys", s.handleCreateAPIKey)
@@ -217,14 +222,17 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type out struct {
-		ID             string            `json:"id"`
-		TenantID       string            `json:"tenant_id"`
-		Provider       string            `json:"provider"`
-		Models         []string          `json:"models"`
-		ModelAliases   map[string]string `json:"model_aliases"`
-		ModelWhitelist []string          `json:"model_whitelist"`
-		AccountIDs     []string          `json:"account_ids"`
-		Source         string            `json:"source"`
+		ID                    string            `json:"id"`
+		TenantID              string            `json:"tenant_id"`
+		Provider              string            `json:"provider"`
+		Models                []string          `json:"models"`
+		ModelAliases          map[string]string `json:"model_aliases"`
+		ModelWhitelist        []string          `json:"model_whitelist"`
+		AccountIDs            []string          `json:"account_ids"`
+		SystemPrompt          string            `json:"system_prompt"`
+		SystemPromptMode      string            `json:"system_prompt_mode"`
+		SystemPromptInjection string            `json:"system_prompt_injection"`
+		Source                string            `json:"source"`
 	}
 	res := []out{}
 	seen := map[string]bool{}
@@ -233,7 +241,9 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		res = append(res, out{
 			ID: g.ID, TenantID: g.TenantID, Provider: g.Provider,
 			Models: g.Models, ModelAliases: g.ModelAliases,
-			ModelWhitelist: g.ModelWhitelist, AccountIDs: g.AccountIDs, Source: "db",
+			ModelWhitelist: g.ModelWhitelist, AccountIDs: g.AccountIDs,
+			SystemPrompt: g.SystemPrompt, SystemPromptMode: g.SystemPromptMode,
+			SystemPromptInjection: g.SystemPromptInjection, Source: "db",
 		})
 	}
 	for _, g := range s.deps.Cfg.Groups {
@@ -246,20 +256,25 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		res = append(res, out{
 			ID: g.ID, TenantID: g.TenantID, Provider: g.Provider,
 			Models: g.Models, ModelAliases: g.ModelAliases,
-			ModelWhitelist: g.ModelWhitelist, AccountIDs: g.AccountIDs, Source: "yaml",
+			ModelWhitelist: g.ModelWhitelist, AccountIDs: g.AccountIDs,
+			SystemPrompt: g.SystemPrompt, SystemPromptMode: g.SystemPromptMode,
+			SystemPromptInjection: g.SystemPromptInjection, Source: "yaml",
 		})
 	}
 	writeJSONStatus(w, 200, res)
 }
 
 type upsertGroupReq struct {
-	ID             string            `json:"id"`
-	TenantID       string            `json:"tenant_id"`
-	Provider       string            `json:"provider"`
-	Models         []string          `json:"models"`
-	ModelAliases   map[string]string `json:"model_aliases"`
-	ModelWhitelist []string          `json:"model_whitelist"`
-	AccountIDs     []string          `json:"account_ids"`
+	ID                    string            `json:"id"`
+	TenantID              string            `json:"tenant_id"`
+	Provider              string            `json:"provider"`
+	Models                []string          `json:"models"`
+	ModelAliases          map[string]string `json:"model_aliases"`
+	ModelWhitelist        []string          `json:"model_whitelist"`
+	AccountIDs            []string          `json:"account_ids"`
+	SystemPrompt          string            `json:"system_prompt"`
+	SystemPromptMode      string            `json:"system_prompt_mode"`
+	SystemPromptInjection string            `json:"system_prompt_injection"`
 }
 
 func (s *Server) handleUpsertGroup(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +291,9 @@ func (s *Server) handleUpsertGroup(w http.ResponseWriter, r *http.Request) {
 		ID: req.ID, TenantID: req.TenantID, Provider: req.Provider,
 		Models: req.Models, ModelAliases: req.ModelAliases,
 		ModelWhitelist: req.ModelWhitelist, AccountIDs: req.AccountIDs,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		SystemPrompt: req.SystemPrompt, SystemPromptMode: req.SystemPromptMode,
+		SystemPromptInjection: req.SystemPromptInjection,
+		CreatedAt:             time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {
 		errJSON(w, 500, err.Error())
@@ -303,7 +320,9 @@ func (s *Server) handleUpsertGroupID(w http.ResponseWriter, r *http.Request) {
 		ID: id, TenantID: req.TenantID, Provider: req.Provider,
 		Models: req.Models, ModelAliases: req.ModelAliases,
 		ModelWhitelist: req.ModelWhitelist, AccountIDs: req.AccountIDs,
-		UpdatedAt: time.Now(),
+		SystemPrompt: req.SystemPrompt, SystemPromptMode: req.SystemPromptMode,
+		SystemPromptInjection: req.SystemPromptInjection,
+		UpdatedAt:             time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {
 		errJSON(w, 500, err.Error())
@@ -884,6 +903,8 @@ func (s *Server) handleKiroEnroll(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
+		ProfileArn   string `json:"profile_arn"`
+		ProfileARN   string `json:"profileArn"`
 		TenantID     string `json:"tenant_id"`
 		Email        string `json:"email"`
 	}
@@ -908,9 +929,14 @@ func (s *Server) handleKiroEnroll(w http.ResponseWriter, r *http.Request) {
 
 	var oidcCreds []byte
 	if req.ClientID != "" && req.ClientSecret != "" {
+		profileArn := req.ProfileArn
+		if profileArn == "" {
+			profileArn = req.ProfileARN
+		}
 		oidcCreds, _ = json.Marshal(map[string]string{
 			"client_id":     req.ClientID,
 			"client_secret": req.ClientSecret,
+			"profile_arn":   profileArn,
 		})
 	}
 

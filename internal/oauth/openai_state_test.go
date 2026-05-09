@@ -2,9 +2,13 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/llm-pool/gateway/internal/store"
 )
 
 func TestCodexRelayStateIsHexAndDecodable(t *testing.T) {
@@ -91,5 +95,71 @@ func TestKiroStartBuildsOIDCAuthorizeURL(t *testing.T) {
 	}
 	if p.OAuthClientID != "kiro-client-id" || p.OAuthClientSecret != "kiro-client-secret" || p.OAuthRegion != "us-east-1" {
 		t.Fatalf("kiro client fields not saved on pending auth: %+v", p)
+	}
+}
+
+func TestKiroPendingAuthReloadPreservesOIDCClientFields(t *testing.T) {
+	oldRegister := registerKiroOIDCClient
+	registerKiroOIDCClient = func(ctx context.Context, region, redirectURI string) (string, string, error) {
+		return "reload-client-id", "reload-client-secret", nil
+	}
+	defer func() { registerKiroOIDCClient = oldRegister }()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "oauth.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	creator := New()
+	creator.SetStore(st)
+	p, _, err := creator.StartWithRelayBase(ProviderKiro, "default", "note", "https://admin.example.com")
+	if err != nil {
+		t.Fatalf("start kiro oauth: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStore(st)
+	got, ok := reloaded.FindByState(p.State)
+	if !ok {
+		t.Fatal("pending auth was not reloaded from store")
+	}
+	if got.OAuthClientID != "reload-client-id" || got.OAuthClientSecret != "reload-client-secret" || got.OAuthRegion != "us-east-1" {
+		t.Fatalf("oidc client fields were not restored: %+v", got)
+	}
+	if got.CodeVerifier == "" || got.RedirectURI != KiroConfig.RedirectURI {
+		t.Fatalf("pkce/redirect fields were not restored: %+v", got)
+	}
+}
+
+func TestParseKiroTokenAcceptsSnakeCaseAndBuildsSession(t *testing.T) {
+	m := New()
+	p := &PendingAuth{
+		ID:                "pending-kiro",
+		Provider:          ProviderKiro,
+		OAuthClientID:     "client-id",
+		OAuthClientSecret: "client-secret",
+		OAuthRegion:       "us-east-1",
+	}
+
+	err := m.parseKiroToken(p, []byte(`{
+		"access_token":"access-1",
+		"refresh_token":"refresh-1",
+		"profile_arn":"profile-1",
+		"expires_in":1800
+	}`))
+	if err != nil {
+		t.Fatalf("parse token: %v", err)
+	}
+	if p.AccessToken != "access-1" || p.RefreshToken != "refresh-1" || p.ProfileArn != "profile-1" || p.PlanType != "kiro" {
+		t.Fatalf("unexpected parsed pending auth: %+v", p)
+	}
+
+	var session map[string]string
+	if err := json.Unmarshal([]byte(m.BuildSessionJSON(p)), &session); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if session["profileArn"] != "profile-1" || session["client_id"] != "client-id" || session["client_secret"] != "client-secret" {
+		t.Fatalf("kiro session missing oidc fields: %#v", session)
 	}
 }

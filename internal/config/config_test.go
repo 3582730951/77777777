@@ -36,8 +36,8 @@ func TestDefaultsSupportLongContextAndFiftyConcurrent(t *testing.T) {
 	if cfg.Scheduler.Quota.DrainThreshold <= 0 || cfg.Scheduler.Quota.DrainThreshold >= 1 {
 		t.Fatalf("quota drain threshold should keep low-quota accounts for sticky work only, got %f", cfg.Scheduler.Quota.DrainThreshold)
 	}
-	if cfg.TokenOptimizer.Mode != "safe" || cfg.TokenOptimizer.MinToolOutputBytes <= 0 {
-		t.Fatalf("token optimizer defaults should enable safe tool-output compression: %+v", cfg.TokenOptimizer)
+	if cfg.TokenOptimizer.Mode != "off" || cfg.TokenOptimizer.MinToolOutputBytes <= 0 {
+		t.Fatalf("token optimizer defaults should preserve direct Codex request bodies: %+v", cfg.TokenOptimizer)
 	}
 }
 

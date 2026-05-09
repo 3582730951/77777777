@@ -12,6 +12,23 @@ DESKTOP_AUTH = "https://prod.us-east-1.auth.desktop.kiro.dev"
 CALLBACK_PORT_RANGE = range(19876, 19886)
 
 
+def _mask_secret(value: str, head: int = 6, tail: int = 4) -> str:
+    if not value:
+        return ""
+    if len(value) <= head + tail:
+        return "***"
+    return f"{value[:head]}...{value[-tail:]}"
+
+
+def _safe_url_for_log(value: str) -> str:
+    parsed = urlparse(str(value or ""))
+    if not parsed.scheme or not parsed.netloc:
+        return str(value or "")[:100]
+    query = "?..." if parsed.query else ""
+    fragment = "#..." if parsed.fragment else ""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}{query}{fragment}"
+
+
 def _pkce():
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
     digest = hashlib.sha256(verifier.encode()).digest()
@@ -19,27 +36,65 @@ def _pkce():
     return verifier, challenge
 
 
+def _callback_result_from_path(path: str, expected_state: str) -> dict:
+    parsed = urlparse(path)
+    if parsed.path != "/oauth/callback":
+        return {"error": "invalid_callback_path"}
+
+    qs = parse_qs(parsed.query)
+    error = (qs.get("error") or [""])[0]
+    if error:
+        return {
+            "error": error,
+            "error_description": (qs.get("error_description") or [""])[0],
+        }
+
+    codes = qs.get("code") or []
+    states = qs.get("state") or []
+    if not codes:
+        return {"error": "missing_code"}
+    if len(codes) != 1:
+        return {"error": "invalid_code_count"}
+    if not states:
+        return {"error": "missing_state"}
+    if len(states) != 1:
+        return {"error": "invalid_state_count"}
+    code = codes[0]
+    state = states[0]
+    if state != expected_state:
+        return {"error": "state_mismatch"}
+    return {"code": code, "state": state}
+
+
+class _OAuthCallbackServer(HTTPServer):
+    def __init__(self, server_address, handler_class, *, expected_state: str):
+        super().__init__(server_address, handler_class)
+        self.expected_state = expected_state
+        self.result = None
+
+
 class _CallbackHandler(BaseHTTPRequestHandler):
     """接收 OAuth callback 的 HTTP handler。"""
     result = None
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        qs = parse_qs(parsed.query)
-        code = (qs.get("code") or [None])[0]
-        state = (qs.get("state") or [None])[0]
-        if code:
-            _CallbackHandler.result = {"code": code, "state": state}
+        result = _callback_result_from_path(
+            self.path,
+            getattr(self.server, "expected_state", ""),
+        )
+        self.server.result = result
+        _CallbackHandler.result = result  # backward-compatible test/debug hook
+
+        if "code" in result:
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"<html><body><h2>Authorization successful!</h2><p>You can close this window.</p></body></html>")
         else:
-            error = (qs.get("error") or ["unknown"])[0]
-            _CallbackHandler.result = {"error": error}
             self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write(f"Error: {error}".encode())
+            self.wfile.write(f"Error: {result.get('error', 'unknown')}".encode())
 
     def log_message(self, format, *args):
         pass  # suppress logs
@@ -67,7 +122,7 @@ def get_kiro_refresh_token(
     port = None
     for p in CALLBACK_PORT_RANGE:
         try:
-            server = HTTPServer(("127.0.0.1", p), _CallbackHandler)
+            server = _OAuthCallbackServer(("127.0.0.1", p), _CallbackHandler, expected_state=state)
             port = p
             break
         except OSError:
@@ -94,7 +149,7 @@ def get_kiro_refresh_token(
             "state": state,
         })
         login_url = f"{DESKTOP_AUTH}/login?{login_params}"
-        log_fn(f"  登录 URL: {login_url[:100]}...")
+        log_fn(f"  登录 URL: {_safe_url_for_log(login_url)}")
 
         # 用 Camoufox 浏览器自动完成登录
         with Camoufox(headless=True) as browser:
@@ -103,7 +158,7 @@ def get_kiro_refresh_token(
             time.sleep(3)
 
             current_url = page.url
-            log_fn(f"  页面 URL: {current_url[:100]}")
+            log_fn(f"  页面 URL: {_safe_url_for_log(current_url)}")
 
             # 应该重定向到 signin.aws 登录页
             if "signin.aws" in current_url:
@@ -152,25 +207,26 @@ def get_kiro_refresh_token(
                     time.sleep(8)
 
                     # 检查是否登录成功（应该 redirect 回 localhost callback）
-                    log_fn(f"  当前 URL: {page.url[:100]}")
+                    log_fn(f"  当前 URL: {_safe_url_for_log(page.url)}")
 
             # 等待 callback
             deadline = time.time() + timeout
-            while time.time() < deadline and _CallbackHandler.result is None:
+            while time.time() < deadline and server.result is None:
                 time.sleep(1)
 
             page.close()
 
-        if not _CallbackHandler.result:
+        callback_result = server.result
+        if not callback_result:
             log_fn("  ❌ 等待 callback 超时")
             return None
 
-        if "error" in _CallbackHandler.result:
-            log_fn(f"  ❌ OAuth 错误: {_CallbackHandler.result['error']}")
+        if "error" in callback_result:
+            log_fn(f"  ❌ OAuth 错误: {callback_result['error']}")
             return None
 
-        auth_code = _CallbackHandler.result["code"]
-        log_fn(f"  ✅ 拿到 authorization code: {auth_code[:40]}...")
+        auth_code = callback_result["code"]
+        log_fn(f"  ✅ 拿到 authorization code: {_mask_secret(auth_code)}")
 
         # 用 code + code_verifier 换 token
         from curl_cffi import requests as r
@@ -218,3 +274,4 @@ def get_kiro_refresh_token(
 
     finally:
         server.shutdown()
+        server.server_close()

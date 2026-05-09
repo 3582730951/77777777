@@ -52,19 +52,20 @@ func (r *Resolver) LoadFromConfig(cfg *config.Root) {
 			r.tenants[g.TenantID] = tenant
 		}
 		grp := &domain.Group{
-			ID:               g.ID,
-			TenantID:         g.TenantID,
-			Provider:         g.Provider,
-			APIKeys:          append([]string{}, g.APIKeys...),
-			Models:           append([]string{}, g.Models...),
-			AccountIDs:       append([]string{}, g.AccountIDs...),
-			ModelAliases:     cloneStrMap(g.ModelAliases),
-			ModelWhitelist:   append([]string{}, g.ModelWhitelist...),
-			APIKeyOverrides:  convertOverrides(g.APIKeyOverrides),
-			SystemPrompt:     g.SystemPrompt,
-			SystemPromptMode: g.SystemPromptMode,
-			SourcePlatform:   g.SourcePlatform,
-			AutoRegister:     g.AutoRegister,
+			ID:                    g.ID,
+			TenantID:              g.TenantID,
+			Provider:              g.Provider,
+			APIKeys:               append([]string{}, g.APIKeys...),
+			Models:                append([]string{}, g.Models...),
+			AccountIDs:            append([]string{}, g.AccountIDs...),
+			ModelAliases:          cloneStrMap(g.ModelAliases),
+			ModelWhitelist:        append([]string{}, g.ModelWhitelist...),
+			APIKeyOverrides:       convertOverrides(g.APIKeyOverrides),
+			SystemPrompt:          g.SystemPrompt,
+			SystemPromptMode:      g.SystemPromptMode,
+			SystemPromptInjection: g.SystemPromptInjection,
+			SourcePlatform:        g.SourcePlatform,
+			AutoRegister:          g.AutoRegister,
 		}
 		r.groups[g.ID] = grp
 		for _, k := range g.APIKeys {

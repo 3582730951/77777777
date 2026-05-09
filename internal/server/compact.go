@@ -92,6 +92,7 @@ func (g *Gateway) handleCodexCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseBody()
+	g.requireResponsesSystemPromptAfterCompact(body, res.Group)
 
 	// Detect format by presence of "input" vs "messages" key.
 	var req *ir.Request

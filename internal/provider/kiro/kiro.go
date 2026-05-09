@@ -45,13 +45,21 @@ type tokenCache struct {
 	expiresAt   time.Time
 }
 
+type refreshCall struct {
+	done        chan struct{}
+	accessToken string
+	profileArn  string
+	err         error
+}
+
 type Provider struct {
 	Mode       string
 	store      *store.Store
 	httpClient *http.Client
 
-	mu     sync.Mutex
-	tokens map[string]*tokenCache // accountID -> cache
+	mu        sync.Mutex
+	tokens    map[string]*tokenCache // accountID -> cache
+	refreshes map[string]*refreshCall
 }
 
 func New(mode string) *Provider {
@@ -62,6 +70,7 @@ func New(mode string) *Provider {
 		Mode:       mode,
 		httpClient: transport.ForProvider("q.us-east-1.amazonaws.com", transport.Options{Timeout: 120 * time.Second}),
 		tokens:     make(map[string]*tokenCache),
+		refreshes:  make(map[string]*refreshCall),
 	}
 }
 
@@ -118,7 +127,38 @@ func (p *Provider) ensureAccessToken(ctx context.Context, acc *domain.Account) (
 		p.mu.Unlock()
 		return at, pa, nil
 	}
+
+	if p.refreshes == nil {
+		p.refreshes = make(map[string]*refreshCall)
+	}
+	if call, ok := p.refreshes[acc.ID]; ok {
+		done := call.done
+		p.mu.Unlock()
+		select {
+		case <-done:
+			return call.accessToken, call.profileArn, call.err
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		}
+	}
+	call := &refreshCall{done: make(chan struct{})}
+	p.refreshes[acc.ID] = call
 	p.mu.Unlock()
+
+	call.accessToken, call.profileArn, call.err = p.refreshAccessToken(ctx, acc)
+
+	p.mu.Lock()
+	delete(p.refreshes, acc.ID)
+	close(call.done)
+	p.mu.Unlock()
+
+	return call.accessToken, call.profileArn, call.err
+}
+
+func (p *Provider) refreshAccessToken(ctx context.Context, acc *domain.Account) (string, string, error) {
+	if p.store == nil {
+		return "", "", errors.New("kiro provider store is not configured")
+	}
 
 	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
 	if err != nil {
@@ -138,11 +178,17 @@ func (p *Provider) ensureAccessToken(ctx context.Context, acc *domain.Account) (
 
 	// Try to parse clientId:clientSecret from Cookies field (JSON encoded)
 	var oidcCreds struct {
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
+		ClientID        string `json:"client_id"`
+		ClientSecret    string `json:"client_secret"`
+		ProfileArn      string `json:"profile_arn"`
+		CamelProfileArn string `json:"profileArn"`
 	}
 	if len(sec.Cookies) > 0 {
 		_ = json.Unmarshal(sec.Cookies, &oidcCreds)
+	}
+	storedProfileArn := oidcCreds.ProfileArn
+	if storedProfileArn == "" {
+		storedProfileArn = oidcCreds.CamelProfileArn
 	}
 
 	if oidcCreds.ClientID != "" && oidcCreds.ClientSecret != "" {
@@ -185,6 +231,10 @@ func (p *Provider) ensureAccessToken(ctx context.Context, acc *domain.Account) (
 	if result.AccessToken == "" {
 		return "", "", errors.New("refresh response missing accessToken")
 	}
+	profileArn := result.ProfileArn
+	if profileArn == "" {
+		profileArn = storedProfileArn
+	}
 
 	// Update stored refresh token if it changed
 	if result.RefreshToken != "" && result.RefreshToken != refreshToken {
@@ -200,12 +250,12 @@ func (p *Provider) ensureAccessToken(ctx context.Context, acc *domain.Account) (
 	p.mu.Lock()
 	p.tokens[acc.ID] = &tokenCache{
 		accessToken: result.AccessToken,
-		profileArn:  result.ProfileArn,
+		profileArn:  profileArn,
 		expiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
 	}
 	p.mu.Unlock()
 
-	return result.AccessToken, result.ProfileArn, nil
+	return result.AccessToken, profileArn, nil
 }
 
 func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {

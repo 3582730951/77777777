@@ -194,6 +194,7 @@ func (s *Server) persistOAuthAccount(ctx context.Context, p *oauth.PendingAuth) 
 		sec.Cookies, _ = json.Marshal(map[string]string{
 			"client_id":     p.OAuthClientID,
 			"client_secret": p.OAuthClientSecret,
+			"profile_arn":   p.ProfileArn,
 			"region":        p.OAuthRegion,
 		})
 	}

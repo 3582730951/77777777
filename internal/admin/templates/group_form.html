@@ -75,6 +75,13 @@
                     <option value="replace" {{if and .Group (eq .Group.SystemPromptMode "replace")}}selected{{end}}>replace（全替换）</option>
                   </select>
                 </div>
+                <div class="field">
+                  <label>ChatGPT 注入频率</label>
+                  <select name="system_prompt_injection">
+                    <option value="" {{if or (not .Group) (eq .Group.SystemPromptInjection "")}}selected{{end}}>always（每轮注入）</option>
+                    <option value="thread_once" {{if and .Group (eq .Group.SystemPromptInjection "thread_once")}}selected{{end}}>thread_once（同线程一次）</option>
+                  </select>
+                </div>
               </div>
 
               <!-- ── Model selection ── -->

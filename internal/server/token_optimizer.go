@@ -11,11 +11,21 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func (g *Gateway) optimizeResponsesToolOutputs(body []byte) []byte {
+func (g *Gateway) optimizeResponsesToolOutputs(body []byte, provider string) []byte {
 	if g == nil || g.cfg == nil {
 		return body
 	}
+	if provider != "chatgpt" {
+		return body
+	}
 	return optimizeResponsesToolOutputs(body, g.cfg.TokenOptimizer)
+}
+
+func optimizeResponsesToolOutputsForProvider(body []byte, cfg config.TokenOptimizer, provider string) []byte {
+	if provider != "chatgpt" {
+		return body
+	}
+	return optimizeResponsesToolOutputs(body, cfg)
 }
 
 func optimizeResponsesToolOutputs(body []byte, cfg config.TokenOptimizer) []byte {
@@ -35,6 +45,8 @@ func optimizeResponsesToolOutputs(body []byte, cfg config.TokenOptimizer) []byte
 
 	changed := false
 	for i, raw := range input {
+		// Hard boundary: only tool results are eligible. System prompts,
+		// instructions, user messages, model params, and group config stay exact.
 		if gjson.GetBytes(raw, "type").String() != "function_call_output" {
 			continue
 		}
@@ -80,11 +92,15 @@ func optimizeResponsesToolOutputs(body []byte, cfg config.TokenOptimizer) []byte
 
 func saneTokenOptimizerConfig(cfg config.TokenOptimizer) config.TokenOptimizer {
 	switch cfg.Mode {
-	case "", "safe":
-		cfg.Mode = "safe"
-	case "aggressive", "off":
+	case "", "off":
+		cfg.Mode = "off"
+	case "cleanup", "lossless":
+		cfg.Mode = "cleanup"
+	case "guarded":
+		cfg.Mode = "guarded"
+	case "safe", "aggressive":
 	default:
-		cfg.Mode = "safe"
+		cfg.Mode = "off"
 	}
 	if cfg.MinToolOutputBytes <= 0 {
 		cfg.MinToolOutputBytes = 32 << 10
@@ -111,12 +127,46 @@ func optimizeToolOutputText(text string, cfg config.TokenOptimizer) (string, boo
 	if len(text) < cfg.MinToolOutputBytes {
 		return text, false
 	}
+	switch cfg.Mode {
+	case "cleanup":
+		return cleanupToolOutputText(text)
+	case "guarded":
+		cleaned, cleanedOK := cleanupToolOutputText(text)
+		candidate := text
+		if cleanedOK {
+			candidate = cleaned
+		}
+		if !guardedToolOutputCandidate(candidate) {
+			return candidate, cleanedOK
+		}
+		optimized, ok := truncateToolOutputText(candidate, cfg, "guarded")
+		if !ok {
+			return candidate, cleanedOK
+		}
+		return optimized, true
+	case "safe", "aggressive":
+		return truncateToolOutputText(text, cfg, cfg.Mode)
+	default:
+		return text, false
+	}
+}
+
+func cleanupToolOutputText(text string) (string, bool) {
+	cleaned := stripTerminalNoise(text)
+	cleaned = compactBlankLineRuns(cleaned, 2)
+	if cleaned == text || len(cleaned) >= len(text) {
+		return text, false
+	}
+	return cleaned, true
+}
+
+func truncateToolOutputText(text string, cfg config.TokenOptimizer, modeLabel string) (string, bool) {
 	trimmed := strings.TrimSpace(text)
-	if cfg.Mode == "safe" && json.Valid([]byte(trimmed)) {
+	if (cfg.Mode == "safe" || cfg.Mode == "guarded") && json.Valid([]byte(trimmed)) {
 		return text, false
 	}
 
-	cleaned := stripANSI(text)
+	cleaned := stripTerminalNoise(text)
 	lines := strings.Split(cleaned, "\n")
 	if len(lines) <= cfg.HeadLines+cfg.TailLines {
 		compacted := compactRepeatedLines(lines)
@@ -167,7 +217,7 @@ func optimizeToolOutputText(text string, cfg config.TokenOptimizer) (string, boo
 
 	optimized := compactRepeatedLines(out)
 	if omittedLines > 0 {
-		header := fmt.Sprintf("[gateway token optimizer: safe mode preserved head, tail, and error context; total omitted %d lines / %d bytes]\n", omittedLines, omittedBytes)
+		header := fmt.Sprintf("[gateway token optimizer: %s mode preserved head, tail, and error context; total omitted %d lines / %d bytes]\n", modeLabel, omittedLines, omittedBytes)
 		optimized = header + optimized
 	}
 	if len(optimized) > cfg.MaxOptimizedToolOutputBytes {
@@ -208,6 +258,8 @@ func importantToolOutputLine(line string) bool {
 		"error", "failed", "failure", "panic", "fatal", "exception", "traceback",
 		"assertion", "undefined", "cannot", "no such file", "permission denied",
 		"exit status", "--- fail", " fail:", "build failed", "test failed",
+		"npm err!", "assertionerror", "typeerror", "referenceerror", "syntaxerror",
+		"compilation failed", "failed to compile", "panic:",
 	}
 	for _, p := range patterns {
 		if strings.Contains(lower, p) {
@@ -217,20 +269,125 @@ func importantToolOutputLine(line string) bool {
 	return false
 }
 
+func guardedToolOutputCandidate(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || json.Valid([]byte(trimmed)) {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "\ndiff --git ") || strings.Contains(lower, "\n@@ ") {
+		return false
+	}
+	patterns := []string{
+		"=== run", "--- fail:", "--- pass:", "\nfail\t", "\nok\t",
+		"pytest", "short test summary", "\nfailed ", "traceback (most recent call last)",
+		"error ts", "typeerror:", "assertionerror", "npm err!", "eslint", "ruff",
+		"mypy", "panic:", "fatal error", "build failed", "compilation failed",
+		"failed to compile", "test failed",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripTerminalNoise(s string) string {
+	return collapseCarriageReturnFrames(stripANSI(s))
+}
+
+func collapseCarriageReturnFrames(s string) string {
+	if !strings.Contains(s, "\r") {
+		return s
+	}
+	normalized := strings.ReplaceAll(s, "\r\n", "\n")
+	parts := strings.SplitAfter(normalized, "\n")
+	var out strings.Builder
+	out.Grow(len(normalized))
+	for _, part := range parts {
+		hasNewline := strings.HasSuffix(part, "\n")
+		line := strings.TrimSuffix(part, "\n")
+		if strings.Contains(line, "\r") {
+			frames := strings.Split(line, "\r")
+			line = frames[len(frames)-1]
+		}
+		out.WriteString(line)
+		if hasNewline {
+			out.WriteByte('\n')
+		}
+	}
+	return out.String()
+}
+
+func compactBlankLineRuns(s string, maxRun int) string {
+	if maxRun < 1 || !strings.Contains(s, "\n\n\n") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blankRun := 0
+	changed := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+			if blankRun > maxRun {
+				changed = true
+				continue
+			}
+		} else {
+			blankRun = 0
+		}
+		out = append(out, line)
+	}
+	if !changed {
+		return s
+	}
+	return strings.Join(out, "\n")
+}
+
 func stripANSI(s string) string {
 	var out strings.Builder
 	out.Grow(len(s))
 	for i := 0; i < len(s); i++ {
-		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
-			i += 2
-			for i < len(s) {
-				b := s[i]
-				if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') {
-					break
+		if s[i] == 0x1b && i+1 < len(s) {
+			switch s[i+1] {
+			case '[':
+				i += 2
+				for i < len(s) {
+					b := s[i]
+					if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') {
+						break
+					}
+					i++
 				}
-				i++
+				continue
+			case ']':
+				i += 2
+				for i < len(s) {
+					if s[i] == 0x07 {
+						break
+					}
+					if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+						i++
+						break
+					}
+					i++
+				}
+				continue
+			default:
+				if s[i+1] >= 0x20 && s[i+1] <= 0x2f {
+					i += 2
+					for i < len(s) {
+						b := s[i]
+						if b >= 0x30 && b <= 0x7e {
+							break
+						}
+						i++
+					}
+					continue
+				}
 			}
-			continue
 		}
 		out.WriteByte(s[i])
 	}

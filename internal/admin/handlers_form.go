@@ -222,19 +222,20 @@ func (s *Server) handleGroupCreatePost(w http.ResponseWriter, r *http.Request) {
 	whitelist := splitCSV(r.FormValue("model_whitelist"))
 	aliases := parseAliasMap(r.FormValue("model_aliases"))
 	g := store.DynGroup{
-		ID:               id,
-		TenantID:         defaultStr(r.FormValue("tenant_id"), "default"),
-		Provider:         r.FormValue("provider"),
-		Models:           models,
-		ModelAliases:     aliases,
-		ModelWhitelist:   whitelist,
-		AccountIDs:       splitCSV(r.FormValue("account_ids")),
-		SystemPrompt:     r.FormValue("system_prompt"),
-		SystemPromptMode: defaultStr(r.FormValue("system_prompt_mode"), "prepend"),
-		ReasoningEffort:  r.FormValue("reasoning_effort"),
-		ForcedModel:      r.FormValue("forced_model"),
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		ID:                    id,
+		TenantID:              defaultStr(r.FormValue("tenant_id"), "default"),
+		Provider:              r.FormValue("provider"),
+		Models:                models,
+		ModelAliases:          aliases,
+		ModelWhitelist:        whitelist,
+		AccountIDs:            splitCSV(r.FormValue("account_ids")),
+		SystemPrompt:          r.FormValue("system_prompt"),
+		SystemPromptMode:      defaultStr(r.FormValue("system_prompt_mode"), "prepend"),
+		SystemPromptInjection: r.FormValue("system_prompt_injection"),
+		ReasoningEffort:       r.FormValue("reasoning_effort"),
+		ForcedModel:           r.FormValue("forced_model"),
+		CreatedAt:             time.Now(),
+		UpdatedAt:             time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {
 		http.Error(w, err.Error(), 500)
@@ -600,18 +601,19 @@ func (s *Server) handleGroupEditPost(w http.ResponseWriter, r *http.Request) {
 	whitelist := splitCSV(r.FormValue("model_whitelist"))
 	aliases := parseAliasMap(r.FormValue("model_aliases"))
 	g := store.DynGroup{
-		ID:               id,
-		TenantID:         defaultStr(r.FormValue("tenant_id"), "default"),
-		Provider:         r.FormValue("provider"),
-		Models:           models,
-		ModelAliases:     aliases,
-		ModelWhitelist:   whitelist,
-		AccountIDs:       splitCSV(r.FormValue("account_ids")),
-		SystemPrompt:     r.FormValue("system_prompt"),
-		SystemPromptMode: defaultStr(r.FormValue("system_prompt_mode"), "prepend"),
-		ReasoningEffort:  r.FormValue("reasoning_effort"),
-		ForcedModel:      r.FormValue("forced_model"),
-		UpdatedAt:        time.Now(),
+		ID:                    id,
+		TenantID:              defaultStr(r.FormValue("tenant_id"), "default"),
+		Provider:              r.FormValue("provider"),
+		Models:                models,
+		ModelAliases:          aliases,
+		ModelWhitelist:        whitelist,
+		AccountIDs:            splitCSV(r.FormValue("account_ids")),
+		SystemPrompt:          r.FormValue("system_prompt"),
+		SystemPromptMode:      defaultStr(r.FormValue("system_prompt_mode"), "prepend"),
+		SystemPromptInjection: r.FormValue("system_prompt_injection"),
+		ReasoningEffort:       r.FormValue("reasoning_effort"),
+		ForcedModel:           r.FormValue("forced_model"),
+		UpdatedAt:             time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {
 		http.Error(w, err.Error(), 500)
