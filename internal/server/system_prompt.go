@@ -6,8 +6,12 @@ import (
 )
 
 func applyGroupSystemPrompt(req *ir.Request, group *domain.Group) {
-	if req == nil || group == nil || group.SystemPrompt == "" {
+	if req == nil || group == nil {
 		return
 	}
-	req.System = combineSystemPrompt(req.System, group.SystemPrompt, group.SystemPromptMode)
+	prompt, mode, _ := effectiveGroupPrompt(group)
+	if prompt == "" {
+		return
+	}
+	req.System = combineSystemPrompt(req.System, prompt, mode)
 }

@@ -36,8 +36,6 @@ resource:
 tenants:
   - id: default
     name: "Default Tenant"
-  - id: cyber
-    name: "Security Research"
 
 groups:
   - id: openai
@@ -109,7 +107,7 @@ groups:
   # Use the corresponding sk-pool-*-cyber API key to route through these groups.
 
   - id: openai_cyber
-    tenant_id: cyber
+    tenant_id: default
     provider: chatgpt
     api_keys:
       - "sk-pool-openai-cyber"
@@ -269,7 +267,7 @@ groups:
       </task>
 
   - id: claude_cyber
-    tenant_id: cyber
+    tenant_id: default
     provider: claude
     api_keys:
       - "sk-pool-claude-cyber"
@@ -323,7 +321,7 @@ groups:
       </system>
 
   - id: gemini_cyber
-    tenant_id: cyber
+    tenant_id: default
     provider: gemini
     api_keys:
       - "sk-pool-gemini-cyber"

@@ -718,14 +718,15 @@ func responsesInputItems(body []byte) []json.RawMessage {
 }
 
 func applyGroupSystemPromptToResponsesBody(body []byte, group *domain.Group) []byte {
-	if group == nil || group.SystemPrompt == "" {
+	prompt, mode, _ := effectiveGroupPrompt(group)
+	if prompt == "" {
 		return body
 	}
 	current := ""
 	if existing := gjson.GetBytes(body, "instructions"); existing.Exists() && existing.Type == gjson.String {
 		current = existing.String()
 	}
-	next := combineSystemPrompt(current, group.SystemPrompt, group.SystemPromptMode)
+	next := combineSystemPrompt(current, prompt, mode)
 	if next == current {
 		return body
 	}
@@ -740,7 +741,8 @@ func applyGroupSystemPromptToResponsesBody(body []byte, group *domain.Group) []b
 }
 
 func shouldApplyResponsesSystemPrompt(group *domain.Group, contextAccountID, selectedAccountID string, knownInjected, required bool) bool {
-	if group == nil || group.SystemPrompt == "" {
+	prompt, _, _ := effectiveGroupPrompt(group)
+	if prompt == "" {
 		return false
 	}
 	if !isChatGPTResponsesThreadOnce(group) {
@@ -756,13 +758,16 @@ func shouldApplyResponsesSystemPrompt(group *domain.Group, contextAccountID, sel
 }
 
 func responsesSystemPromptEffective(group *domain.Group, applied, knownInjected bool) bool {
-	return group != nil && group.SystemPrompt != "" && (applied || knownInjected)
+	prompt, _, _ := effectiveGroupPrompt(group)
+	return prompt != "" && (applied || knownInjected)
 }
 
 func isChatGPTResponsesThreadOnce(group *domain.Group) bool {
-	return group != nil &&
-		group.Provider == "chatgpt" &&
-		strings.EqualFold(strings.TrimSpace(group.SystemPromptInjection), "thread_once")
+	if group == nil || group.Provider != "chatgpt" {
+		return false
+	}
+	_, _, injection := effectiveGroupPrompt(group)
+	return strings.EqualFold(strings.TrimSpace(injection), "thread_once")
 }
 
 func (g *Gateway) requireResponsesSystemPromptAfterCompact(body []byte, group *domain.Group) {

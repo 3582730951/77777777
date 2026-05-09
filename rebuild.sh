@@ -31,7 +31,7 @@ KIRO_GW_DIR="$ROOT/services/kiro-gateway"
 FRONTEND_SRC="$ROOT/services/autoreg/frontend"
 SPA_OUT="$ROOT/internal/admin/autoreg_spa"
 
-# 从 config 提取端口
+# 从 config 提取端口（root config，作为初始值）
 _gw_port=$(grep 'gateway_addr' "$CONFIG" 2>/dev/null | head -1 | grep -oP ':\K\d+' || echo "8787")
 _ad_port=$(grep 'admin_addr' "$CONFIG" 2>/dev/null | head -1 | grep -oP ':\K\d+' || echo "8788")
 GW_ADDR="${GATEWAY_ADDR:-:${_gw_port}}"
@@ -459,6 +459,47 @@ fi
 HAS_KIRO_SYSTEMD=false
 if systemctl is-enabled llm-pool-kiro-gw &>/dev/null 2>&1; then
   HAS_KIRO_SYSTEMD=true
+fi
+
+# ── 端口确认（防止 rebuild 覆盖已运行端口）──
+# 优先从 systemd 实际使用的 config 读取运行端口
+_running_gw_port="$_gw_port"
+_running_ad_port="$_ad_port"
+if [ "$HAS_SYSTEMD" = true ]; then
+  _sd_cfg="$(systemd_gateway_config_path 2>/dev/null || true)"
+  [ -z "$_sd_cfg" ] && _sd_cfg="/opt/llm-pool/config/config.yaml"
+  if [ -f "$_sd_cfg" ]; then
+    _p=$(grep 'gateway_addr' "$_sd_cfg" 2>/dev/null | head -1 | grep -oP ':\K\d+' || true)
+    [ -n "$_p" ] && _running_gw_port="$_p"
+    _p=$(grep 'admin_addr' "$_sd_cfg" 2>/dev/null | head -1 | grep -oP ':\K\d+' || true)
+    [ -n "$_p" ] && _running_ad_port="$_p"
+  fi
+fi
+
+printf "\n"
+info "当前运行端口 — Gateway: :${_running_gw_port}  Admin: :${_running_ad_port}"
+printf "  输入新 Gateway 端口号重置端口，直接回车保留当前端口 [%s]: " "$_running_gw_port"
+read -r _input_port </dev/tty 2>/dev/null || _input_port=""
+if printf '%s' "$_input_port" | grep -qE '^[0-9]+$'; then
+  _new_gw_port="$_input_port"
+  ok "Gateway 端口将设置为 :${_new_gw_port}"
+else
+  _new_gw_port="$_running_gw_port"
+  ok "保留 Gateway 端口 :${_new_gw_port}"
+fi
+
+# 如果端口与 root config.yaml 不一致，先同步到 root config（保证后续 sync 不会覆盖）
+if [ "$_new_gw_port" != "$_gw_port" ]; then
+  sed -i "s|gateway_addr:.*|gateway_addr: \"0.0.0.0:${_new_gw_port}\"|" "$CONFIG"
+  info "已更新 $CONFIG: gateway_addr → :${_new_gw_port}"
+  _gw_port="$_new_gw_port"
+  GW_ADDR=":${_gw_port}"
+fi
+if [ "$_running_ad_port" != "$_ad_port" ]; then
+  sed -i "s|admin_addr:.*|admin_addr: \"0.0.0.0:${_running_ad_port}\"|" "$CONFIG"
+  info "已更新 $CONFIG: admin_addr → :${_running_ad_port}"
+  _ad_port="$_running_ad_port"
+  ADMIN_ADDR=":${_ad_port}"
 fi
 
 # ── 0. 停止所有服务 ──
