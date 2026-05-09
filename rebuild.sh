@@ -487,18 +487,17 @@ else
   _new_gw_port="$_running_gw_port"
   ok "保留 Gateway 端口 :${_new_gw_port}"
 fi
+# Admin 端口始终跟随 Gateway 端口 +1
+_new_ad_port=$(( _new_gw_port + 1 ))
 
 # 如果端口与 root config.yaml 不一致，先同步到 root config（保证后续 sync 不会覆盖）
-if [ "$_new_gw_port" != "$_gw_port" ]; then
+if [ "$_new_gw_port" != "$_gw_port" ] || [ "$_new_ad_port" != "$_ad_port" ]; then
   sed -i "s|gateway_addr:.*|gateway_addr: \"0.0.0.0:${_new_gw_port}\"|" "$CONFIG"
-  info "已更新 $CONFIG: gateway_addr → :${_new_gw_port}"
+  sed -i "s|admin_addr:.*|admin_addr: \"0.0.0.0:${_new_ad_port}\"|" "$CONFIG"
+  info "已更新 $CONFIG: gateway_addr → :${_new_gw_port}  admin_addr → :${_new_ad_port}"
   _gw_port="$_new_gw_port"
+  _ad_port="$_new_ad_port"
   GW_ADDR=":${_gw_port}"
-fi
-if [ "$_running_ad_port" != "$_ad_port" ]; then
-  sed -i "s|admin_addr:.*|admin_addr: \"0.0.0.0:${_running_ad_port}\"|" "$CONFIG"
-  info "已更新 $CONFIG: admin_addr → :${_running_ad_port}"
-  _ad_port="$_running_ad_port"
   ADMIN_ADDR=":${_ad_port}"
 fi
 
