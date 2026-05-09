@@ -2,8 +2,13 @@ package admin
 
 import (
 	"context"
+	"io"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/llm-pool/gateway/internal/store"
@@ -291,19 +296,162 @@ func chiURLParam(r *http.Request, name string) string {
 
 var chiParam = func(r *http.Request, name string) string { return "" }
 
+var publicIPCache = struct {
+	sync.Mutex
+	value   string
+	expires time.Time
+}{}
+
 func (s *Server) gatewayURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	host := strings.Split(r.Host, ":")[0]
-	gw := scheme + "://" + host
-	if addr := s.deps.Cfg.Server.GatewayAddr; addr != "" {
-		if strings.HasPrefix(addr, ":") {
-			gw = scheme + "://" + host + addr
+	for _, key := range []string{"LLM_POOL_GATEWAY_URL", "PUBLIC_GATEWAY_URL", "GATEWAY_PUBLIC_URL"} {
+		if value := strings.TrimRight(strings.TrimSpace(os.Getenv(key)), "/"); value != "" {
+			return value
 		}
 	}
-	return gw
+
+	scheme := firstCSV(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		switch {
+		case strings.EqualFold(r.Header.Get("X-Forwarded-Ssl"), "on"):
+			scheme = "https"
+		case strings.EqualFold(r.Header.Get("X-Forwarded-Scheme"), "https"):
+			scheme = "https"
+		case r.TLS != nil:
+			scheme = "https"
+		default:
+			scheme = "http"
+		}
+	}
+
+	host := firstCSV(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	host = hostWithoutPort(host)
+	if shouldUsePublicIP(host) {
+		if ip := configuredPublicHost(); ip != "" {
+			host = ip
+		} else if ip := discoverPublicIP(r.Context()); ip != "" {
+			host = ip
+		}
+	}
+
+	port := gatewayPort(s.deps.Cfg.Server.GatewayAddr)
+	return scheme + "://" + formatURLHost(host, port, scheme)
+}
+
+func configuredPublicHost() string {
+	for _, key := range []string{"LLM_POOL_PUBLIC_HOST", "PUBLIC_HOST", "PUBLIC_IP"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return hostWithoutPort(value)
+		}
+	}
+	return ""
+}
+
+func discoverPublicIP(ctx context.Context) string {
+	publicIPCache.Lock()
+	if time.Now().Before(publicIPCache.expires) {
+		value := publicIPCache.value
+		publicIPCache.Unlock()
+		return value
+	}
+	publicIPCache.Unlock()
+
+	reqCtx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "https://api.ipify.org", nil)
+	if err != nil {
+		return cachePublicIP("", 5*time.Minute)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return cachePublicIP("", 5*time.Minute)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+	ip := strings.TrimSpace(string(body))
+	if parsed := net.ParseIP(ip); parsed == nil || !isPublicIP(parsed) {
+		return cachePublicIP("", 5*time.Minute)
+	}
+	return cachePublicIP(ip, 30*time.Minute)
+}
+
+func cachePublicIP(value string, ttl time.Duration) string {
+	publicIPCache.Lock()
+	publicIPCache.value = value
+	publicIPCache.expires = time.Now().Add(ttl)
+	publicIPCache.Unlock()
+	return value
+}
+
+func gatewayPort(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	if strings.HasPrefix(addr, ":") {
+		return strings.TrimPrefix(addr, ":")
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		return port
+	}
+	if _, err := strconv.Atoi(addr); err == nil {
+		return addr
+	}
+	return ""
+}
+
+func hostWithoutPort(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		if idx := strings.Index(host, "://"); idx >= 0 {
+			host = host[idx+3:]
+		}
+	}
+	host = strings.TrimSuffix(host, "/")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return strings.Trim(h, "[]")
+	}
+	return strings.Trim(host, "[]")
+}
+
+func formatURLHost(host, port, scheme string) string {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if port == "" || (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func shouldUsePublicIP(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return !isPublicIP(ip)
+}
+
+func isPublicIP(ip net.IP) bool {
+	return ip != nil &&
+		!ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsUnspecified() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast()
 }
 
 // initialised in handlers_crud.go where chi is already imported.
