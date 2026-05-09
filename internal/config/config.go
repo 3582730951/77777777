@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -180,6 +181,50 @@ type TokenOptimizer struct {
 	HeadLines                   int    `yaml:"head_lines"`
 	TailLines                   int    `yaml:"tail_lines"`
 	ErrorContextLines           int    `yaml:"error_context_lines"`
+}
+
+func NormalizeTokenOptimizer(cfg TokenOptimizer) TokenOptimizer {
+	if mode, ok := NormalizeTokenOptimizerMode(cfg.Mode); ok {
+		cfg.Mode = mode
+	} else {
+		cfg.Mode = "off"
+	}
+	if cfg.MinToolOutputBytes <= 0 {
+		cfg.MinToolOutputBytes = 32 << 10
+	}
+	if cfg.MaxOptimizedToolOutputBytes <= 0 {
+		cfg.MaxOptimizedToolOutputBytes = 64 << 10
+	}
+	if cfg.HeadLines <= 0 {
+		cfg.HeadLines = 80
+	}
+	if cfg.TailLines <= 0 {
+		cfg.TailLines = 80
+	}
+	if cfg.ErrorContextLines < 0 {
+		cfg.ErrorContextLines = 0
+	}
+	if cfg.ErrorContextLines == 0 {
+		cfg.ErrorContextLines = 6
+	}
+	return cfg
+}
+
+func NormalizeTokenOptimizerMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "off":
+		return "off", true
+	case "cleanup", "lossless":
+		return "cleanup", true
+	case "guarded":
+		return "guarded", true
+	case "safe":
+		return "safe", true
+	case "aggressive":
+		return "aggressive", true
+	default:
+		return "", false
+	}
 }
 
 type Stealth struct {

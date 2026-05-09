@@ -13,7 +13,10 @@ import (
 	"github.com/llm-pool/gateway/internal/domain"
 )
 
-const SettingRemoteChatAccountID = "remote_chat.account_id"
+const (
+	SettingRemoteChatAccountID = "remote_chat.account_id"
+	SettingTokenOptimizer      = "token_optimizer"
+)
 
 // extendMigrate adds the tables introduced after the MVP store: tenants
 // master keys, dynamic groups, api keys, quota samples, persona bundles

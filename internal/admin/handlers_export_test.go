@@ -162,3 +162,53 @@ func TestHandleRemoteChatConfigPersistsAccountID(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
+
+func TestHandleTokenOptimizerSettingsPostPersistsAndUpdatesRuntimeConfig(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Root{}
+	cfg.TokenOptimizer = config.NormalizeTokenOptimizer(config.TokenOptimizer{})
+	s := &Server{
+		deps: Deps{
+			Cfg:   cfg,
+			Store: st,
+		},
+		crud: CrudDeps{Audit: audit.NewLogger(st)},
+	}
+
+	form := "mode=guarded&min_tool_output_bytes=1024&max_optimized_tool_output_bytes=4096&head_lines=8&tail_lines=9&error_context_lines=2"
+	req := httptest.NewRequest(http.MethodPost, "/settings/token-optimizer", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleTokenOptimizerSettingsPost(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if cfg.TokenOptimizer.Mode != "guarded" ||
+		cfg.TokenOptimizer.MinToolOutputBytes != 1024 ||
+		cfg.TokenOptimizer.MaxOptimizedToolOutputBytes != 4096 ||
+		cfg.TokenOptimizer.HeadLines != 8 ||
+		cfg.TokenOptimizer.TailLines != 9 ||
+		cfg.TokenOptimizer.ErrorContextLines != 2 {
+		t.Fatalf("runtime config not updated: %+v", cfg.TokenOptimizer)
+	}
+	value, ok, err := st.GetSetting(t.Context(), store.SettingTokenOptimizer)
+	if err != nil {
+		t.Fatalf("get setting: %v", err)
+	}
+	if !ok {
+		t.Fatal("token optimizer setting not persisted")
+	}
+	var stored config.TokenOptimizer
+	if err := json.Unmarshal([]byte(value), &stored); err != nil {
+		t.Fatalf("decode setting: %v", err)
+	}
+	if stored.Mode != "guarded" || stored.MinToolOutputBytes != 1024 {
+		t.Fatalf("unexpected stored setting: %+v", stored)
+	}
+}

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>系统设置 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">系统设置</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/settings/token-optimizer")}}
+      </div>
+    </header>
+    <div class="content">
+      {{if .Saved}}
+      <div class="alert alert-info">
+        <div>
+          <div class="bold small">已保存</div>
+          <div class="tiny mt-4">新配置已写入数据库，并已在当前进程即时生效。</div>
+        </div>
+      </div>
+      {{end}}
+      {{if .Error}}
+      <div class="alert alert-err">
+        <div>
+          <div class="bold small">保存失败</div>
+          <div class="tiny mt-4">{{.Error}}</div>
+        </div>
+      </div>
+      {{end}}
+
+      <form method="post" action="/settings/token-optimizer" class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">ChatGPT Token Optimizer</div>
+            <div class="tiny muted mt-4">当前来源: {{.Source}}</div>
+          </div>
+          <button class="btn primary" type="submit">保存并启用</button>
+        </div>
+        <div class="card-body">
+          <div class="form">
+            <div class="form-row c2">
+              <div class="field">
+                <label>模式</label>
+                <select name="mode">
+                  <option value="off" {{if eq .Opt.Mode "off"}}selected{{end}}>off - 关闭，保持直连 Codex 等价</option>
+                  <option value="cleanup" {{if eq .Opt.Mode "cleanup"}}selected{{end}}>cleanup - 只清理 ANSI/进度条/空行</option>
+                  <option value="guarded" {{if eq .Opt.Mode "guarded"}}selected{{end}}>guarded - 保守压缩大段工具输出</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>触发阈值 bytes</label>
+                <input type="number" name="min_tool_output_bytes" min="1" value="{{.Opt.MinToolOutputBytes}}">
+              </div>
+            </div>
+            <div class="form-row c3">
+              <div class="field">
+                <label>优化后最大 bytes</label>
+                <input type="number" name="max_optimized_tool_output_bytes" min="1" value="{{.Opt.MaxOptimizedToolOutputBytes}}">
+              </div>
+              <div class="field">
+                <label>保留头部行数</label>
+                <input type="number" name="head_lines" min="1" value="{{.Opt.HeadLines}}">
+              </div>
+              <div class="field">
+                <label>保留尾部行数</label>
+                <input type="number" name="tail_lines" min="1" value="{{.Opt.TailLines}}">
+              </div>
+            </div>
+            <div class="form-row c2">
+              <div class="field">
+                <label>错误上下文行数</label>
+                <input type="number" name="error_context_lines" min="1" value="{{.Opt.ErrorContextLines}}">
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <div class="card flat">
+        <div class="card-header"><div class="card-title">生效边界</div></div>
+        <div class="card-body grid g3">
+          <div>
+            <div class="bold small mb-4">只处理 ChatGPT Responses</div>
+            <div class="tiny muted">仅 provider 为 <code>chatgpt</code> 的 Responses 请求会进入优化器。</div>
+          </div>
+          <div>
+            <div class="bold small mb-4">只处理工具输出</div>
+            <div class="tiny muted">只会改写 <code>function_call_output.output</code>，短输出默认不处理。</div>
+          </div>
+          <div>
+            <div class="bold small mb-4">不碰提示词</div>
+            <div class="tiny muted">不会优化 group <code>system_prompt</code>、请求 <code>instructions</code>、用户输入或模型参数。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+</body></html>

@@ -29,7 +29,7 @@ func optimizeResponsesToolOutputsForProvider(body []byte, cfg config.TokenOptimi
 }
 
 func optimizeResponsesToolOutputs(body []byte, cfg config.TokenOptimizer) []byte {
-	cfg = saneTokenOptimizerConfig(cfg)
+	cfg = config.NormalizeTokenOptimizer(cfg)
 	if cfg.Mode == "off" || !bytes.Contains(body, []byte(`"function_call_output"`)) {
 		return body
 	}
@@ -88,39 +88,6 @@ func optimizeResponsesToolOutputs(body []byte, cfg config.TokenOptimizer) []byte
 		return body
 	}
 	return out
-}
-
-func saneTokenOptimizerConfig(cfg config.TokenOptimizer) config.TokenOptimizer {
-	switch cfg.Mode {
-	case "", "off":
-		cfg.Mode = "off"
-	case "cleanup", "lossless":
-		cfg.Mode = "cleanup"
-	case "guarded":
-		cfg.Mode = "guarded"
-	case "safe", "aggressive":
-	default:
-		cfg.Mode = "off"
-	}
-	if cfg.MinToolOutputBytes <= 0 {
-		cfg.MinToolOutputBytes = 32 << 10
-	}
-	if cfg.MaxOptimizedToolOutputBytes <= 0 {
-		cfg.MaxOptimizedToolOutputBytes = 64 << 10
-	}
-	if cfg.HeadLines <= 0 {
-		cfg.HeadLines = 80
-	}
-	if cfg.TailLines <= 0 {
-		cfg.TailLines = 80
-	}
-	if cfg.ErrorContextLines < 0 {
-		cfg.ErrorContextLines = 0
-	}
-	if cfg.ErrorContextLines == 0 {
-		cfg.ErrorContextLines = 6
-	}
-	return cfg
 }
 
 func optimizeToolOutputText(text string, cfg config.TokenOptimizer) (string, bool) {

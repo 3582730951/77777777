@@ -412,6 +412,8 @@ func (s *Server) Router() http.Handler {
 		r.Post("/keys/new", s.handleKeyCreatePost)
 		r.Post("/keys/{value}/revoke", s.handleKeyRevokeForm)
 		r.Get("/cluster", s.handleCluster)
+		r.Get("/settings/token-optimizer", s.handleTokenOptimizerSettings)
+		r.Post("/settings/token-optimizer", s.handleTokenOptimizerSettingsPost)
 		r.Get("/audit", s.handleAuditPage)
 		r.Get("/guide", s.handleAdminGuide)
 		// AutoReg SPA — serves the React frontend under /autoreg/*

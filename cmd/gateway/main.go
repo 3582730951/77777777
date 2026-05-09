@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -83,6 +84,7 @@ func main() {
 	if err := bootstrapAdmin(st, cfg.Storage.PasswdPath, logger); err != nil {
 		logger.Error("bootstrap admin", "err", err)
 	}
+	applyStoredTokenOptimizer(context.Background(), st, cfg, logger)
 
 	oauthMgr := oauth.New()
 	oauthMgr.SetStore(st)
@@ -352,6 +354,29 @@ func main() {
 	if autoregMgr != nil {
 		_ = autoregMgr.Stop()
 	}
+}
+
+func applyStoredTokenOptimizer(ctx context.Context, st *store.Store, cfg *config.Root, logger *slog.Logger) {
+	if st == nil || cfg == nil {
+		return
+	}
+	value, ok, err := st.GetSetting(ctx, store.SettingTokenOptimizer)
+	if err != nil {
+		logger.Warn("token optimizer setting read", "err", err)
+		return
+	}
+	if !ok || strings.TrimSpace(value) == "" {
+		cfg.TokenOptimizer = config.NormalizeTokenOptimizer(cfg.TokenOptimizer)
+		return
+	}
+	var opt config.TokenOptimizer
+	if err := json.Unmarshal([]byte(value), &opt); err != nil {
+		logger.Warn("token optimizer setting parse", "err", err)
+		cfg.TokenOptimizer = config.NormalizeTokenOptimizer(cfg.TokenOptimizer)
+		return
+	}
+	cfg.TokenOptimizer = config.NormalizeTokenOptimizer(opt)
+	logger.Info("token optimizer setting loaded", "mode", cfg.TokenOptimizer.Mode)
 }
 
 func loadAccounts(ctx context.Context, st *store.Store, sched *scheduler.Scheduler, log *slog.Logger) error {
