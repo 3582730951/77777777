@@ -8,12 +8,13 @@
 #   --force-deps       强制重装所有 Python 依赖
 #
 # 涵盖:
-#   1. 停止所有服务（systemd 或直接进程）
-#   2. Xvfb 虚拟显示
-#   3. AutoReg React SPA 前端构建 + 嵌入
-#   4. Go Gateway 编译
-#   5. AutoReg Python 虚拟环境 + 依赖
-#   6. Kiro Gateway Python 虚拟环境 + 依赖
+#   0. 停止所有服务（systemd 或直接进程）
+#   1. Xvfb 虚拟显示
+#   2. AutoReg React SPA 前端构建 + 嵌入
+#   3. Go Gateway 编译
+#   4. AutoReg Python 虚拟环境 + 依赖
+#   5. Kiro Gateway Python 虚拟环境 + 依赖
+#   6. systemd 场景同步 binary、配置、服务代码到实际运行目录
 #   7. 启动 AutoReg 服务
 #   8. 启动 Kiro Gateway（如有 credentials）
 #   9. 启动 LLM Pool Gateway（systemd 或直接进程）
@@ -55,6 +56,134 @@ ok()    { printf "\033[32m[✓]\033[0m %s\n" "$*"; }
 warn()  { printf "\033[33m[!]\033[0m %s\n" "$*"; }
 err()   { printf "\033[31m[✗]\033[0m %s\n" "$*"; }
 step()  { printf "\n\033[1m── %s ──\033[0m\n" "$*"; }
+
+timestamp() { date +%Y%m%d-%H%M%S; }
+
+sync_file_with_backup() {
+  local src="$1" dst="$2" label="$3"
+  if [ ! -f "$src" ]; then
+    warn "$label 源文件不存在，跳过: $src"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dst")"
+  if [ -f "$dst" ]; then
+    if cmp -s "$src" "$dst"; then
+      ok "$label 已是最新 → $dst"
+      return 0
+    fi
+    local bak="${dst}.bak.$(timestamp)"
+    cp -p "$dst" "$bak"
+    info "$label 旧文件已备份 → $bak"
+  fi
+  cp -p "$src" "$dst"
+  ok "$label 已同步 → $dst"
+}
+
+sync_code_tree() {
+  local src="$1" dst="$2" label="$3"
+  if [ ! -d "$src" ]; then
+    return 0
+  fi
+  mkdir -p "$dst"
+  local src_real dst_real
+  src_real="$(cd "$src" && pwd -P)"
+  dst_real="$(cd "$dst" && pwd -P)"
+  if [ "$src_real" = "$dst_real" ]; then
+    ok "$label 源目录即运行目录，跳过同步 → $dst"
+    return 0
+  fi
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude='.git/' \
+      --exclude='.venv/' \
+      --exclude='node_modules/' \
+      --exclude='__pycache__/' \
+      --exclude='.pytest_cache/' \
+      --exclude='*.pyc' \
+      --exclude='data/' \
+      --exclude='credentials.json' \
+      "$src"/ "$dst"/
+  else
+    warn "rsync 不存在，使用 tar 同步 $label（不会删除目标端多余旧文件）"
+    (cd "$src" && tar \
+      --exclude='.git' \
+      --exclude='.venv' \
+      --exclude='node_modules' \
+      --exclude='__pycache__' \
+      --exclude='.pytest_cache' \
+      --exclude='*.pyc' \
+      --exclude='data' \
+      --exclude='credentials.json' \
+      -cf - .) | (cd "$dst" && tar -xf -)
+  fi
+  ok "$label 已同步 → $dst"
+}
+
+systemd_gateway_exec_line() {
+  systemctl cat llm-pool 2>/dev/null | sed -n 's/^ExecStart=//p' | tail -1
+}
+
+systemd_gateway_binary_path() {
+  local line candidate
+  line="$(systemd_gateway_exec_line)"
+  [ -n "$line" ] || return 0
+  # shellcheck disable=SC2086
+  set -- $line
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      env|/usr/bin/env)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            *=*) shift ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      *=*)
+        shift
+        ;;
+      *)
+        candidate="$1"
+        case "$(basename "$candidate")" in
+          *gateway*)
+            printf "%s" "$candidate"
+            return 0
+            ;;
+        esac
+        return 0
+        ;;
+    esac
+  done
+}
+
+systemd_gateway_config_path() {
+  local line prev arg
+  line="$(systemd_gateway_exec_line)"
+  [ -n "$line" ] || return 0
+  prev=""
+  # shellcheck disable=SC2086
+  for arg in $line; do
+    if [ "$prev" = "-config" ]; then
+      printf "%s" "$arg"
+      return 0
+    fi
+    case "$arg" in
+      -config=*)
+        printf "%s" "${arg#-config=}"
+        return 0
+        ;;
+    esac
+    prev="$arg"
+  done
+}
+
+systemd_gateway_workdir() {
+  local wd
+  wd="$(systemctl show llm-pool -p WorkingDirectory --value 2>/dev/null || true)"
+  [ "$wd" = "-" ] && wd=""
+  printf "%s" "$wd"
+}
 
 ensure_go() {
   export PATH="$PATH:/usr/local/go/bin:/usr/lib/go/bin"
@@ -434,18 +563,63 @@ if [ -d "$KIRO_GW_DIR" ]; then
   [ ! -f "$KIRO_GW_DIR/credentials.json" ] && echo '[]' > "$KIRO_GW_DIR/credentials.json"
 fi
 
-# ── 6. 如果 systemd 管理，同步 binary 到 INSTALL_DIR ──
+# ── 6. 如果 systemd 管理，同步代码和配置到实际运行目录 ──
 INSTALL_DIR="/opt/llm-pool"
-if [ "$HAS_SYSTEMD" = true ] && [ -d "$INSTALL_DIR" ] && [ "$ROOT" != "$INSTALL_DIR" ]; then
-  step "同步到安装目录 ($INSTALL_DIR)"
-  mkdir -p "$INSTALL_DIR/bin"
-  cp "$GATEWAY_BIN" "$INSTALL_DIR/bin/gateway"
-  chmod +x "$INSTALL_DIR/bin/gateway"
-  ok "binary 已同步"
+if [ "$HAS_SYSTEMD" = true ]; then
+  _systemd_wd="$(systemd_gateway_workdir)"
+  [ -n "$_systemd_wd" ] && INSTALL_DIR="$_systemd_wd"
+fi
+
+AUTOREG_RUN_DIR="$AUTOREG_DIR"
+AUTOREG_RUN_VENV="$AUTOREG_VENV"
+KIRO_GW_RUN_DIR="$KIRO_GW_DIR"
+
+if [ "$HAS_SYSTEMD" = true ] && [ -d "$INSTALL_DIR" ]; then
+  step "同步代码和配置到安装目录 ($INSTALL_DIR)"
+
+  systemd_bin="$(systemd_gateway_binary_path)"
+  systemd_cfg="$(systemd_gateway_config_path)"
+  [ -z "$systemd_bin" ] && systemd_bin="$INSTALL_DIR/bin/gateway"
+  [ -z "$systemd_cfg" ] && systemd_cfg="$INSTALL_DIR/config/config.yaml"
+
+  sync_file_with_backup "$GATEWAY_BIN" "$systemd_bin" "Gateway binary"
+  chmod +x "$systemd_bin"
+  if [ "$systemd_bin" != "$INSTALL_DIR/bin/gateway" ]; then
+    sync_file_with_backup "$GATEWAY_BIN" "$INSTALL_DIR/bin/gateway" "Gateway binary 兼容路径"
+    chmod +x "$INSTALL_DIR/bin/gateway"
+  fi
+  if [ "$systemd_bin" != "$INSTALL_DIR/release/gateway-linux-amd64" ]; then
+    sync_file_with_backup "$GATEWAY_BIN" "$INSTALL_DIR/release/gateway-linux-amd64" "Gateway release binary"
+    chmod +x "$INSTALL_DIR/release/gateway-linux-amd64"
+  fi
+
+  sync_file_with_backup "$CONFIG" "$systemd_cfg" "Gateway 配置"
+  if [ "$systemd_cfg" != "$INSTALL_DIR/config/config.yaml" ]; then
+    sync_file_with_backup "$CONFIG" "$INSTALL_DIR/config/config.yaml" "Gateway 配置兼容路径"
+  fi
+  sync_file_with_backup "$ROOT/config/config.example.yaml" "$INSTALL_DIR/config/config.example.yaml" "配置示例"
+
+  if [ -d "$AUTOREG_DIR" ]; then
+    sync_code_tree "$AUTOREG_DIR" "$INSTALL_DIR/services/autoreg" "AutoReg 代码"
+    AUTOREG_RUN_DIR="$INSTALL_DIR/services/autoreg"
+    AUTOREG_RUN_VENV="$AUTOREG_RUN_DIR/.venv/bin"
+    ensure_python_venv
+    setup_python_venv "AutoReg (install)" "$AUTOREG_RUN_DIR" "$AUTOREG_RUN_DIR/requirements.txt" "uvicorn"
+  fi
+
+  if [ -d "$KIRO_GW_DIR" ]; then
+    sync_code_tree "$KIRO_GW_DIR" "$INSTALL_DIR/services/kiro-gateway" "Kiro Gateway 代码"
+    KIRO_GW_RUN_DIR="$INSTALL_DIR/services/kiro-gateway"
+    ensure_python_venv
+    setup_python_venv "Kiro Gateway (install)" "$KIRO_GW_RUN_DIR" "$KIRO_GW_RUN_DIR/requirements.txt"
+    [ ! -f "$KIRO_GW_RUN_DIR/credentials.json" ] && echo '[]' > "$KIRO_GW_RUN_DIR/credentials.json"
+  fi
+elif [ "$HAS_SYSTEMD" = true ]; then
+  warn "systemd 已启用但安装目录不存在，跳过代码/配置同步: $INSTALL_DIR"
 fi
 
 # ── 7. 启动 AutoReg 服务 ──
-if [ -d "$AUTOREG_DIR" ]; then
+if [ -d "$AUTOREG_RUN_DIR" ]; then
   step "启动 AutoReg 服务 (:$AUTOREG_PORT)"
   if [ "$HAS_AUTOREG_SYSTEMD" = true ]; then
     # Keep old systemd installs compatible with repaired venvs: execute modules
@@ -457,7 +631,7 @@ if [ -d "$AUTOREG_DIR" ]; then
       UNIT_CHANGED=true
     fi
     if grep -q "uvicorn main:app" "$AUTOREG_UNIT" 2>/dev/null; then
-      sed -i "s|^ExecStart=.*uvicorn main:app.*|ExecStart=${AUTOREG_DIR}/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port ${AUTOREG_PORT}|" "$AUTOREG_UNIT" 2>/dev/null || true
+      sed -i "s|^ExecStart=.*uvicorn main:app.*|ExecStart=${AUTOREG_RUN_DIR}/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port ${AUTOREG_PORT}|" "$AUTOREG_UNIT" 2>/dev/null || true
       UNIT_CHANGED=true
     fi
     [ "$UNIT_CHANGED" = true ] && systemctl daemon-reload 2>/dev/null || true
@@ -469,9 +643,9 @@ if [ -d "$AUTOREG_DIR" ]; then
       err "AutoReg 启动失败，查看: journalctl -u llm-pool-autoreg -n 30"
     fi
   else
-    cd "$AUTOREG_DIR"
+    cd "$AUTOREG_RUN_DIR"
     DISPLAY=:99 GATEWAY_ADMIN_URL="http://127.0.0.1:${ADMIN_ADDR#:}" \
-    "$AUTOREG_VENV/python" -m uvicorn main:app \
+    "$AUTOREG_RUN_VENV/python" -m uvicorn main:app \
       --host 127.0.0.1 --port "$AUTOREG_PORT" \
       >"/tmp/autoreg.log" 2>&1 &
     AUTOREG_PID=$!
@@ -491,11 +665,11 @@ if [ -d "$AUTOREG_DIR" ]; then
 fi
 
 # ── 8. 启动 Kiro Gateway（如有 credentials）──
-if [ -d "$KIRO_GW_DIR" ]; then
+if [ -d "$KIRO_GW_RUN_DIR" ]; then
   CRED_COUNT=$(python3 -c "
 import json, sys
 try:
-  d=json.load(open('$KIRO_GW_DIR/credentials.json'))
+  d=json.load(open('$KIRO_GW_RUN_DIR/credentials.json'))
   print(len([x for x in d if x.get('refresh_token')]))
 except: print(0)
 " 2>/dev/null || echo 0)
@@ -510,7 +684,7 @@ except: print(0)
         err "Kiro Gateway 启动失败"
       fi
     else
-      cd "$KIRO_GW_DIR"
+      cd "$KIRO_GW_RUN_DIR"
       .venv/bin/python main.py --port "$KIRO_GW_PORT" --host 127.0.0.1 \
         >"/tmp/kiro-gateway.log" 2>&1 &
       KIRO_PID=$!

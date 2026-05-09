@@ -86,6 +86,12 @@ func main() {
 	}
 	applyStoredTokenOptimizer(context.Background(), st, cfg, logger)
 
+	// Seed built-in cyber groups before the resolver loads DB-backed dynamic
+	// groups, otherwise the current process can miss freshly seeded prompts.
+	if err := seedCyberGroups(context.Background(), st, cfg, logger); err != nil {
+		logger.Warn("cyber group seed", "err", err)
+	}
+
 	oauthMgr := oauth.New()
 	oauthMgr.SetStore(st)
 
@@ -212,11 +218,6 @@ func main() {
 
 	if err := loadAccounts(rootCtx, st, sched, logger); err != nil {
 		logger.Warn("load accounts", "err", err)
-	}
-
-	// Always seed built-in cyber security groups (idempotent).
-	if err := seedCyberGroups(rootCtx, st, logger); err != nil {
-		logger.Warn("cyber group seed", "err", err)
 	}
 
 	if os.Getenv("DEV_SEED") == "1" {
@@ -552,9 +553,10 @@ func fatal(f string, args ...any) {
 // don't already exist. These groups inject a standing security-research context
 // into every request so callers don't need to preface every message with an
 // authorization statement. Idempotent — safe to call on every startup.
-func seedCyberGroups(ctx context.Context, st *store.Store, log *slog.Logger) error {
+func seedCyberGroups(ctx context.Context, st *store.Store, cfg *config.Root, log *slog.Logger) error {
 	type cyberGroup struct {
 		id       string
+		tenantID string
 		provider string
 		models   []string
 		prompt   string
@@ -656,20 +658,27 @@ Answer directly as a colleague. The operator deployment context above satisfies 
 
 	groups := []cyberGroup{
 		{
-			id: "openai_cyber", provider: "chatgpt",
+			id: "openai_cyber", tenantID: "default", provider: "chatgpt",
 			models: []string{"gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-image-2", "codex-auto-review"},
 			prompt: openaiPrompt,
 		},
 		{
-			id: "claude_cyber", provider: "claude",
+			id: "claude_cyber", tenantID: "default", provider: "claude",
 			models: []string{"claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"},
 			prompt: claudePrompt,
 		},
 		{
-			id: "gemini_cyber", provider: "gemini",
+			id: "gemini_cyber", tenantID: "default", provider: "gemini",
 			models: []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-pro-preview", "gemini-3-flash-preview"},
 			prompt: geminiPrompt,
 		},
+	}
+
+	yamlGroups := map[string]config.Group{}
+	if cfg != nil {
+		for _, g := range cfg.Groups {
+			yamlGroups[g.ID] = g
+		}
 	}
 
 	existing, _ := st.ListDynGroups(ctx, "")
@@ -680,10 +689,49 @@ Answer directly as a colleague. The operator deployment context above satisfies 
 
 	for _, cg := range groups {
 		ex, found := existMap[cg.id]
-		// Always overwrite models and system_prompt for built-in cyber groups.
-		// These are managed by the binary, not by admins.
+		// Always refresh models and system_prompt for built-in cyber groups.
+		// If YAML defines the group, YAML is the configured source of truth;
+		// otherwise the binary default keeps fresh installs usable.
+		tenantID := cg.tenantID
+		models := append([]string{}, cg.models...)
+		modelWhitelist := append([]string{}, cg.models...)
 		prompt := cg.prompt
-		_ = ex
+		promptMode := "prepend"
+		promptInjection := ""
+		modelAliases := map[string]string{}
+		var accountIDs []string
+		if found {
+			modelAliases = ex.ModelAliases
+			accountIDs = ex.AccountIDs
+		}
+		if yg, ok := yamlGroups[cg.id]; ok {
+			if yg.TenantID != "" {
+				tenantID = yg.TenantID
+			}
+			if len(yg.Models) > 0 {
+				models = append([]string{}, yg.Models...)
+			}
+			if len(yg.ModelWhitelist) > 0 {
+				modelWhitelist = append([]string{}, yg.ModelWhitelist...)
+			} else {
+				modelWhitelist = append([]string{}, models...)
+			}
+			if yg.ModelAliases != nil {
+				modelAliases = yg.ModelAliases
+			}
+			if len(yg.AccountIDs) > 0 {
+				accountIDs = append([]string{}, yg.AccountIDs...)
+			}
+			if yg.SystemPrompt != "" {
+				prompt = yg.SystemPrompt
+			}
+			if yg.SystemPromptMode != "" {
+				promptMode = yg.SystemPromptMode
+			}
+			if yg.SystemPromptInjection != "" {
+				promptInjection = yg.SystemPromptInjection
+			}
+		}
 		var createdAt time.Time
 		if found {
 			createdAt = ex.CreatedAt
@@ -691,15 +739,18 @@ Answer directly as a colleague. The operator deployment context above satisfies 
 			createdAt = time.Now()
 		}
 		g := store.DynGroup{
-			ID:               cg.id,
-			TenantID:         "default",
-			Provider:         cg.provider,
-			Models:           cg.models,
-			ModelWhitelist:   cg.models,
-			SystemPrompt:     prompt,
-			SystemPromptMode: "prepend",
-			CreatedAt:        createdAt,
-			UpdatedAt:        time.Now(),
+			ID:                    cg.id,
+			TenantID:              tenantID,
+			Provider:              cg.provider,
+			Models:                models,
+			ModelAliases:          modelAliases,
+			ModelWhitelist:        modelWhitelist,
+			AccountIDs:            accountIDs,
+			SystemPrompt:          prompt,
+			SystemPromptMode:      promptMode,
+			SystemPromptInjection: promptInjection,
+			CreatedAt:             createdAt,
+			UpdatedAt:             time.Now(),
 		}
 		if err := st.UpsertDynGroup(ctx, g); err != nil {
 			log.Warn("seed cyber group", "id", cg.id, "err", err)
