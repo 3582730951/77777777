@@ -132,6 +132,42 @@ function escapeCsvField(value: unknown) {
   return `"${text.replace(/"/g, '""')}"`
 }
 
+function readExportField(raw: any, keys: string[]) {
+  for (const key of keys) {
+    if (raw && Object.prototype.hasOwnProperty.call(raw, key) && raw[key] != null) return raw[key]
+  }
+  return ''
+}
+
+function exportedAccountsFromPayload(payload: any): any[] {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.accounts)) return payload.accounts
+  if (Array.isArray(payload?.Accounts)) return payload.Accounts
+  if (payload && typeof payload === 'object') return [payload]
+  return []
+}
+
+function exportFileToImportLines(content: string, fileName: string) {
+  const trimmed = content.trim()
+  if (!trimmed) throw new Error('导入文件为空')
+  const looksJSON = fileName.toLowerCase().endsWith('.json') || trimmed.startsWith('{') || trimmed.startsWith('[')
+  if (!looksJSON) return content.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+
+  const payload = JSON.parse(trimmed)
+  const rows = exportedAccountsFromPayload(payload)
+  const lines = ['email,password,cashier_url']
+  for (const row of rows) {
+    const email = String(readExportField(row, ['email', 'Email', 'name', 'Name']) || '').trim()
+    const password = String(readExportField(row, ['password', 'Password', 'pwd', 'Pwd']) || '')
+    const cashierUrl = String(readExportField(row, ['cashier_url', 'cashierUrl', 'trial_url', 'trialUrl']) || '').trim()
+    if (email && password) {
+      lines.push([email, password, cashierUrl].map(escapeCsvField).join(','))
+    }
+  }
+  if (lines.length === 1) throw new Error('导出文件中没有可导入的 email/password')
+  return lines
+}
+
 async function loadPlatformActions(platform: string, options?: { force?: boolean }) {
   const key = String(platform || '').trim()
   if (!key) return []
@@ -1385,22 +1421,70 @@ function ImportModal({ platform, onClose, onDone }: { platform: string; onClose:
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<string | null>(null)
-  const submit = async () => {
+  const [resultKind, setResultKind] = useState<'success' | 'error'>('success')
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const importLines = async (lines: string[]) => {
     setLoading(true)
     try {
-      const lines = text.trim().split('\n').filter(Boolean)
       const res = await apiFetch('/accounts/import', { method: 'POST', body: JSON.stringify({ platform, lines }) })
-      setResult(`导入成功 ${res.created} 个`); onDone()
-    } catch (e: any) { setResult(`失败: ${e.message}`) } finally { setLoading(false) }
+      setResultKind('success')
+      setResult(`导入成功 ${res.created} 个`)
+      onDone()
+    } catch (e: any) {
+      setResultKind('error')
+      setResult(`失败: ${e.message}`)
+    } finally { setLoading(false) }
   }
+
+  const submit = async () => {
+    const lines = text.trim().split('\n').filter(Boolean)
+    await importLines(lines)
+  }
+
+  const importExportFile = async (file: File) => {
+    const content = await file.text()
+    const lines = exportFileToImportLines(content, file.name)
+    await importLines(lines)
+  }
+
+  const pickExportFile = () => {
+    setResult(null)
+    fileInputRef.current?.click()
+  }
+
+  const handleExportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      await importExportFile(file)
+    } catch (e: any) {
+      setResultKind('error')
+      setResult(`失败: ${e.message}`)
+    } finally {
+      event.target.value = ''
+    }
+  }
+
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div className="dialog-panel dialog-panel-sm p-6" onClick={e => e.stopPropagation()}>
         <h2 className="text-base font-semibold text-[var(--text-primary)] mb-2">批量导入</h2>
         <p className="text-xs text-[var(--text-muted)] mb-3">每行格式: <code className="bg-[var(--bg-hover)] px-1 rounded">email password [cashier_url]</code></p>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,.csv,.txt,application/json,text/csv,text/plain"
+          className="hidden"
+          onChange={handleExportFileChange}
+        />
+        <Button variant="outline" onClick={pickExportFile} disabled={loading} className="mb-3 w-full">
+          <Upload className="mr-1.5 h-3.5 w-3.5" />
+          选择导出文件并导入
+        </Button>
         <textarea value={text} onChange={e => setText(e.target.value)} rows={8}
           className="control-surface control-surface-mono resize-none mb-3" />
-        {result && <p className="text-sm text-emerald-400 mb-3">{result}</p>}
+        {result && <p className={`text-sm mb-3 ${resultKind === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>{result}</p>}
         <div className="flex gap-2">
           <Button onClick={submit} disabled={loading} className="flex-1">{loading ? '导入中...' : '导入'}</Button>
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
