@@ -18,9 +18,21 @@
           <option value="tavily">Tavily</option>
           <option value="openblocklabs">OpenBlockLabs</option>
         </select>
+        <input ref="importFileInput" type="file" accept=".json,application/json" class="hidden" @change="importAccountsFromFile" />
         <button @click="exportAccounts" class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg text-sm">Export</button>
+        <button
+          @click="chooseImportFile"
+          :disabled="isImporting"
+          class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg text-sm disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {{ isImporting ? 'Importing...' : 'Import' }}
+        </button>
         <button @click="refresh" class="px-3 py-1.5 bg-primary text-white rounded-lg text-sm">Refresh</button>
       </div>
+    </div>
+
+    <div v-if="importMessage" :class="importStatusClass" class="rounded-lg border px-3 py-2 text-sm">
+      {{ importMessage }}
     </div>
 
     <div class="overflow-x-auto bg-white dark:bg-gray-900 rounded-xl shadow-sm border border-gray-200 dark:border-gray-800">
@@ -93,6 +105,10 @@ import { accountsAPI } from '../api'
 const accounts = ref<any[]>([])
 const filterProvider = ref('')
 const visibleEmails = ref<Record<string, boolean>>({})
+const importFileInput = ref<HTMLInputElement | null>(null)
+const isImporting = ref(false)
+const importMessage = ref('')
+const importMessageType = ref<'success' | 'error'>('success')
 
 const filtered = computed(() => {
   const list = !filterProvider.value
@@ -106,6 +122,12 @@ const filtered = computed(() => {
     return accountId(a).localeCompare(accountId(b))
   })
 })
+
+const importStatusClass = computed(() =>
+  importMessageType.value === 'success'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300'
+    : 'border-red-200 bg-red-50 text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300'
+)
 
 function providerClass(p: string) {
   const map: Record<string, string> = {
@@ -236,6 +258,93 @@ function emailVisible(acc: any): boolean {
 function toggleEmail(acc: any) {
   const id = accountId(acc)
   visibleEmails.value[id] = !visibleEmails.value[id]
+}
+
+type ImportAccountPayload = Record<string, any>
+
+function readImportField(raw: ImportAccountPayload, ...keys: string[]): any {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(raw, key) && raw[key] !== undefined && raw[key] !== null) {
+      return raw[key]
+    }
+  }
+  return ''
+}
+
+function importString(raw: ImportAccountPayload, ...keys: string[]): string {
+  const value = readImportField(raw, ...keys)
+  return value === undefined || value === null ? '' : String(value).trim()
+}
+
+function importSecretString(raw: ImportAccountPayload, ...keys: string[]): string {
+  const value = readImportField(raw, ...keys)
+  if (value === undefined || value === null || value === '') return ''
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+function normalizeImportAccount(raw: ImportAccountPayload): ImportAccountPayload {
+  return {
+    id: importString(raw, 'id', 'ID', 'account_id', 'AccountID'),
+    tenant_id: importString(raw, 'tenant_id', 'TenantID', 'tenantId'),
+    provider: importString(raw, 'provider', 'Provider').toLowerCase(),
+    email: importString(raw, 'email', 'Email'),
+    plan_tier: importString(raw, 'plan_tier', 'PlanTier', 'planTier'),
+    stealth_profile: importString(raw, 'stealth_profile', 'StealthProfile', 'stealthProfile'),
+    ua: importString(raw, 'ua', 'UA'),
+    proxy: importString(raw, 'proxy', 'Proxy'),
+    session_token: importSecretString(raw, 'session_token', 'SessionToken', 'sessionToken'),
+    refresh_token: importSecretString(raw, 'refresh_token', 'RefreshToken', 'refreshToken'),
+    cookies: importSecretString(raw, 'cookies', 'Cookies'),
+  }
+}
+
+function extractImportAccounts(payload: any): ImportAccountPayload[] {
+  const source = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.accounts)
+      ? payload.accounts
+      : Array.isArray(payload?.Accounts)
+        ? payload.Accounts
+        : []
+  return source.map(normalizeImportAccount)
+}
+
+function chooseImportFile() {
+  importMessage.value = ''
+  importFileInput.value?.click()
+}
+
+async function importAccountsFromFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  isImporting.value = true
+  importMessage.value = ''
+  try {
+    const payload = JSON.parse(await file.text())
+    const importAccounts = extractImportAccounts(payload)
+    if (importAccounts.length === 0) {
+      throw new Error('导入文件中没有账号')
+    }
+
+    const missingProvider = importAccounts.filter(acc => !acc.provider).length
+    if (missingProvider > 0) {
+      throw new Error(`有 ${missingProvider} 个账号缺少 provider，已取消导入`)
+    }
+
+    const result: any = await accountsAPI.bulkImport(importAccounts)
+    const count = Number(result?.count ?? importAccounts.length)
+    importMessageType.value = 'success'
+    importMessage.value = `导入完成：${count} 个账号`
+    await refresh()
+  } catch (err: unknown) {
+    importMessageType.value = 'error'
+    importMessage.value = err instanceof Error ? err.message : '导入失败'
+  } finally {
+    isImporting.value = false
+    input.value = ''
+  }
 }
 
 async function refresh() {

@@ -2,6 +2,7 @@ import client from './client'
 
 export const accountsAPI = {
   list: () => client.get('/accounts'),
+  bulkImport: (accounts: any[]) => client.post('/accounts/bulk-import', accounts),
   probe: (id: string) => client.post(`/accounts/${id}/probe`),
   discover: (id: string) => client.post(`/accounts/${id}/discover`),
   delete: (id: string) => client.delete(`/accounts/${id}`),
