@@ -59,10 +59,10 @@
 
               <div class="form-section">
                 <div class="form-section-title">凭证</div>
-                <div class="field"><label>Session Token / Session JSON *</label>
+                <div class="field"><label>Session Token / Session JSON {{if .IsEdit}}(留空则保留原凭证){{else}}*{{end}}</label>
                   <textarea name="session_token" rows="4"
                     placeholder='粘贴 __Secure-next-auth.session-token cookie 值，&#10;或 {"accessToken":"...","refreshToken":"...","account":{...}} JSON'
-                  >{{.Account.SessionToken}}</textarea></div>
+                  >{{.SessionToken}}</textarea></div>
               </div>
 
               <div class="form-section">

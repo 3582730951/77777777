@@ -25,13 +25,14 @@ func (s *Server) handleAccountForm(w http.ResponseWriter, r *http.Request) {
 	tenants, _ := s.deps.Store.ListDynTenants(r.Context())
 	yamlGroups := s.deps.Cfg.Groups
 	s.render(w, r, "account_form.html", map[string]any{
-		"Active":      "accounts",
-		"Title":       "添加账号",
-		"Account":     &domain.Account{Provider: "chatgpt", PlanTier: "plus"},
-		"Groups":      groups,
-		"YamlGroups":  yamlGroups,
-		"Tenants":     tenants,
-		"YamlTenants": s.deps.Cfg.Tenants,
+		"Active":       "accounts",
+		"Title":        "添加账号",
+		"Account":      &domain.Account{Provider: "chatgpt", PlanTier: "plus"},
+		"Groups":       groups,
+		"YamlGroups":   yamlGroups,
+		"Tenants":      tenants,
+		"SessionToken": "",
+		"YamlTenants":  s.deps.Cfg.Tenants,
 	})
 }
 
@@ -639,13 +640,14 @@ func (s *Server) handleAccountEditForm(w http.ResponseWriter, r *http.Request) {
 	}
 	tenants, _ := s.deps.Store.ListDynTenants(r.Context())
 	s.render(w, r, "account_form.html", map[string]any{
-		"Active":      "accounts",
-		"Title":       "编辑账号 · " + id,
-		"Account":     a,
-		"Tenants":     tenants,
-		"YamlTenants": s.deps.Cfg.Tenants,
-		"FormAction":  "/accounts/" + url.PathEscape(id) + "/edit",
-		"IsEdit":      true,
+		"Active":       "accounts",
+		"Title":        "编辑账号 · " + id,
+		"Account":      a,
+		"Tenants":      tenants,
+		"YamlTenants":  s.deps.Cfg.Tenants,
+		"FormAction":   "/accounts/" + url.PathEscape(id) + "/edit",
+		"IsEdit":       true,
+		"SessionToken": "",
 	})
 }
 
@@ -668,7 +670,11 @@ func (s *Server) handleAccountEditPost(w http.ResponseWriter, r *http.Request) {
 	a.UA = r.FormValue("ua")
 	a.Proxy = r.FormValue("proxy")
 	a.UpdatedAt = time.Now()
-	sec := store.AccountSecret{}
+	sec, err := s.deps.Store.GetAccountSecret(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	if st := r.FormValue("session_token"); st != "" {
 		sec.SessionToken = st
 	}
