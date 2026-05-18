@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +85,274 @@ func TestRefreshCredentialPersistsRefreshedSession(t *testing.T) {
 	}
 	if acc.Email != "user@example.com" {
 		t.Fatalf("account email = %q, want user@example.com", acc.Email)
+	}
+}
+
+func TestRefreshCredentialPrefersSessionRefreshTokenOverStaleSecret(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	sessionWithCurrentRefresh := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-current",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-old",
+	})
+	acc := &domain.Account{
+		ID:       "acc-stale-secret",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: sessionWithCurrentRefresh,
+		RefreshToken: "rt-stale",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-current" {
+			t.Fatalf("refresh token = %q, want rt-current", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential: %v", err)
+	}
+
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
+func TestRefreshCredentialSerializesConcurrentRefresh(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	oldSession := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-old",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-old",
+	})
+	acc := &domain.Account{
+		ID:       "acc-concurrent",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: oldSession,
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	var calls atomic.Int32
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		calls.Add(1)
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		time.Sleep(50 * time.Millisecond)
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- p.RefreshCredential(ctx, acc)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("refresh credential: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
+func TestRefreshCredentialUsesStoredRotatedSessionOverStaleCache(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	staleAccess := testJWTExp(time.Now().Add(30 * time.Minute))
+	currentAccess := testJWTExp(time.Now().Add(time.Hour))
+	currentSession := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  currentAccess,
+		RefreshToken: "rt-current",
+		Expires:      time.Now().Add(time.Hour),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-current",
+	})
+	acc := &domain.Account{
+		ID:       "acc-stale-cache-valid",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: currentSession,
+		RefreshToken: "rt-current",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.resolver.cache.Store(acc.ID, sessionInfo{
+		AccessToken:  staleAccess,
+		RefreshToken: "rt-used",
+		Expires:      time.Now().Add(30 * time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-stale",
+	})
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		t.Fatalf("refresh should not be called for a valid stored session; got %q", refreshToken)
+		return "", "", "", 0, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential: %v", err)
+	}
+
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-current" {
+		t.Fatalf("stored refresh token = %q, want rt-current", sec.RefreshToken)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != currentAccess {
+		t.Fatalf("stored access token was overwritten from stale cache")
+	}
+	if parsed.RefreshToken != "rt-current" {
+		t.Fatalf("stored session refresh token = %q, want rt-current", parsed.RefreshToken)
+	}
+}
+
+func TestRefreshCredentialSkipsStaleCachedRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	currentSession := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-current",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-current",
+	})
+	acc := &domain.Account{
+		ID:       "acc-stale-cache-expired",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: currentSession,
+		RefreshToken: "rt-current",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.resolver.cache.Store(acc.ID, sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-used",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-stale",
+	})
+	var calls atomic.Int32
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		calls.Add(1)
+		if refreshToken != "rt-current" {
+			t.Fatalf("refresh token = %q, want rt-current", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
 	}
 }
 

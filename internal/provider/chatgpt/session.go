@@ -59,8 +59,23 @@ func newSessionResolver() *sessionResolver {
 // secret can be either the JSON session blob (Format 1) or the raw next-auth
 // cookie (Format 2). accountID is just a cache key; pass any stable string.
 func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refreshToken, ua string) (sessionInfo, error) {
+	currentRefreshToken := chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(secret), strings.TrimSpace(refreshToken))
 	if cached, ok := r.cache.Load(accountID); ok {
 		if info, ok := cached.(sessionInfo); ok && time.Until(info.Expires) > 2*time.Minute {
+			if currentRefreshToken != "" && currentRefreshToken != info.RefreshToken {
+				if fresh, ok := parseStoredSessionSecret(secret, refreshToken); ok && time.Until(fresh.Expires) > 2*time.Minute {
+					log.Printf("[chatgpt-session] account=%s cache bypassed; store has rotated session", accountID)
+					r.cache.Store(accountID, fresh)
+					return fresh, nil
+				}
+				// Another process/request may have already rotated and persisted the
+				// refresh token. Keep serving the still-valid access token, but update
+				// the in-memory refresh token so the next refresh does not reuse the old
+				// one.
+				log.Printf("[chatgpt-session] account=%s cache hit with newer stored refresh token", accountID)
+				info.RefreshToken = currentRefreshToken
+				r.cache.Store(accountID, info)
+			}
 			log.Printf("[chatgpt-session] account=%s cache hit, expires=%v, access_token_len=%d", accountID, info.Expires, len(info.AccessToken))
 			return info, nil
 		}
@@ -68,10 +83,15 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 	// Try refresh first if we have a refresh_token from a previous fetch.
 	if cached, ok := r.cache.Load(accountID); ok && r.refreshFn != nil {
 		if info, ok := cached.(sessionInfo); ok && info.RefreshToken != "" {
-			updated, err := r.refresh(ctx, info)
-			if err == nil {
-				r.cache.Store(accountID, updated)
-				return updated, nil
+			if currentRefreshToken != "" && currentRefreshToken != info.RefreshToken {
+				log.Printf("[chatgpt-session] account=%s skip stale cached refresh token; stored token rotated", accountID)
+				r.cache.Delete(accountID)
+			} else {
+				updated, err := r.refresh(ctx, info)
+				if err == nil {
+					r.cache.Store(accountID, updated)
+					return updated, nil
+				}
 			}
 		}
 	}
@@ -96,7 +116,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 		log.Printf("[chatgpt-session] account=%s fetchFresh error: %v", accountID, err)
 		return sessionInfo{}, err
 	}
-	if refreshToken != "" {
+	if refreshToken != "" && info.RefreshToken == "" {
 		info.RefreshToken = refreshToken
 	}
 	log.Printf("[chatgpt-session] account=%s fetchFresh ok: access_token_len=%d, account_id=%q, plan=%q, expires=%v",
@@ -125,9 +145,27 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 	return info, nil
 }
 
+func parseStoredSessionSecret(secret, fallbackRefreshToken string) (sessionInfo, bool) {
+	trimmed := strings.TrimSpace(secret)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
+		return sessionInfo{}, false
+	}
+	info, err := parseSessionJSON([]byte(trimmed))
+	if err != nil {
+		return sessionInfo{}, false
+	}
+	if info.RefreshToken == "" {
+		info.RefreshToken = strings.TrimSpace(fallbackRefreshToken)
+	}
+	return info, true
+}
+
 func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo) (sessionInfo, error) {
 	if r.refreshFn == nil {
 		return sessionInfo{}, errors.New("refresh callback not configured")
+	}
+	if strings.TrimSpace(info.RefreshToken) == "" {
+		return sessionInfo{}, errors.New("empty refresh_token")
 	}
 	newAccess, newRefresh, idTok, expIn, err := r.refreshFn(ctx, info.RefreshToken)
 	if err != nil {

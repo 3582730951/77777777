@@ -549,13 +549,19 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		a.StealthProfile = req.StealthProfile
 	}
 	a.UpdatedAt = time.Now()
-	sec := store.AccountSecret{}
-	if req.SessionToken != "" || req.Cookies != "" {
-		sec = store.AccountSecret{
-			Cookies:      []byte(req.Cookies),
-			SessionToken: req.SessionToken,
-			RefreshToken: req.RefreshToken,
-		}
+	sec, err := s.deps.Store.GetAccountSecret(r.Context(), id)
+	if err != nil {
+		errJSON(w, 500, err.Error())
+		return
+	}
+	if req.SessionToken != "" {
+		sec.SessionToken = req.SessionToken
+	}
+	if req.Cookies != "" {
+		sec.Cookies = []byte(req.Cookies)
+	}
+	if req.RefreshToken != "" {
+		sec.RefreshToken = req.RefreshToken
 	}
 	if err := s.deps.Store.UpsertAccount(r.Context(), a, sec); err != nil {
 		errJSON(w, 500, err.Error())

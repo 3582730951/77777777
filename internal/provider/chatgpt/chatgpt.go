@@ -20,9 +20,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/llm-pool/gateway/internal/domain"
 	"github.com/llm-pool/gateway/internal/protocol/ir"
@@ -41,6 +43,14 @@ type Provider struct {
 	store      *store.Store
 	resolver   *sessionResolver
 	httpClient *http.Client
+	mu         sync.Mutex
+	resolves   map[string]*sessionResolveCall
+}
+
+type sessionResolveCall struct {
+	done chan struct{}
+	info sessionInfo
+	err  error
 }
 
 // SetStore wires the credential store. Required for ModeReal; harmless in mock.
@@ -83,14 +93,133 @@ func New(mode string) *Provider {
 func (p *Provider) Name() string { return "chatgpt" }
 
 func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	if acc == nil {
+		return sessionInfo{}, errors.New("nil account")
+	}
+	p.mu.Lock()
+	if p.resolves == nil {
+		p.resolves = make(map[string]*sessionResolveCall)
+	}
+	if call, ok := p.resolves[acc.ID]; ok {
+		done := call.done
+		p.mu.Unlock()
+		select {
+		case <-done:
+			return call.info, call.err
+		case <-ctx.Done():
+			return sessionInfo{}, ctx.Err()
+		}
+	}
+	call := &sessionResolveCall{done: make(chan struct{})}
+	p.resolves[acc.ID] = call
+	p.mu.Unlock()
+
+	call.info, call.err = p.resolveSessionOnce(ctx, acc, sec)
+
+	p.mu.Lock()
+	delete(p.resolves, acc.ID)
+	close(call.done)
+	p.mu.Unlock()
+
+	return call.info, call.err
+}
+
+func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	if p.store != nil {
+		if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
+			sec = fresh
+		}
+	}
 	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA)
 	if err != nil {
+		if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
+			return recovered, nil
+		}
 		return sessionInfo{}, err
 	}
 	if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
-		log.Printf("[chatgpt-session] account=%s persist refreshed session: %v", acc.ID, err)
+		return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
 	}
 	return info, nil
+}
+
+func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.Account, used store.AccountSecret, refreshErr error) (sessionInfo, bool) {
+	if p.store == nil || !isChatGPTRefreshReuseError(refreshErr) {
+		return sessionInfo{}, false
+	}
+	latest, err := p.store.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		return sessionInfo{}, false
+	}
+	if !chatGPTRefreshTokenChanged(used, latest) {
+		return sessionInfo{}, false
+	}
+	info, err := p.resolver.Resolve(ctx, acc.ID, latest.SessionToken, latest.RefreshToken, acc.UA)
+	if err != nil {
+		return sessionInfo{}, false
+	}
+	if err := p.persistResolvedSession(ctx, acc, latest, info); err != nil {
+		log.Printf("[chatgpt-session] account=%s persist race-recovered session: %v", acc.ID, err)
+	}
+	return info, true
+}
+
+func isChatGPTRefreshReuseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "refresh token has already been used") ||
+		strings.Contains(s, "already been used to generate") ||
+		strings.Contains(s, "refresh_token_reused") ||
+		strings.Contains(s, "invalid_grant")
+}
+
+func chatGPTRefreshTokenChanged(oldSec, newSec store.AccountSecret) bool {
+	oldSessionToken := chatGPTRefreshTokenFromSession(oldSec.SessionToken)
+	newSessionToken := chatGPTRefreshTokenFromSession(newSec.SessionToken)
+	if oldSessionToken != "" && newSessionToken != "" && oldSessionToken != newSessionToken {
+		return true
+	}
+	oldTopLevel := strings.TrimSpace(oldSec.RefreshToken)
+	newTopLevel := strings.TrimSpace(newSec.RefreshToken)
+	if oldTopLevel != "" && newTopLevel != "" && oldTopLevel != newTopLevel {
+		return true
+	}
+	oldToken := chatGPTPreferredRefreshToken(oldSessionToken, oldTopLevel)
+	newToken := chatGPTPreferredRefreshToken(newSessionToken, newTopLevel)
+	return oldToken != "" && newToken != "" && oldToken != newToken
+}
+
+func chatGPTRefreshTokenFromSecret(sec store.AccountSecret) string {
+	return chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(sec.SessionToken), strings.TrimSpace(sec.RefreshToken))
+}
+
+func chatGPTRefreshTokenFromSession(sessionToken string) string {
+	trimmed := strings.TrimSpace(sessionToken)
+	if info, err := parseSessionJSON([]byte(trimmed)); err == nil {
+		return strings.TrimSpace(info.RefreshToken)
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var raw struct {
+			RefreshToken string `json:"refreshToken"`
+			SnakeRefresh string `json:"refresh_token"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+			if raw.RefreshToken != "" {
+				return strings.TrimSpace(raw.RefreshToken)
+			}
+			return strings.TrimSpace(raw.SnakeRefresh)
+		}
+	}
+	return ""
+}
+
+func chatGPTPreferredRefreshToken(sessionToken, topLevelToken string) string {
+	if sessionToken != "" {
+		return sessionToken
+	}
+	return topLevelToken
 }
 
 func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret, info sessionInfo) error {
@@ -784,6 +913,7 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	if ua == "" {
 		ua = "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
 	}
+	body = normalizeCodexRawResponsesBody(body)
 
 	httpReq, err := http.NewRequestWithContext(rctx, "POST",
 		"https://chatgpt.com/backend-api/codex/responses",
@@ -922,6 +1052,9 @@ func buildResponsesBody(req *ir.Request, model string) ([]byte, error) {
 	if len(tools) > 0 {
 		body["tools"] = tools
 	}
+	if tier := normalizeCodexServiceTier(req.ServiceTier); tier != "" {
+		body["service_tier"] = tier
+	}
 	// Codex Responses API does NOT support max_output_tokens — omit.
 	return json.Marshal(body)
 }
@@ -949,8 +1082,8 @@ func mapToCodexModelSlug(m string) string {
 // pickReasoningEffort maps the IR reasoning effort to the Codex Responses API
 // "effort" field. Codex supports: low | medium | high | xhigh (highest).
 func pickReasoningEffort(req *ir.Request) string {
-	switch strings.ToLower(req.ReasoningEffort) {
-	case "low", "minimal":
+	switch strings.ToLower(strings.TrimSpace(req.ReasoningEffort)) {
+	case "low", "minimal", "none":
 		return "low"
 	case "medium", "normal":
 		return "medium"
@@ -959,9 +1092,34 @@ func pickReasoningEffort(req *ir.Request) string {
 	case "xhigh", "max", "maximum":
 		return "xhigh"
 	case "auto", "":
-		return "high"
+		return "xhigh"
 	}
-	return "high"
+	return "xhigh"
+}
+
+func normalizeCodexServiceTier(tier string) string {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "priority", "fast":
+		return "priority"
+	default:
+		return ""
+	}
+}
+
+func normalizeCodexRawResponsesBody(body []byte) []byte {
+	tier := gjson.GetBytes(body, "service_tier")
+	if !tier.Exists() || tier.Type != gjson.String {
+		return body
+	}
+	normalized := normalizeCodexServiceTier(tier.String())
+	if normalized == "" || normalized == tier.String() {
+		return body
+	}
+	next, err := sjson.SetBytes(body, "service_tier", normalized)
+	if err != nil {
+		return body
+	}
+	return next
 }
 
 // buildConversationBody renders an IR request into the JSON ChatGPT expects.
