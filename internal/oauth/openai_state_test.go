@@ -49,6 +49,45 @@ func TestRelayCallbackURLCopiesCallbackQuery(t *testing.T) {
 	}
 }
 
+func TestCodexStartBuildsCPACompatibleAuthorizeURL(t *testing.T) {
+	m := New()
+	p, authURL, err := m.StartWithRelayBase(ProviderCodex, "default", "", "https://admin.example.com")
+	if err != nil {
+		t.Fatalf("start codex oauth: %v", err)
+	}
+	if p.Provider != ProviderCodex {
+		t.Fatalf("provider = %s", p.Provider)
+	}
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parse auth url: %v", err)
+	}
+	if got := u.Scheme + "://" + u.Host + u.Path; got != CodexConfig.AuthorizeURL {
+		t.Fatalf("authorize target = %q", got)
+	}
+	q := u.Query()
+	for key, want := range map[string]string{
+		"client_id":                  CodexConfig.ClientID,
+		"response_type":              "code",
+		"redirect_uri":               CodexConfig.RedirectURI,
+		"scope":                      "openid email profile offline_access",
+		"code_challenge_method":      "S256",
+		"prompt":                     "login",
+		"id_token_add_organizations": "true",
+		"codex_cli_simplified_flow":  "true",
+	} {
+		if got := q.Get(key); got != want {
+			t.Fatalf("%s = %q, want %q; url=%s", key, got, want, authURL)
+		}
+	}
+	if q.Get("code_challenge") == "" {
+		t.Fatalf("missing code_challenge: %s", authURL)
+	}
+	if _, ok := RelayBaseFromState(ProviderCodex, q.Get("state")); !ok {
+		t.Fatalf("codex state should carry relay base as hex: %q", q.Get("state"))
+	}
+}
+
 func TestKiroStartBuildsOIDCAuthorizeURL(t *testing.T) {
 	oldRegister := registerKiroOIDCClient
 	registerKiroOIDCClient = func(ctx context.Context, region, redirectURI string) (string, string, error) {

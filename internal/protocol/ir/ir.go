@@ -78,6 +78,7 @@ type Request struct {
 	TopP        *float64
 	MaxTokens   int
 	Stream      bool
+	ServiceTier string
 
 	ReasoningEffort  string
 	ThinkingTokens   int

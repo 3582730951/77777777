@@ -25,6 +25,7 @@ type chatRequest struct {
 	TopP        *float64    `json:"top_p,omitempty"`
 	MaxTokens   int         `json:"max_tokens,omitempty"`
 	Stream      bool        `json:"stream,omitempty"`
+	ServiceTier string      `json:"service_tier,omitempty"`
 	Tools       []chatTool  `json:"tools,omitempty"`
 	ToolChoice  any         `json:"tool_choice,omitempty"`
 	ReasoningEffort string  `json:"reasoning_effort,omitempty"`
@@ -75,6 +76,7 @@ func DecodeBytes(body []byte) (*ir.Request, error) {
 	stream  := gjson.GetBytes(body, "stream").Bool()
 	maxTok  := int(gjson.GetBytes(body, "max_tokens").Int())
 	reason  := gjson.GetBytes(body, "reasoning_effort").String()
+	serviceTier := gjson.GetBytes(body, "service_tier").String()
 	var temp, topP *float64
 	if t := gjson.GetBytes(body, "temperature"); t.Exists() {
 		v := t.Float(); temp = &v
@@ -95,6 +97,7 @@ func DecodeBytes(body []byte) (*ir.Request, error) {
 		MaxTokens:       maxTok,
 		Temperature:     temp,
 		TopP:            topP,
+		ServiceTier:     serviceTier,
 		ReasoningEffort: reason,
 		OriginalModel:   model,
 		OriginalProto:   "openai",

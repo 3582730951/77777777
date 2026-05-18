@@ -51,9 +51,13 @@ var CodexConfig = ProviderConfig{
 	RedirectURI:  "http://localhost:1455/auth/callback",
 	CallbackPort: 1455,
 	CallbackPath: "/auth/callback",
-	// scope order matches sub2api: openid profile email offline_access
-	Scope: "openid profile email offline_access",
+	// Scope order follows CPA's Codex login URL; refresh keeps sub2api's
+	// "openid profile email" order in RefreshCodex below.
+	Scope: "openid email profile offline_access",
 	ExtraParams: map[string]string{
+		// CPA's Codex OAuth flow sends prompt=login. Keeping it here prevents
+		// stale browser sessions from silently authorizing the wrong account.
+		"prompt":                     "login",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
 	},
