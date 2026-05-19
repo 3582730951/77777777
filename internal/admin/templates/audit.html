@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>审计日志 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -17,27 +17,66 @@
       </div>
     </header>
     <div class="content">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title flex items-center gap-8">
-            实时日志流
-            <span class="flex items-center gap-4 tiny muted"><span class="spin"></span>SSE</span>
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Audit console</div>
+          <h1 class="hero-title">事件流与历史追踪</h1>
+          <p class="hero-subtitle">先看实时流确认当前是否还有异常，再用历史记录过滤账号、级别和关键词，定位可复现的操作路径。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>Live</b><span>SSE 实时流</span></div>
+          <div class="hero-metric"><b>{{len .Entries}}</b><span>当前页记录</span></div>
+          <div class="hero-metric"><b>{{if .HasMore}}更多{{else}}到底{{end}}</b><span>历史分页</span></div>
+        </div>
+      </section>
+
+      {{$infoCount := fieldEqCount .Entries "Level" "info"}}
+      {{$warnCount := fieldEqCount .Entries "Level" "warn"}}
+      {{$errorCount := fieldEqCount .Entries "Level" "error"}}
+      {{$entryCount := len .Entries}}
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">事件温度 <span>Severity</span></div>
+          <div class="viz-value">{{if $errorCount}}{{$errorCount}} 错误{{else if $warnCount}}{{$warnCount}} 警告{{else}}稳定{{end}}</div>
+          <div class="viz-severity" style="--info-p:{{percent $infoCount $entryCount}}%;--warn-p:{{percent $warnCount $entryCount}}%;--error-p:{{percent $errorCount $entryCount}}%">
+            <i></i><i></i><i></i>
           </div>
-          <div class="flex gap-4" style="flex-wrap:wrap">
-            <span class="filter-chip active" onclick="filterLive('all',this)">全部</span>
-            <span class="filter-chip" onclick="filterLive('info',this)">Info</span>
-            <span class="filter-chip" onclick="filterLive('warn',this)">Warn</span>
-            <span class="filter-chip" onclick="filterLive('error',this)">Error</span>
+          <div class="viz-mini-stack">
+            <div class="viz-mini"><span>Info</span><b>{{$infoCount}}</b></div>
+            <div class="viz-mini"><span>Warn</span><b>{{$warnCount}}</b></div>
+            <div class="viz-mini"><span>Error</span><b>{{$errorCount}}</b></div>
           </div>
         </div>
-        <div class="card-body" style="padding:0 20px 16px">
-          <div id="audit-live" class="audit-log" style="max-height:400px"></div>
+        <div class="viz-card">
+          <div class="viz-title">定位路径 <span>Trace</span></div>
+          <div class="viz-flow">
+            <div class="viz-node"><span>时间</span><b>Timeline</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>对象</span><b>Account</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>结论</span><b>Action</b></div>
+          </div>
+          <div class="viz-caption">把日志作为调查路径，而不是一组孤立文本。</div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-ring-row">
+            <div class="viz-ring" style="--p:{{percent $entryCount 100}}"><b>{{$entryCount}}</b></div>
+            <div>
+              <div class="viz-title">历史密度</div>
+              <div class="viz-value">{{$entryCount}}</div>
+              <div class="viz-caption">{{if .HasMore}}还有更多历史记录可继续加载。{{else}}当前筛选已到末尾。{{end}}</div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="audit-focus-grid">
+      <div class="card history-card work-surface">
         <div class="card-header">
-          <div class="card-title">历史记录</div>
+          <div>
+            <div class="card-title">历史记录</div>
+            <div class="tiny muted">按关键词、级别和账号定位可复现路径</div>
+          </div>
           <form method="get" action="/audit" class="flex gap-8 items-center">
             <input type="text" name="q" value="{{.Q}}" placeholder="过滤关键词" style="width:180px"/>
             <select name="level">
@@ -58,7 +97,7 @@
             {{range .Entries}}
               <tr>
                 <td class="tiny mono muted">{{.At.Format "01-02 15:04:05"}}</td>
-                <td><span class="badge {{if eq .Level "error"}}err{{else if eq .Level "warn"}}warn{{else}}blue{{end}}">{{.Level}}</span></td>
+                <td><span class="level-dot {{.Level}}">{{.Level}}</span></td>
                 <td class="tiny muted">{{.Category}}</td>
                 <td class="tiny mono">{{or .AccountID "—"}}</td>
                 <td class="small">{{.Message}}</td>
@@ -79,11 +118,29 @@
         </div>
         {{end}}
       </div>
+
+      <div class="card live-card">
+        <div class="card-header">
+          <div class="card-title flex items-center gap-8">
+            实时流
+            <span class="flex items-center gap-4 tiny muted"><span class="spin"></span>SSE</span>
+          </div>
+          <div class="flex gap-4" style="flex-wrap:wrap">
+            <button type="button" class="filter-chip active" onclick="filterLive('all',this)">全部</button>
+            <button type="button" class="filter-chip" onclick="filterLive('info',this)">Info</button>
+            <button type="button" class="filter-chip" onclick="filterLive('warn',this)">Warn</button>
+            <button type="button" class="filter-chip" onclick="filterLive('error',this)">Error</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:0 20px 16px">
+          <div id="audit-live" class="audit-log"></div>
+        </div>
+      </div>
+      </div>
     </div>
   </main>
 </div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 let _liveFilter='all';
 const sse=new EventSource('/api/admin/audit/stream');
 sse.onmessage=(e)=>{try{appendAuditLive(JSON.parse(e.data))}catch{}};
@@ -91,13 +148,23 @@ function appendAuditLive(e){
   const el=document.getElementById('audit-live');
   if(!el)return;
   const row=document.createElement('div');
-  const lvl=e.level||'info';
+  let lvl=e.level||'info';
+  if(lvl!=='info'&&lvl!=='warn'&&lvl!=='error')lvl='info';
   row.className='audit-row';
   row.dataset.level=lvl;
   if(_liveFilter!=='all'&&lvl!==_liveFilter)row.style.display='none';
   const ts=new Date(e.at||Date.now());
   const hms=ts.toTimeString().slice(0,8);
-  row.innerHTML=`<span class="a-ts">${hms}</span><span class="a-lvl ${lvl}">${lvl}</span><span class="a-msg">${e.message||''}</span>`;
+  const tsEl=document.createElement('span');
+  tsEl.className='a-ts';
+  tsEl.textContent=hms;
+  const lvlEl=document.createElement('span');
+  lvlEl.className='a-lvl '+lvl;
+  lvlEl.textContent=lvl;
+  const msgEl=document.createElement('span');
+  msgEl.className='a-msg';
+  msgEl.textContent=e.message||'';
+  row.append(tsEl,lvlEl,msgEl);
   el.prepend(row);
   while(el.children.length>200)el.lastChild.remove();
 }

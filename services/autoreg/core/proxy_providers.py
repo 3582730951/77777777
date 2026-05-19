@@ -12,9 +12,29 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
-import requests
-
 logger = logging.getLogger(__name__)
+
+
+class _RequestsProxy:
+    """Lazy requests proxy so parser-only tools can run without HTTP deps."""
+
+    def get(self, *args, **kwargs):
+        import requests as _requests
+
+        return _requests.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        import requests as _requests
+
+        return _requests.post(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        import requests as _requests
+
+        return getattr(_requests, name)
+
+
+requests = _RequestsProxy()
 
 
 class BaseProxyProvider(ABC):
@@ -33,6 +53,7 @@ class BaseProxyProvider(ABC):
 # ---------------------------------------------------------------------------
 _LAZY_IMPORTS = {
     "ApiExtractProvider": "providers.proxy.api_extract",
+    "KookeeyProxyProvider": "providers.proxy.kookeey",
     "RotatingProxyProvider": "providers.proxy.rotating_gateway",
 }
 
@@ -62,6 +83,19 @@ def create_proxy_provider(provider_key: str, config: dict) -> BaseProxyProvider:
             protocol=config.get("proxy_protocol", "http"),
             username=config.get("proxy_username", ""),
             password=config.get("proxy_password", ""),
+        )
+
+    if provider_key in {"kookeey", "kookeey_dynamic"}:
+        api_url = config.get("kookeey_api_url") or config.get("proxy_api_url", "")
+        if not api_url:
+            raise RuntimeError("Kookeey 动态代理未配置 API URL")
+        provider_cls = __getattr__("KookeeyProxyProvider")
+        return provider_cls(
+            api_url=api_url,
+            protocol=config.get("proxy_protocol", "auto"),
+            username=config.get("proxy_username", ""),
+            password=config.get("proxy_password", ""),
+            timeout=int(config.get("proxy_timeout", 10) or 10),
         )
 
     if provider_key == "rotating_gateway":

@@ -175,6 +175,17 @@ class WindsurfPlatform(BasePlatform):
 
         return get_windsurf_desktop_state()
 
+    def _execute_platform_action(self, action_id: str, account: Account, params: dict) -> dict:
+        aliases = {
+            "generate_trial_link": self._handle_generate_link,
+            "payment_link": self._handle_generate_link,
+            "payment_link_browser": self._handle_generate_link_browser,
+        }
+        handler = aliases.get(action_id)
+        if handler:
+            return handler(account, params)
+        return super()._execute_platform_action(action_id, account, params)
+
     def _handle_switch_desktop(self, account: Account, params: dict) -> dict:
         """
         Handle switch_desktop capability for Windsurf.
@@ -312,13 +323,26 @@ class WindsurfPlatform(BasePlatform):
             self.log(f"Windsurf trial eligibility check failed, continuing with link generation: {exc}")
 
         refreshed_auth: dict[str, str] = {}
+        def _subscribe(session_token: str, *, account_id: str, org_id: str, auth_token: str) -> dict[str, str]:
+            kwargs = {
+                "account_id": account_id,
+                "org_id": org_id,
+                "turnstile_token": turnstile_token,
+            }
+            if auth_token:
+                try:
+                    return client.subscribe_to_plan(session_token, auth1_token=auth_token, **kwargs)
+                except TypeError as exc:
+                    if "auth1_token" not in str(exc):
+                        raise
+            return client.subscribe_to_plan(session_token, **kwargs)
+
         try:
-            checkout = client.subscribe_to_plan(
+            checkout = _subscribe(
                 context["session_token"],
                 account_id=context["account_id"],
                 org_id=context["org_id"],
-                auth1_token=context.get("auth_token", ""),
-                turnstile_token=turnstile_token,
+                auth_token=context.get("auth_token", ""),
             )
         except RuntimeError as exc:
             if "HTTP 401" not in str(exc):
@@ -342,12 +366,11 @@ class WindsurfPlatform(BasePlatform):
                     self.log(f"Password login also failed: {login_exc}")
             if not refreshed_auth.get("session_token"):
                 raise RuntimeError(f"Windsurf session refresh failed, original error: {exc}") from exc
-            checkout = client.subscribe_to_plan(
+            checkout = _subscribe(
                 refreshed_auth["session_token"],
                 account_id=refreshed_auth.get("account_id", "") or context["account_id"],
                 org_id=refreshed_auth.get("org_id", "") or context["org_id"],
-                auth1_token=refreshed_auth.get("auth_token", "") or context.get("auth_token", ""),
-                turnstile_token=turnstile_token,
+                auth_token=refreshed_auth.get("auth_token", "") or context.get("auth_token", ""),
             )
         checkout_url = str(checkout.get("checkout_url") or "").strip()
         payment_channel = "checkout"

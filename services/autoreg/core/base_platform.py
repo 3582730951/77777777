@@ -196,9 +196,9 @@ class BasePlatform(ABC):
         # Try to handle as standard capability first
         if action_id in self.capabilities:
             return self._handle_capability(action_id, account, params)
-        
+
         # Fallback to platform-specific implementation
-        raise NotImplementedError(f"Platform {self.name} does not support action: {action_id}")
+        return self._execute_platform_action(action_id, account, params)
     
     def _handle_capability(self, capability_id: str, account: Account, params: dict) -> dict:
         """Handle standard capabilities with default implementations."""

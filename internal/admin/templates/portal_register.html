@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>用户注册 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto mesh-bg">
 <div class="login-wrap">
@@ -17,25 +17,25 @@
     {{if .Error}}<div class="alert alert-err w-full small">{{.Error}}</div>{{end}}
     <form method="post" action="/portal/register" class="login-form">
       <div class="field">
-        <label>用户名</label>
-        <input type="text" name="username" value="{{.Username}}"
+        <label for="portal-register-username">用户名</label>
+        <input id="portal-register-username" type="text" name="username" value="{{.Username}}"
           placeholder="3-32 个字符" autocomplete="username" autofocus required minlength="3"/>
       </div>
       <div class="field">
-        <label>密码</label>
-        <input type="password" name="password"
+        <label for="portal-register-password">密码</label>
+        <input id="portal-register-password" type="password" name="password"
           placeholder="至少 6 个字符" autocomplete="new-password" required minlength="6"/>
       </div>
       <div class="field">
-        <label>确认密码</label>
-        <input type="password" name="confirm"
+        <label for="portal-register-confirm">确认密码</label>
+        <input id="portal-register-confirm" type="password" name="confirm"
           placeholder="再次输入密码" autocomplete="new-password" required/>
       </div>
       <div class="field" id="invite-field" style="display:none">
-        <label>邀请码</label>
-        <input type="text" name="invite_code" placeholder="管理员提供的邀请码"/>
+        <label for="portal-register-invite">邀请码</label>
+        <input id="portal-register-invite" type="text" name="invite_code" placeholder="管理员提供的邀请码"/>
       </div>
-      <button class="btn primary lg w-full" style="margin-top:4px">注册</button>
+      <button type="submit" class="btn primary lg w-full" style="margin-top:4px">注册</button>
     </form>
     <div class="divider" style="margin:8px 0"></div>
     <div class="tiny muted" style="text-align:center">

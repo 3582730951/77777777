@@ -12,8 +12,8 @@ server:
   max_header_bytes: 1048576
   max_request_bytes: 536870912
   request_body_memory_budget: 536870912
-  network_ingress_bytes_per_sec: 8388608
-  network_egress_bytes_per_sec: 4194304
+  network_ingress_bytes_per_sec: 8388608  # set 0 to disable byte-rate shaping
+  network_egress_bytes_per_sec: 4194304   # set 0 to disable downstream byte-rate shaping
   network_burst_bytes: 1048576
   rate_limit_rpm: 300
   rate_limit_burst: 60
@@ -275,6 +275,8 @@ token_optimizer:
 stealth:
   default_tls_profile: "chrome_124_windows"
   warmup_on_first_use: true
+  identity_rewrite: true
+  identity_path: "data/identity_bundle.json"
   max_rps_per_persona: 0.5
   jitter_percent: 20
 

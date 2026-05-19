@@ -3175,63 +3175,26 @@ class ChatGPTBrowserRegister:
                 _time.sleep(1)
             _time.sleep(2)  # 等 cookie 写入
 
-            # 在注册浏览器中直接访问 chatgpt.com 获取 accessToken
-            self.log("在注册浏览器中访问 chatgpt.com 获取 accessToken...")
-            access_token = ""
-            session_token = ""
-            import time as _time
-            try:
-                page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=30000)
-                # 等待页面完全加载（可能需要自动登录跳转）
-                for _ in range(15):
-                    url = page.url
-                    if "chatgpt.com" in url and "auth" not in url and "error" not in url:
-                        break
-                    _time.sleep(2)
-                _time.sleep(3)
-                self.log(f"chatgpt.com 当前 URL: {page.url[:80]}")
-
-                # 在页面内 fetch session（浏览器身份，绕过 bot 检测）
-                session_data = page.evaluate("""
-                    async () => {
-                        try {
-                            const r = await fetch('/api/auth/session', {credentials: 'include'});
-                            return await r.text();
-                        } catch(e) { return '{"error":"' + e.message + '"}'; }
-                    }
-                """)
-                import json as _json
-                parsed = _json.loads(session_data or "{}")
-                access_token = parsed.get("accessToken", "")
-                if access_token:
-                    self.log(f"accessToken 获取成功 (len={len(access_token)})")
-                else:
-                    self.log(f"session 返回: {list(parsed.keys())}")
-            except Exception as e:
-                self.log(f"获取 accessToken 失败: {e}")
-
-            # 获取 cookies
             cookies_dict = _get_cookies(page)
-            session_token = (
-                cookies_dict.get("__Secure-next-auth.session-token", "")
-                or cookies_dict.get("__Secure-authjs.session-token", "")
-                or cookies_dict.get("next-auth.session-token", "")
-                or cookies_dict.get("authjs.session-token", "")
+            result = _do_codex_oauth(
+                page,
+                cookies_dict,
+                email,
+                password,
+                self.otp_callback,
+                self.phone_callback,
+                self.proxy,
+                self.log,
             )
-            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
-            account_id = cookies_dict.get("_account", "")
-            self.log(f"注册完成，access_token={'yes' if access_token else 'no'}, session_token={'yes' if session_token else 'no'}, cookies={len(cookies_dict)}")
-        return {
-            "email": email, "password": password,
-            "account_id": account_id,
-            "access_token": access_token,
-            "refresh_token": "",
-            "id_token": "",
-            "session_token": session_token,
-            "workspace_id": "",
-            "cookies": cookie_str,
-            "profile": {},
-        }
+            if not result:
+                result = self._retry_oauth_fresh_browser(email, password)
+            if not result:
+                raise RuntimeError("已拒绝回退到 session access_token: 未获取完整 OAuth callback")
+            result.setdefault("email", email)
+            result.setdefault("password", password)
+            result.setdefault("cookies", "; ".join([f"{k}={v}" for k, v in cookies_dict.items()]))
+            result.setdefault("profile", {})
+            return result
 
     def _retry_oauth_fresh_browser(self, email, password):
         """在全新浏览器 context 里做 Codex OAuth（绕过 add_phone session）。"""

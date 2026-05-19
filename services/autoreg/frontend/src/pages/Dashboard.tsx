@@ -7,9 +7,9 @@ import { Users, CheckCircle, Clock, XCircle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 const PLATFORM_COLORS: Record<string, string> = {
-  trae: 'text-blue-400',
-  tavily: 'text-purple-400',
-  cursor: 'text-emerald-400',
+  trae: 'text-[var(--state-info)]',
+  tavily: 'text-[var(--text-accent)]',
+  cursor: 'text-[var(--state-success)]',
 }
 
 const STATUS_VARIANT: Record<string, any> = {
@@ -71,9 +71,9 @@ export default function Dashboard() {
 
   const statCards = [
     { label: '总账号数', value: stats?.total ?? '-', icon: Users, color: 'text-[var(--text-accent)]' },
-    { label: '试用中', value: stats?.by_plan_state?.trial ?? 0, icon: Clock, color: 'text-amber-400' },
-    { label: '已订阅', value: stats?.by_plan_state?.subscribed ?? 0, icon: CheckCircle, color: 'text-emerald-400' },
-    { label: '已失效', value: (stats?.by_display_status?.expired ?? 0) + (stats?.by_validity_status?.invalid ?? 0), icon: XCircle, color: 'text-red-400' },
+    { label: '试用中', value: stats?.by_plan_state?.trial ?? 0, icon: Clock, color: 'text-[var(--state-warning)]' },
+    { label: '已订阅', value: stats?.by_plan_state?.subscribed ?? 0, icon: CheckCircle, color: 'text-[var(--state-success)]' },
+    { label: '已失效', value: (stats?.by_display_status?.expired ?? 0) + (stats?.by_validity_status?.invalid ?? 0), icon: XCircle, color: 'text-[var(--state-danger)]' },
   ]
   const platformEntries = Object.entries(stats?.by_platform || {})
   const totalCount = Math.max(Number(stats?.total || 0), 0)

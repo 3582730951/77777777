@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { getConfig, getConfigOptions, getPlatforms } from '@/lib/app-data'
 import type { ConfigOptionsResponse } from '@/lib/config-options'
 import { getCaptchaStrategyLabel } from '@/lib/config-options'
@@ -10,6 +10,7 @@ import { TaskLogPanel } from '@/components/tasks/TaskLogPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
 import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
 import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap } from 'lucide-react'
 
@@ -255,6 +256,56 @@ function RegisterModal({
     option.identityProvider === selection.identityProvider && option.oauthProvider === selection.oauthProvider,
   )
   const selectedExecutor = executorOptions.find(option => option.value === selection.executorType)
+  const registrationOptionRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const executorOptionRefs = useRef<(HTMLButtonElement | null)[]>([])
+
+  const selectRegistrationOption = (option: any) => {
+    setSelection(current => ({
+      ...current,
+      identityProvider: option.identityProvider,
+      oauthProvider: option.oauthProvider,
+    }))
+  }
+
+  const selectExecutorOption = (option: any) => {
+    if (option.disabled) return
+    setSelection(current => ({ ...current, executorType: option.value }))
+  }
+
+  const handleRegistrationRadioKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const last = registrationOptions.length - 1
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? last
+        : (index + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1) + registrationOptions.length) % registrationOptions.length
+    const nextOption = registrationOptions[nextIndex]
+    if (!nextOption) return
+    selectRegistrationOption(nextOption)
+    window.setTimeout(() => registrationOptionRefs.current[nextIndex]?.focus(), 0)
+  }
+
+  const handleExecutorRadioKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const enabledIndexes = executorOptions
+      .map((option, optionIndex) => option.disabled ? -1 : optionIndex)
+      .filter(optionIndex => optionIndex >= 0)
+    if (enabledIndexes.length === 0) return
+    const currentEnabledIndex = enabledIndexes.includes(index) ? enabledIndexes.indexOf(index) : 0
+    const nextEnabledIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? enabledIndexes.length - 1
+        : (currentEnabledIndex + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1) + enabledIndexes.length) % enabledIndexes.length
+    const nextIndex = enabledIndexes[nextEnabledIndex]
+    const nextOption = executorOptions[nextIndex]
+    if (!nextOption) return
+    selectExecutorOption(nextOption)
+    window.setTimeout(() => executorOptionRefs.current[nextIndex]?.focus(), 0)
+  }
 
   useEffect(() => {
     let active = true
@@ -388,12 +439,16 @@ function RegisterModal({
   }
 
   const dialog = (
-    <div className="dialog-backdrop" onClick={!taskId ? onClose : undefined}>
-      <div className="dialog-panel dialog-panel-md flex flex-col"
-           onClick={e => e.stopPropagation()} style={{maxHeight: '88vh'}}>
+    <Dialog
+      titleId="register-account-title"
+      onClose={onClose}
+      closeOnBackdrop={!taskId}
+      className="dialog-panel-md flex flex-col"
+      style={{maxHeight: '88vh'}}
+    >
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-          <h2 className="text-base font-semibold text-[var(--text-primary)]">注册 {platformMeta?.display_name || platform}</h2>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <h2 id="register-account-title" className="text-base font-semibold text-[var(--text-primary)]">注册 {platformMeta?.display_name || platform}</h2>
+          <button type="button" aria-label="关闭注册弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="px-6 py-4 flex-1 overflow-y-auto flex flex-col gap-5">
           {!taskId ? (
@@ -405,18 +460,19 @@ function RegisterModal({
                   <div className="text-xs uppercase tracking-[0.16em] text-[var(--text-muted)]">Step 1</div>
                   <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">选择注册身份</div>
                   <div className="mt-1 text-xs text-[var(--text-muted)]">当前平台支持什么，这里就显示什么，不再让你先研究平台能力配置。</div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    {registrationOptions.map(option => {
+                  <div className="mt-3 grid gap-3 md:grid-cols-2" role="radiogroup" aria-label="注册身份">
+                    {registrationOptions.map((option, index) => {
                       const active = selection.identityProvider === option.identityProvider && selection.oauthProvider === option.oauthProvider
                       return (
                         <button
                           key={option.key}
+                          ref={node => { registrationOptionRefs.current[index] = node }}
                           type="button"
-                          onClick={() => setSelection(current => ({
-                            ...current,
-                            identityProvider: option.identityProvider,
-                            oauthProvider: option.oauthProvider,
-                          }))}
+                          role="radio"
+                          aria-checked={active}
+                          tabIndex={active ? 0 : -1}
+                          onKeyDown={event => handleRegistrationRadioKeyDown(event, index)}
+                          onClick={() => selectRegistrationOption(option)}
                           className={`rounded-xl border px-4 py-3 text-left transition-colors ${
                             active
                               ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
@@ -438,15 +494,21 @@ function RegisterModal({
                   <div className="text-xs uppercase tracking-[0.16em] text-[var(--text-muted)]">Step 2</div>
                   <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">选择执行方式</div>
                   <div className="mt-1 text-xs text-[var(--text-muted)]">所有方式都自动执行，只是协议或浏览器通道不同。</div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-3">
-                    {executorOptions.map(option => {
+                  <div className="mt-3 grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="执行方式">
+                    {executorOptions.map((option, index) => {
                       const active = selection.executorType === option.value
                       return (
                         <button
                           key={option.value}
+                          ref={node => { executorOptionRefs.current[index] = node }}
                           type="button"
+                          role="radio"
+                          aria-checked={active}
+                          aria-disabled={option.disabled || undefined}
+                          tabIndex={active && !option.disabled ? 0 : -1}
                           disabled={option.disabled}
-                          onClick={() => !option.disabled && setSelection(current => ({ ...current, executorType: option.value }))}
+                          onKeyDown={event => handleExecutorRadioKeyDown(event, index)}
+                          onClick={() => selectExecutorOption(option)}
                           className={`rounded-xl border px-4 py-3 text-left transition-colors ${
                             option.disabled
                               ? 'cursor-not-allowed border-[var(--border)] bg-[var(--bg-hover)] opacity-50'
@@ -458,7 +520,7 @@ function RegisterModal({
                           <div className="text-sm font-medium text-[var(--text-primary)]">{option.label}</div>
                           <div className="mt-1 text-xs text-[var(--text-muted)]">{option.description}</div>
                           {option.reason ? (
-                            <div className="mt-2 text-xs text-amber-400">{option.reason}</div>
+                            <div className="mt-2 text-xs text-[var(--state-warning)]">{option.reason}</div>
                           ) : null}
                         </button>
                       )
@@ -468,14 +530,14 @@ function RegisterModal({
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs text-[var(--text-muted)] block mb-1">注册数量</label>
-                    <input type="number" min={1} max={99} value={regCount}
+                    <label htmlFor="register-account-count" className="text-xs text-[var(--text-muted)] block mb-1">注册数量</label>
+                    <input id="register-account-count" type="number" min={1} max={99} value={regCount}
                       onChange={e => setRegCount(Number(e.target.value))}
                       className="control-surface control-surface-compact text-center" />
                   </div>
                   <div>
-                    <label className="text-xs text-[var(--text-muted)] block mb-1">并发数</label>
-                    <input type="number" min={1} max={5} value={concurrency}
+                    <label htmlFor="register-account-concurrency" className="text-xs text-[var(--text-muted)] block mb-1">并发数</label>
+                    <input id="register-account-concurrency" type="number" min={1} max={5} value={concurrency}
                       onChange={e => setConcurrency(Number(e.target.value))}
                       className="control-surface control-surface-compact text-center" />
                   </div>
@@ -486,7 +548,7 @@ function RegisterModal({
                   <div className="mt-1">执行方式: <span className="text-[var(--text-primary)]">{selectedExecutor?.label || '-'}</span></div>
                   <div className="mt-1">验证策略: <span className="text-[var(--text-primary)]">{getCaptchaStrategyLabel(selection.executorType)}</span></div>
                   {selection.identityProvider === 'oauth_browser' && !reusableBrowser && (
-                    <div className="mt-2 text-amber-400">后台浏览器自动依赖 Chrome Profile 或 Chrome CDP，未配置时只允许可视浏览器自动。</div>
+                    <div className="mt-2 text-[var(--state-warning)]">后台浏览器自动依赖 Chrome Profile 或 Chrome CDP，未配置时只允许可视浏览器自动。</div>
                   )}
                 </div>
 
@@ -508,8 +570,7 @@ function RegisterModal({
             {done ? '关闭' : '取消'}
           </Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 
   return typeof document !== 'undefined' ? createPortal(dialog, document.body) : dialog
@@ -533,24 +594,25 @@ function AddModal({ platform, onClose, onDone }: { platform: string; onClose: ()
   }
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-sm"
-           onClick={e => e.stopPropagation()}>
+    <Dialog titleId="add-account-title" onClose={onClose} className="dialog-panel-sm">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-          <h2 className="text-base font-semibold text-[var(--text-primary)]">手动新增账号</h2>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <h2 id="add-account-title" className="text-base font-semibold text-[var(--text-primary)]">手动新增账号</h2>
+          <button type="button" aria-label="关闭手动新增账号弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="px-6 py-4 space-y-3">
-          {[['email','邮箱','text'],['password','密码','text'],['primary_token','主凭证','text'],['cashier_url','试用链接','text']].map(([k,l,t]) => (
-            <div key={k}>
-              <label className="text-xs text-[var(--text-muted)] block mb-1">{l}</label>
-              <input type={t} value={(form as any)[k]} onChange={e => set(k, e.target.value)}
-                className="control-surface" />
-            </div>
-          ))}
+          {[['email','邮箱','text'],['password','密码','text'],['primary_token','主凭证','text'],['cashier_url','试用链接','text']].map(([k,l,t]) => {
+            const id = `add-account-${k}`
+            return (
+              <div key={k}>
+                <label htmlFor={id} className="text-xs text-[var(--text-muted)] block mb-1">{l}</label>
+                <input id={id} type={t} value={(form as any)[k]} onChange={e => set(k, e.target.value)}
+                  className="control-surface" />
+              </div>
+            )
+          })}
           <div>
-            <label className="text-xs text-[var(--text-muted)] block mb-1">生命周期状态</label>
-            <select value={form.lifecycle_status} onChange={e => set('lifecycle_status', e.target.value)}
+            <label htmlFor="add-account-lifecycle-status" className="text-xs text-[var(--text-muted)] block mb-1">生命周期状态</label>
+            <select id="add-account-lifecycle-status" value={form.lifecycle_status} onChange={e => set('lifecycle_status', e.target.value)}
               className="control-surface appearance-none">
               <option value="registered">已注册</option>
               <option value="trial">试用中</option>
@@ -562,8 +624,7 @@ function AddModal({ platform, onClose, onDone }: { platform: string; onClose: ()
           <Button onClick={save} disabled={saving} className="flex-1">{saving ? '保存中...' : '保存'}</Button>
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -583,16 +644,16 @@ function ResultStat({ label, value }: { label: string; value: any }) {
 }
 
 function metricToneClass(tone?: string) {
-  if (tone === 'good') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-  if (tone === 'warning') return 'border-amber-500/25 bg-amber-500/10 text-amber-200'
-  if (tone === 'danger') return 'border-red-500/25 bg-red-500/10 text-red-200'
+  if (tone === 'good') return 'border-[var(--badge-success-border)] bg-[var(--badge-success-bg)] text-[var(--badge-success-fg)]'
+  if (tone === 'warning') return 'border-[var(--badge-warning-border)] bg-[var(--badge-warning-bg)] text-[var(--badge-warning-fg)]'
+  if (tone === 'danger') return 'border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] text-[var(--badge-danger-fg)]'
   return 'border-[var(--border)] bg-[var(--bg-hover)] text-[var(--text-primary)]'
 }
 
 function metricAccentClass(tone?: string) {
-  if (tone === 'good') return 'from-emerald-400/70 to-cyan-300/50'
-  if (tone === 'warning') return 'from-amber-300/80 to-orange-300/50'
-  if (tone === 'danger') return 'from-red-400/80 to-rose-300/50'
+  if (tone === 'good') return 'from-[var(--state-success-strong)] to-[var(--state-info)]'
+  if (tone === 'warning') return 'from-[var(--state-warning-strong)] to-[var(--state-warning)]'
+  if (tone === 'danger') return 'from-[var(--state-danger-strong)] to-[var(--state-danger)]'
   return 'from-[var(--accent)]/80 to-[var(--accent-strong)]/45'
 }
 
@@ -608,7 +669,7 @@ function DisplayMetricCard({ metric, compact = false }: { metric: any; compact?:
         <div className={`${compact ? 'text-sm' : 'text-lg'} shrink-0 font-semibold tracking-[-0.03em]`}>{formatResultValue(metric?.value)}</div>
       </div>
       {typeof metric?.percent === 'number' ? (
-        <div className="relative mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
+        <div className="relative mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--field-muted-bg)]">
           <div className={`h-full rounded-full bg-gradient-to-r ${metricAccentClass(metric?.tone)}`} style={{ width: `${Math.max(0, Math.min(100, metric.percent))}%` }} />
         </div>
       ) : null}
@@ -638,7 +699,7 @@ function DisplaySections({ sections }: { sections: any[] }) {
           <div className="text-xs font-semibold text-[var(--text-primary)]">{section?.title || '明细'}</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {(Array.isArray(section?.items) ? section.items : []).map((item: any, index: number) => (
-              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-[var(--border)] bg-[var(--field-muted-bg)] p-3">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{item?.title || '-'}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
                   {(Array.isArray(item?.metrics) ? item.metrics : []).map((metric: any) => (
@@ -709,7 +770,7 @@ function ActionResultHighlights({ payload }: { payload: any }) {
           <div className="text-sm font-semibold text-[var(--text-primary)]">Cursor Usage</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {cursorModels.map(([model, info]: [string, any]) => (
-              <div key={model} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={model} className="rounded-lg border border-[var(--border)] bg-[var(--field-muted-bg)] p-3">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{model}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
                   <div>请求数: {formatResultValue(info?.num_requests)}</div>
@@ -730,7 +791,7 @@ function ActionResultHighlights({ payload }: { payload: any }) {
           <div className="text-sm font-semibold text-[var(--text-primary)]">Kiro Usage</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {kiroBreakdowns.map((item: any, index: number) => (
-              <div key={`${item.resource_type || item.display_name}-${index}`} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={`${item.resource_type || item.display_name}-${index}`} className="rounded-lg border border-[var(--border)] bg-[var(--field-muted-bg)] p-3">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{item.display_name || item.resource_type}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
                   <div>已用: {formatResultValue(item.current_usage)}</div>
@@ -753,10 +814,10 @@ function ActionResultHighlights({ payload }: { payload: any }) {
           <div className="text-sm font-semibold text-[var(--text-primary)]">Kiro Plans</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {kiroPlans.map((plan: any) => (
-              <div key={plan.name} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={plan.name} className="rounded-lg border border-[var(--border)] bg-[var(--field-muted-bg)] p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs font-semibold text-[var(--text-primary)]">{plan.title || plan.name}</div>
-                  <div className="text-xs text-emerald-400">{formatResultValue(plan.amount)} {plan.currency || ''}</div>
+                  <div className="text-xs text-[var(--state-success)]">{formatResultValue(plan.amount)} {plan.currency || ''}</div>
                 </div>
                 <div className="mt-1 text-[11px] text-[var(--text-muted)]">{plan.billing_interval || '-'}</div>
                 {Array.isArray(plan.features) && plan.features.length > 0 && (
@@ -771,7 +832,7 @@ function ActionResultHighlights({ payload }: { payload: any }) {
       )}
 
       {payload.quota_note && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+        <div className="rounded-xl border border-[var(--badge-warning-border)] bg-[var(--badge-warning-bg)] px-4 py-3 text-xs text-[var(--state-warning)]">
           {payload.quota_note}
         </div>
       )}
@@ -791,14 +852,10 @@ function ActionResultModal({
   const content = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div
-        className="dialog-panel dialog-panel-lg"
-        onClick={e => e.stopPropagation()}
-      >
+    <Dialog titleId="action-result-title" onClose={onClose} className="dialog-panel-lg">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
+            <h2 id="action-result-title" className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">操作结果</p>
           </div>
           <div className="flex items-center gap-2">
@@ -806,7 +863,7 @@ function ActionResultModal({
               <Copy className="h-4 w-4 mr-1" />
               复制
             </Button>
-            <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <button type="button" aria-label="关闭操作结果弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -817,8 +874,7 @@ function ActionResultModal({
             {content}
           </pre>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -836,20 +892,20 @@ function ActionTaskModal({
   onDone: (status: string) => void
 }) {
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div
-        className="dialog-panel flex w-[min(960px,calc(100vw-32px))] max-w-none flex-col overflow-hidden"
-        onClick={e => e.stopPropagation()}
-        style={{ maxHeight: '90vh' }}
-      >
+    <Dialog
+      titleId="action-task-title"
+      onClose={onClose}
+      className="flex w-[min(960px,calc(100vw-32px))] max-w-none flex-col overflow-hidden"
+      style={{ maxHeight: '90vh' }}
+    >
         <div className="relative overflow-hidden border-b border-[var(--border)] px-6 py-5">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_0%,rgba(9,182,162,0.18),transparent_34%),linear-gradient(90deg,rgba(255,255,255,0.04),transparent)]" />
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_0%,var(--hero-bg),transparent_34%),linear-gradient(90deg,var(--surface-glow),transparent)]" />
           <div className="relative flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="mb-2 inline-flex rounded-full border border-[var(--border)] bg-[var(--chip-bg)] px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
                 Platform Action
               </div>
-              <h2 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h2>
+              <h2 id="action-task-title" className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h2>
               <p className="mt-1 text-xs text-[var(--text-muted)]">任务状态、错误摘要与实时日志集中展示</p>
             </div>
             <div className="flex items-center gap-2">
@@ -858,7 +914,7 @@ function ActionTaskModal({
                   {getTaskStatusText(taskStatus)}
                 </Badge>
               ) : null}
-              <button onClick={onClose} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+              <button type="button" aria-label="关闭任务弹窗" onClick={onClose} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -873,8 +929,7 @@ function ActionTaskModal({
             关闭
           </Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -900,17 +955,13 @@ function ActionParamsModal({
   const params = Array.isArray(action?.params) ? action.params : []
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div
-        className="dialog-panel dialog-panel-md"
-        onClick={e => e.stopPropagation()}
-      >
+    <Dialog titleId="action-params-title" onClose={onClose} className="dialog-panel-md">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{action?.label || '动作参数'}</h2>
+            <h2 id="action-params-title" className="text-base font-semibold text-[var(--text-primary)]">{action?.label || '动作参数'}</h2>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">填写执行该动作所需的参数</p>
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+          <button type="button" aria-label="关闭动作参数弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -965,8 +1016,7 @@ function ActionParamsModal({
           </Button>
           <Button variant="outline" onClick={onClose} disabled={submitting} className="flex-1">取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 // ── 行操作菜单 ─────────────────────────────────────────────
@@ -993,6 +1043,47 @@ function ActionMenu({
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, maxHeight: 320 })
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuId = `account-actions-menu-${acc.id}`
+
+  const getMenuItems = useCallback(() => {
+    if (!menuRef.current) return []
+    return Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'))
+  }, [])
+
+  const closeMenu = useCallback((restoreFocus = true) => {
+    setOpen(false)
+    if (restoreFocus) {
+      window.setTimeout(() => triggerRef.current?.focus(), 0)
+    }
+  }, [])
+
+  const focusMenuItem = useCallback((target: 'first' | 'last' | number) => {
+    const items = getMenuItems()
+    if (items.length === 0) return
+    const index = target === 'first' ? 0 : target === 'last' ? items.length - 1 : target
+    items[Math.max(0, Math.min(index, items.length - 1))]?.focus()
+  }, [getMenuItems])
+
+  const handleMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeMenu()
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const items = getMenuItems()
+    if (items.length === 0) return
+    const activeIndex = Math.max(0, items.indexOf(document.activeElement as HTMLButtonElement))
+    if (event.key === 'Home') {
+      focusMenuItem('first')
+    } else if (event.key === 'End') {
+      focusMenuItem('last')
+    } else {
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      focusMenuItem((activeIndex + direction + items.length) % items.length)
+    }
+  }
 
   const runAction = (action: any, params: Record<string, any>) => {
     setRunning(action.id)
@@ -1082,9 +1173,10 @@ function ActionMenu({
     const handler = (e: MouseEvent) => {
       const target = e.target as Node
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return
-      setOpen(false)
+      closeMenu()
     }
     const reposition = () => updateMenuPosition()
+    window.setTimeout(() => focusMenuItem('first'), 0)
     document.addEventListener('mousedown', handler)
     window.addEventListener('resize', reposition)
     window.addEventListener('scroll', reposition, true)
@@ -1094,7 +1186,7 @@ function ActionMenu({
       window.removeEventListener('resize', reposition)
       window.removeEventListener('scroll', reposition, true)
     }
-  }, [open, acc.platform, updateMenuPosition])
+  }, [open, acc.platform, updateMenuPosition, closeMenu, focusMenuItem])
 
   const handleActionDone = async (status: string) => {
     if (!actionTask) return
@@ -1137,9 +1229,9 @@ function ActionMenu({
         <div
           className="fixed top-5 right-5 z-[9999] flex items-center gap-2.5 rounded-xl border px-4 py-3 text-[13px] font-medium shadow-lg  cursor-pointer transition-all"
           style={{
-            background: toast.type === 'success' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
-            borderColor: toast.type === 'success' ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)',
-            color: toast.type === 'success' ? '#6ee7b7' : '#fca5a5',
+            background: toast.type === 'success' ? 'var(--badge-success-bg)' : 'var(--badge-danger-bg)',
+            borderColor: toast.type === 'success' ? 'var(--badge-success-border)' : 'var(--badge-danger-border)',
+            color: toast.type === 'success' ? 'var(--state-success)' : 'var(--state-danger)',
           }}
           onClick={() => setToast(null)}
         >
@@ -1174,21 +1266,34 @@ function ActionMenu({
           }}
         />
       )}
-      <button onClick={onDetail} className="table-action-btn">详情</button>
+      <button type="button" onClick={onDetail} className="table-action-btn">详情</button>
       {actions.length > 0 && (
         <div className="relative">
-          <button ref={triggerRef} onClick={() => setOpen(o => !o)}
+          <button
+            ref={triggerRef}
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-controls={open ? menuId : undefined}
+            onClick={() => setOpen(o => !o)}
             className="table-action-btn">更多 ▾</button>
           {open && typeof document !== 'undefined' && createPortal(
             <div
+              id={menuId}
               ref={menuRef}
+              role="menu"
+              aria-label={`${acc.email} 的更多操作`}
+              onKeyDown={handleMenuKeyDown}
               className="fixed z-[9999] w-[220px] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-card)]/96 py-1.5 shadow-[var(--shadow-soft)] "
               style={{ top: menuPosition.top, left: menuPosition.left, maxHeight: menuPosition.maxHeight }}
             >
               {actions.map(a => (
                 <button key={a.id}
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
                   onClick={() => {
-                    setOpen(false)
+                    closeMenu()
                     if (Array.isArray(a.params) && a.params.length > 0) {
                       setPendingAction({
                         action: a,
@@ -1203,15 +1308,18 @@ function ActionMenu({
                   {running === a.id ? '执行中...' : a.label}
                 </button>
               ))}
-              <div className="my-1 border-t border-[var(--border)]/70" />
+              <div className="my-1 border-t border-[var(--border)]/70" role="separator" />
               <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => {
-                  setOpen(false)
+                  closeMenu()
                   if (confirm(`确认删除 ${acc.email}？`)) {
                     apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(onDelete)
                   }
                 }}
-                className="w-full px-3 py-2 text-left text-xs text-[#f0b0b0] transition-colors hover:bg-[rgba(239,68,68,0.08)] hover:text-[#ffd5d5]"
+                className="w-full px-3 py-2 text-left text-xs text-[var(--state-danger)] transition-colors hover:bg-[var(--badge-danger-bg)] hover:text-[var(--state-danger-strong)]"
               >
                 删除
               </button>
@@ -1222,6 +1330,7 @@ function ActionMenu({
       )}
       {actions.length === 0 && (
         <button
+          type="button"
           onClick={() => { if (confirm(`确认删除 ${acc.email}？`)) apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(onDelete) }}
           className="table-action-btn table-action-btn-danger"
         >
@@ -1261,15 +1370,14 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
   }
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-sm flex flex-col" style={{maxHeight:'90vh'}} onClick={e => e.stopPropagation()}>
+    <Dialog titleId="account-detail-title" onClose={onClose} className="dialog-panel-sm flex flex-col" style={{maxHeight:'90vh'}}>
         {/* ── Sticky Header ── */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">账号详情</h2>
+            <h2 id="account-detail-title" className="text-base font-semibold text-[var(--text-primary)]">账号详情</h2>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">{acc.email}</p>
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="关闭账号详情弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         {/* ── Scrollable Content ── */}
         <div className="px-6 py-4 space-y-3 flex-1 overflow-y-auto min-h-0">
@@ -1284,15 +1392,15 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-right text-[11px] text-[var(--text-muted)] sm:grid-cols-3">
-                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--field-muted-bg)] px-2.5 py-2">
                   <div className="uppercase tracking-[0.12em]">生命周期</div>
                   <div className="mt-1 text-[var(--text-primary)]">{getLifecycleStatus(acc)}</div>
                 </div>
-                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--field-muted-bg)] px-2.5 py-2">
                   <div className="uppercase tracking-[0.12em]">有效性</div>
                   <div className="mt-1 text-[var(--text-primary)]">{getValidityStatus(acc)}</div>
                 </div>
-                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--field-muted-bg)] px-2.5 py-2">
                   <div className="uppercase tracking-[0.12em]">套餐状态</div>
                   <div className="mt-1 text-[var(--text-primary)]">{getPlanState(acc)}</div>
                 </div>
@@ -1338,7 +1446,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
           )}
           {providerAccounts.length > 0 && (
             <div className="space-y-2">
-              <label className="text-xs text-[var(--text-muted)] block">Provider Accounts</label>
+              <div className="text-xs text-[var(--text-muted)]">Provider Accounts</div>
               {providerAccounts.map((item: any, index: number) => (
                 <div key={`${item.provider_name || 'provider'}-${item.login_identifier || index}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3">
                   <div className="text-xs font-semibold text-[var(--text-primary)]">
@@ -1353,11 +1461,16 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                         <div key={key}>
                           <div className="text-[11px] text-[var(--text-muted)]">{key}</div>
                           <div className="flex items-start gap-1">
-                            <div className="flex-1 rounded-md border border-[var(--border)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
+                            <div className="flex-1 rounded-md border border-[var(--border)] bg-[var(--code-bg)] px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
                               {String(value || '-')}
                             </div>
                             {value ? (
-                              <button onClick={() => copyText(String(value))} className="mt-1 shrink-0 text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+                              <button
+                                type="button"
+                                aria-label={`复制 ${key}`}
+                                onClick={() => copyText(String(value))}
+                                className="mt-1 shrink-0 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                              >
                                 <Copy className="h-3 w-3" />
                               </button>
                             ) : null}
@@ -1372,15 +1485,20 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
           )}
           {platformCredentials.length > 0 && (
             <div className="space-y-2">
-              <label className="text-xs text-[var(--text-muted)] block">Platform Credentials</label>
+              <div className="text-xs text-[var(--text-muted)]">Platform Credentials</div>
               {platformCredentials.map((item: any) => (
                 <div key={`${item.scope}-${item.key}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3">
                   <div className="text-[11px] text-[var(--text-muted)]">{item.key}</div>
                   <div className="mt-1 flex items-start gap-1">
-                    <div className="flex-1 rounded-md border border-[var(--border)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
+                    <div className="flex-1 rounded-md border border-[var(--border)] bg-[var(--code-bg)] px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
                       {item.value}
                     </div>
-                    <button onClick={() => copyText(String(item.value || ''))} className="mt-1 shrink-0 text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+                    <button
+                      type="button"
+                      aria-label={`复制 ${item.key}`}
+                      onClick={() => copyText(String(item.value || ''))}
+                      className="mt-1 shrink-0 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                    >
                       <Copy className="h-3 w-3" />
                     </button>
                   </div>
@@ -1389,20 +1507,20 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
             </div>
           )}
           <div>
-            <label className="text-xs text-[var(--text-muted)] block mb-1">生命周期状态</label>
-            <select value={form.lifecycle_status} onChange={e => setForm(f => ({ ...f, lifecycle_status: e.target.value }))}
+            <label htmlFor="account-detail-lifecycle-status" className="text-xs text-[var(--text-muted)] block mb-1">生命周期状态</label>
+            <select id="account-detail-lifecycle-status" value={form.lifecycle_status} onChange={e => setForm(f => ({ ...f, lifecycle_status: e.target.value }))}
               className="control-surface appearance-none">
               {['registered','trial','subscribed','expired','invalid'].map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-xs text-[var(--text-muted)] block mb-1">主凭证</label>
-            <textarea value={form.primary_token} onChange={e => setForm(f => ({ ...f, primary_token: e.target.value }))}
+            <label htmlFor="account-detail-primary-token" className="text-xs text-[var(--text-muted)] block mb-1">主凭证</label>
+            <textarea id="account-detail-primary-token" value={form.primary_token} onChange={e => setForm(f => ({ ...f, primary_token: e.target.value }))}
               rows={2} className="control-surface control-surface-mono resize-none" />
           </div>
           <div>
-            <label className="text-xs text-[var(--text-muted)] block mb-1">试用链接</label>
-            <textarea value={form.cashier_url} onChange={e => setForm(f => ({ ...f, cashier_url: e.target.value }))}
+            <label htmlFor="account-detail-cashier-url" className="text-xs text-[var(--text-muted)] block mb-1">试用链接</label>
+            <textarea id="account-detail-cashier-url" value={form.cashier_url} onChange={e => setForm(f => ({ ...f, cashier_url: e.target.value }))}
               rows={2} className="control-surface control-surface-mono resize-none" />
           </div>
         </div>
@@ -1411,8 +1529,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
           <Button onClick={save} disabled={saving} className="flex-1">{saving ? '保存中...' : '保存'}</Button>
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -1467,9 +1584,8 @@ function ImportModal({ platform, onClose, onDone }: { platform: string; onClose:
   }
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-sm p-6" onClick={e => e.stopPropagation()}>
-        <h2 className="text-base font-semibold text-[var(--text-primary)] mb-2">批量导入</h2>
+    <Dialog titleId="batch-import-title" onClose={onClose} className="dialog-panel-sm p-6">
+        <h2 id="batch-import-title" className="text-base font-semibold text-[var(--text-primary)] mb-2">批量导入</h2>
         <p className="text-xs text-[var(--text-muted)] mb-3">每行格式: <code className="bg-[var(--bg-hover)] px-1 rounded">email password [cashier_url]</code></p>
         <input
           ref={fileInputRef}
@@ -1482,15 +1598,15 @@ function ImportModal({ platform, onClose, onDone }: { platform: string; onClose:
           <Upload className="mr-1.5 h-3.5 w-3.5" />
           选择导出文件并导入
         </Button>
-        <textarea value={text} onChange={e => setText(e.target.value)} rows={8}
+        <label htmlFor="batch-import-lines" className="mb-1 block text-xs font-medium text-[var(--text-muted)]">导入内容</label>
+        <textarea id="batch-import-lines" value={text} onChange={e => setText(e.target.value)} rows={8}
           className="control-surface control-surface-mono resize-none mb-3" />
-        {result && <p className={`text-sm mb-3 ${resultKind === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>{result}</p>}
+        {result && <p className={`text-sm mb-3 ${resultKind === 'success' ? 'text-[var(--state-success)]' : 'text-[var(--state-danger)]'}`}>{result}</p>}
         <div className="flex gap-2">
           <Button onClick={submit} disabled={loading} className="flex-1">{loading ? '导入中...' : '导入'}</Button>
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -1510,16 +1626,61 @@ function ExportMenu({
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuId = `account-export-menu-${platform}`
   const hasSelection = selectedIds.length > 0
+
+  const getMenuItems = useCallback(() => {
+    if (!menuRef.current) return []
+    return Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'))
+  }, [])
+
+  const closeMenu = useCallback((restoreFocus = true) => {
+    setOpen(false)
+    if (restoreFocus) {
+      window.setTimeout(() => triggerRef.current?.focus(), 0)
+    }
+  }, [])
+
+  const focusMenuItem = useCallback((target: 'first' | 'last' | number) => {
+    const items = getMenuItems()
+    if (items.length === 0) return
+    const index = target === 'first' ? 0 : target === 'last' ? items.length - 1 : target
+    items[Math.max(0, Math.min(index, items.length - 1))]?.focus()
+  }, [getMenuItems])
+
+  const handleMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeMenu()
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const items = getMenuItems()
+    if (items.length === 0) return
+    const activeIndex = Math.max(0, items.indexOf(document.activeElement as HTMLButtonElement))
+    if (event.key === 'Home') {
+      focusMenuItem('first')
+    } else if (event.key === 'End') {
+      focusMenuItem('last')
+    } else {
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      focusMenuItem((activeIndex + direction + items.length) % items.length)
+    }
+  }
 
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return
+      closeMenu()
     }
+    window.setTimeout(() => focusMenuItem('first'), 0)
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [open])
+  }, [open, closeMenu, focusMenuItem])
 
   const doExport = async (format: string) => {
     setLoading(format)
@@ -1535,7 +1696,7 @@ function ExportMenu({
         }),
       })
       triggerBrowserDownload(blob, filename)
-      setOpen(false)
+      closeMenu()
     } catch (e: any) {
       window.alert(e?.message || '导出失败')
     } finally {
@@ -1553,24 +1714,39 @@ function ExportMenu({
   ]
 
   return (
-    <div className="relative" ref={menuRef}>
+    <div className="relative min-w-0" ref={menuRef}>
       <Button
+        ref={triggerRef}
         variant="outline"
         size="sm"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         onClick={() => setOpen(v => !v)}
         disabled={total === 0 || !!loading}
+        className="h-8 w-full justify-center sm:w-auto"
       >
         <Download className="h-4 w-4 mr-1" />
         {loading ? '导出中...' : hasSelection ? `导出已选(${selectedIds.length})` : '导出'}
       </Button>
       {open && (
-        <div className="absolute right-0 top-10 z-20 min-w-[148px] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] py-1 shadow-lg">
+        <div
+          id={menuId}
+          ref={menuRef}
+          role="menu"
+          aria-label="导出格式"
+          onKeyDown={handleMenuKeyDown}
+          className="absolute right-0 top-10 z-20 min-w-[148px] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] py-1 shadow-lg"
+        >
           <div className="px-3 py-1 text-[11px] text-[var(--text-muted)]">
             {hasSelection ? `导出 ${selectedIds.length} 个已选账号` : '导出当前筛选结果'}
           </div>
           {options.map(option => (
             <button
               key={option.key}
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => doExport(option.key)}
               className="w-full px-3 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
             >
@@ -1585,6 +1761,7 @@ function ExportMenu({
 
 // ── Main ────────────────────────────────────────────────────
 export default function Accounts() {
+  const navigate = useNavigate()
   const { platform } = useParams<{ platform: string }>()
   const [tab, setTab] = useState(platform || '')
   useEffect(() => { if (platform) { setTab(platform) } }, [platform])
@@ -1606,6 +1783,9 @@ export default function Accounts() {
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchTask, setBatchTask] = useState<{ taskId: string; title: string } | null>(null)
   const [batchTaskStatus, setBatchTaskStatus] = useState<string | null>(null)
+  const platformOptions = Object.values(platformsMap).sort((a: any, b: any) =>
+    String(a.display_name || a.name).localeCompare(String(b.display_name || b.name), 'zh-CN')
+  )
 
   useEffect(() => {
     getPlatforms().then((list: any[]) => {
@@ -1693,6 +1873,13 @@ export default function Accounts() {
 
   const currentPlatformMeta = platformsMap[tab]
   const platformLabel = currentPlatformMeta?.display_name || tab
+  const switchPlatform = (next: string) => {
+    if (!next || next === tab) return
+    setTab(next)
+    setSearch('')
+    setFilterStatus('')
+    navigate(`/accounts/${next}`)
+  }
   const visibleTrial = accounts.filter(acc => getPlanState(acc) === 'trial').length
   const visibleSubscribed = accounts.filter(acc => getPlanState(acc) === 'subscribed').length
   const visibleInvalid = accounts.filter(acc => getValidityStatus(acc) === 'invalid' || getLifecycleStatus(acc) === 'invalid').length
@@ -1725,28 +1912,40 @@ export default function Accounts() {
       )}
 
       <Card className="shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-5 py-4 border-b border-[var(--border)]/50">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-4 border-b border-[var(--border)]/50 px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
             <h1 className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
               {platformLabel}
             </h1>
-            <div className="h-4 w-[1px] bg-[var(--border)]"></div>
-            <div className="flex items-center gap-1.5 text-xs">
+            {platformOptions.length > 1 && (
+              <select
+                value={tab}
+                onChange={e => switchPlatform(e.target.value)}
+                aria-label="切换账号平台"
+                className="h-8 w-full rounded-md border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-44"
+              >
+                {platformOptions.map((item: any) => (
+                  <option key={item.name} value={item.name}>{item.display_name || item.name}</option>
+                ))}
+              </select>
+            )}
+            <div className="hidden h-4 w-[1px] bg-[var(--border)] sm:block"></div>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
               <span className="text-[var(--text-muted)]">共 {total} 个</span>
-              {visibleTrial > 0 && <span className="flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-500 ring-1 ring-inset ring-emerald-500/20">试用 {visibleTrial}</span>}
-              {visibleSubscribed > 0 && <span className="flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-500 ring-1 ring-inset ring-blue-500/20">订阅 {visibleSubscribed}</span>}
-              {linkedCashier > 0 && <span className="flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-500 ring-1 ring-inset ring-amber-500/20">链接 {linkedCashier}</span>}
-              {visibleInvalid > 0 && <span className="flex items-center rounded-full bg-red-500/10 px-2 py-0.5 font-medium text-red-500 ring-1 ring-inset ring-red-500/20">失效 {visibleInvalid}</span>}
+              {visibleTrial > 0 && <span className="flex items-center rounded-full bg-[var(--badge-success-bg)] px-2 py-0.5 font-medium text-[var(--state-success)] ring-1 ring-inset ring-[var(--badge-success-border)]">试用 {visibleTrial}</span>}
+              {visibleSubscribed > 0 && <span className="flex items-center rounded-full bg-[var(--accent-soft)] px-2 py-0.5 font-medium text-[var(--state-info)] ring-1 ring-inset ring-[var(--accent-edge)]">订阅 {visibleSubscribed}</span>}
+              {linkedCashier > 0 && <span className="flex items-center rounded-full bg-[var(--badge-warning-bg)] px-2 py-0.5 font-medium text-[var(--state-warning)] ring-1 ring-inset ring-[var(--badge-warning-border)]">链接 {linkedCashier}</span>}
+              {visibleInvalid > 0 && <span className="flex items-center rounded-full bg-[var(--badge-danger-bg)] px-2 py-0.5 font-medium text-[var(--state-danger)] ring-1 ring-inset ring-[var(--badge-danger-border)]">失效 {visibleInvalid}</span>}
               {selectedCount > 0 && <span className="flex items-center rounded-full bg-[var(--text-primary)]/10 px-2 py-0.5 font-medium text-[var(--text-primary)] ring-1 ring-inset ring-[var(--text-primary)]/20">已选 {selectedCount}</span>}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setShowRegister(true)} className="h-8 shadow-sm">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end lg:shrink-0">
+            <Button size="sm" onClick={() => setShowRegister(true)} className="h-8 w-full justify-center shadow-sm sm:w-auto">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               自动注册
             </Button>
-            <div className="h-4 w-[1px] bg-[var(--border)]"></div>
-            <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="h-8 bg-transparent">
+            <div className="hidden h-4 w-[1px] bg-[var(--border)] sm:block"></div>
+            <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="h-8 w-full justify-center bg-transparent sm:w-auto">
               <Upload className="mr-1.5 h-3.5 w-3.5" />
               导入
             </Button>
@@ -1764,7 +1963,7 @@ export default function Accounts() {
                 导出
               </Button>
             )}
-            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className="h-8 bg-transparent">
+            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className="h-8 w-full justify-center bg-transparent sm:w-auto">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               手动新增
             </Button>
@@ -1772,14 +1971,15 @@ export default function Accounts() {
         </div>
         
         {/* Search & Filter Toolbar */}
-        <div className="flex items-center justify-between gap-4 px-5 py-2.5 bg-[var(--bg-pane)]/20">
-          <div className="flex flex-1 items-center gap-3">
-            <div className="relative flex-1 max-w-sm">
+        <div className="flex flex-col gap-3 bg-[var(--bg-pane)]/20 px-4 py-3 sm:px-5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="grid min-w-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+            <div className="relative min-w-0">
               <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-[var(--text-muted)]">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
               </div>
               <input
                 type="text"
+                aria-label="搜索账号邮箱"
                 placeholder="搜索账号邮箱..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
@@ -1787,9 +1987,10 @@ export default function Accounts() {
               />
             </div>
             <select
+              aria-label="筛选账号状态"
               value={filterStatus}
               onChange={e => setFilterStatus(e.target.value)}
-              className="rounded-md border border-[var(--border)] bg-transparent py-1.5 pl-3 pr-8 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)] appearance-none"
+              className="w-full rounded-md border border-[var(--border)] bg-transparent py-1.5 pl-3 pr-8 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)] appearance-none"
               style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundPosition: 'right 8px center', backgroundRepeat: 'no-repeat' }}
             >
               <option value="">全部状态</option>
@@ -1803,12 +2004,12 @@ export default function Accounts() {
             </select>
           </div>
           
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_40px] gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end xl:shrink-0">
             <Button
               variant="ghost"
               size="sm"
               disabled={batchRefreshing || loading}
-              className="h-7 px-2.5 text-[var(--text-muted)] hover:text-amber-500 hover:bg-amber-500/10"
+              className="h-8 justify-center px-2.5 text-[var(--text-muted)] hover:bg-[var(--badge-warning-bg)] hover:text-[var(--state-warning-strong)] sm:h-7"
               title="一键刷新全部账号额度"
               onClick={async () => {
                 setBatchRefreshing(true)
@@ -1827,7 +2028,7 @@ export default function Accounts() {
               <Zap className={`mr-1 h-3.5 w-3.5 ${batchRefreshing ? 'animate-pulse' : ''}`} />
               {batchRefreshing ? '刷新中...' : '刷新额度'}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => load()} disabled={loading} className="h-7 w-7 p-0 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <Button variant="ghost" size="sm" aria-label="刷新账号列表" onClick={() => load()} disabled={loading} className="h-8 w-full p-0 text-[var(--text-muted)] hover:text-[var(--text-primary)] sm:h-7 sm:w-7">
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             </Button>
             {selectedCount > 0 && (
@@ -1835,7 +2036,7 @@ export default function Accounts() {
                 size="sm"
                 variant="ghost"
                 disabled={bulkDeleting}
-                className="h-7 px-2.5 text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                className="col-span-2 h-8 justify-center px-2.5 text-[var(--state-danger)] hover:bg-[var(--badge-danger-bg)] hover:text-[var(--state-danger-strong)] sm:col-span-1 sm:h-7"
                 onClick={async () => {
                   if (!confirm(`确认删除选中的 ${selectedCount} 个账号？此操作不可撤销。`)) return
                   setBulkDeleting(true)
@@ -1874,9 +2075,10 @@ export default function Accounts() {
           <thead className="sticky top-0 z-10  bg-[var(--bg-pane)]/80">
             <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wider font-medium text-[var(--text-muted)]">
               <th className="w-10 px-3 py-2 text-left">
-                <input
-                  type="checkbox"
-                  checked={allSelectedOnPage}
+                  <input
+                    type="checkbox"
+                    aria-label="选择当前页所有账号"
+                    checked={allSelectedOnPage}
                   onChange={togglePage}
                   className="checkbox-accent rounded-[3px] border-[var(--border)] focus:ring-[var(--text-primary)] focus:ring-offset-0 bg-transparent text-[var(--text-primary)]"
                 />
@@ -1910,11 +2112,11 @@ export default function Accounts() {
                 const primaryMetrics = getPrimaryMetrics(acc)
                 const displayBadges = getDisplayBadges(acc)
                 return (
-              <tr key={acc.id} className="group border-b border-[var(--border)]/30 hover:bg-[var(--text-primary)]/[0.02] transition-colors cursor-pointer"
-                  onClick={() => setDetail(acc)}>
+              <tr key={acc.id} className="group border-b border-[var(--border)]/30 hover:bg-[var(--text-primary)]/[0.02] transition-colors">
                 <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
+                    aria-label={`选择账号 ${acc.email}`}
                     checked={selectedIds.has(acc.id)}
                     onChange={() => toggleOne(acc.id)}
                     className="checkbox-accent rounded-[3px] border-[var(--border)] focus:ring-[var(--text-primary)] focus:ring-offset-0 bg-transparent text-[var(--text-primary)] transition-all opacity-40 group-hover:opacity-100 data-[state=checked]:opacity-100"
@@ -1923,7 +2125,14 @@ export default function Accounts() {
                 <td className="px-3 py-2.5 font-mono text-sm text-[var(--text-primary)] align-top">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate tracking-tight" title={acc.email}>{acc.email}</span>
-                    <button onClick={e => { e.stopPropagation(); copy(acc.email) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
+                    <button
+                      type="button"
+                      aria-label="复制邮箱"
+                      onClick={e => { e.stopPropagation(); copy(acc.email) }}
+                      className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
                   </div>
                   {verificationMailbox && (verificationMailbox.email || verificationMailbox.account_id || verificationMailbox.provider) && (
                     <div
@@ -1952,28 +2161,22 @@ export default function Accounts() {
                 <td className="px-3 py-2.5 font-mono text-[13px] text-[var(--text-muted)] align-top">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate blur-[3px] transition-all cursor-default hover:blur-none select-none hover:select-auto hover:text-[var(--text-primary)]" title={acc.password}>{acc.password}</span>
-                    <button onClick={e => { e.stopPropagation(); copy(acc.password) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
+                    <button
+                      type="button"
+                      aria-label="复制密码"
+                      onClick={e => { e.stopPropagation(); copy(acc.password) }}
+                      className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
                   </div>
                 </td>
                 <td className="px-3 py-2.5 align-top">
                   <div className="min-w-0 flex flex-col items-start gap-1.5">
                     {(() => {
                       const status = getDisplayStatus(acc);
-                      const variant = String(STATUS_VARIANT[status] || 'secondary');
-                      const styles = (({
-                        success: "bg-emerald-500/10 text-emerald-500 ring-emerald-500/20",
-                        warning: "bg-amber-500/10 text-amber-500 ring-amber-500/20",
-                        danger: "bg-red-500/10 text-red-500 ring-red-500/20",
-                        secondary: "bg-[var(--text-primary)]/5 text-[var(--text-secondary)] ring-[var(--border)]",
-                        default: "bg-blue-500/10 text-blue-500 ring-blue-500/20"
-                      } as Record<string, string>)[variant]) || "bg-[var(--text-primary)]/5 text-[var(--text-secondary)] ring-[var(--border)]";
-                      
-                      return (
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${styles}`}>
-                          <span className={`mr-1 h-1 w-1 rounded-full ${variant === 'success' ? 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.6)]' : variant === 'warning' ? 'bg-amber-500 shadow-[0_0_4px_rgba(245,158,11,0.6)]' : variant === 'danger' ? 'bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.6)]' : variant === 'default' ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
-                          {status}
-                        </span>
-                      );
+                      const variant = STATUS_VARIANT[status] || 'secondary';
+                      return <Badge variant={variant}>{status}</Badge>;
                     })()}
                     {primaryMetrics.length > 0 ? (
                       <div className="flex max-w-full flex-col gap-1">
@@ -2000,7 +2203,15 @@ export default function Accounts() {
                 <td className="px-3 py-2.5 align-top">
                   {getCashierUrl(acc) ? (
                     <div className="flex items-center gap-1.5 whitespace-nowrap opacity-70 group-hover:opacity-100 transition-opacity">
-                      <button onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]" title="复制链接"><Copy className="h-3 w-3" /></button>
+                      <button
+                        type="button"
+                        aria-label="复制收银台链接"
+                        onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }}
+                        className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]"
+                        title="复制链接"
+                      >
+                        <Copy className="h-3 w-3" />
+                      </button>
                       <a href={getCashierUrl(acc)} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]" title="打开收银台"><ExternalLink className="h-3 w-3" /></a>
                     </div>
                   ) : <span className="text-[var(--text-muted)]/50 text-xs">-</span>}

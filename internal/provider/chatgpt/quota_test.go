@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/llm-pool/gateway/internal/domain"
+	"github.com/llm-pool/gateway/internal/protocol/ir"
 	"github.com/llm-pool/gateway/internal/store"
 )
 
@@ -297,6 +300,52 @@ func TestInvokeRawFallsBackToRandomSessionWithoutPromptCacheKey(t *testing.T) {
 	}
 	if gotThreadID != "" || gotRequestID != "" {
 		t.Fatalf("thread headers should not be invented without prompt_cache_key: thread=%q request=%q", gotThreadID, gotRequestID)
+	}
+}
+
+func TestInvokeRawNormalizesFastServiceTierAlias(t *testing.T) {
+	p, cleanup := newRawInvokeTestProvider(t)
+	defer cleanup()
+
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(context.Background(), "acc-raw", []byte(`{"model":"gpt-5.5","service_tier":" fast ","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := gjson.GetBytes(gotBody, "service_tier").String(); got != "priority" {
+		t.Fatalf("service_tier = %q, want priority; body=%s", got, gotBody)
+	}
+}
+
+func TestBuildResponsesBodyPreservesFastTierAndUsesXHighDefaultEffort(t *testing.T) {
+	body, err := buildResponsesBody(&ir.Request{
+		Model:       "gpt-5.5",
+		ServiceTier: "fast",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello"}},
+		}},
+	}, "gpt-5.5")
+	if err != nil {
+		t.Fatalf("buildResponsesBody: %v", err)
+	}
+	if got := gjson.GetBytes(body, "service_tier").String(); got != "priority" {
+		t.Fatalf("service_tier = %q, want priority; body=%s", got, body)
+	}
+	if got := gjson.GetBytes(body, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, body)
 	}
 }
 

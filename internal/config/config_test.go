@@ -39,6 +39,9 @@ func TestDefaultsSupportLongContextAndFiftyConcurrent(t *testing.T) {
 	if cfg.TokenOptimizer.Mode != "off" || cfg.TokenOptimizer.MinToolOutputBytes <= 0 {
 		t.Fatalf("token optimizer defaults should preserve direct Codex request bodies: %+v", cfg.TokenOptimizer)
 	}
+	if !cfg.Stealth.IdentityRewrite || cfg.Stealth.IdentityPath == "" {
+		t.Fatalf("identity rewrite must default on with a persistent identity path: %+v", cfg.Stealth)
+	}
 }
 
 func TestConfigFilesDoNotDowngradeGPT5Aliases(t *testing.T) {

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>系统设置 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -17,6 +17,62 @@
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Runtime policy</div>
+          <h1 class="hero-title">Token 输出优化策略</h1>
+          <p class="hero-subtitle">配置只影响 ChatGPT Responses 的工具输出；默认不改写提示词、用户输入或模型参数。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{.Opt.Mode}}</b><span>当前模式</span></div>
+          <div class="hero-metric"><b>{{.Opt.MinToolOutputBytes}}</b><span>触发 bytes</span></div>
+          <div class="hero-metric"><b>{{.Source}}</b><span>配置来源</span></div>
+        </div>
+      </section>
+
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">处理链路 <span>Pipeline</span></div>
+          <div class="viz-flow" aria-label="工具输出优化链路">
+            <div class="viz-node"><span>输入</span><b>Tool output</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>策略</span><b>{{.Opt.Mode}}</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>输出</span><b>Responses</b></div>
+          </div>
+          <div class="viz-caption">把优化器看作链路中的阀门，而不是一组孤立字段。</div>
+        </div>
+        <div class="viz-card {{if eq .Opt.Mode "off"}}ok{{else}}warn{{end}}">
+          <div class="viz-ring-row">
+            <div class="viz-ring {{if eq .Opt.Mode "off"}}ok{{else}}warn{{end}}" style="--p:{{if eq .Opt.Mode "off"}}0{{else}}100{{end}}"><b>{{.Opt.Mode}}</b></div>
+            <div>
+              <div class="viz-title">运行模式</div>
+              <div class="viz-value">{{.Opt.Mode}}</div>
+              <div class="viz-caption">{{if eq .Opt.Mode "off"}}当前保持原始工具输出。{{else}}超过阈值后按策略压缩工具输出。{{end}}</div>
+            </div>
+          </div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">预算边界 <span>Bytes</span></div>
+          <div class="viz-meter-list">
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">Trigger</span>
+              <span class="viz-meter"><i style="--w:100%;--c:var(--accent)"></i></span>
+              <span class="viz-meter-num">{{.Opt.MinToolOutputBytes}}</span>
+            </div>
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">Max out</span>
+              <span class="viz-meter"><i style="--w:{{percent .Opt.MaxOptimizedToolOutputBytes .Opt.MinToolOutputBytes}}%;--c:var(--purple)"></i></span>
+              <span class="viz-meter-num">{{.Opt.MaxOptimizedToolOutputBytes}}</span>
+            </div>
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">Context</span>
+              <span class="viz-meter"><i style="--w:{{percent .Opt.ErrorContextLines 20}}%;--c:var(--warn)"></i></span>
+              <span class="viz-meter-num">{{.Opt.ErrorContextLines}} lines</span>
+            </div>
+          </div>
+        </div>
+      </div>
       {{if .Saved}}
       <div class="alert alert-info">
         <div>
@@ -34,7 +90,16 @@
       </div>
       {{end}}
 
-      <form method="post" action="/settings/token-optimizer" class="card">
+      <div class="card flat">
+        <div class="card-body">
+          <div class="quick-actions">
+            <a class="btn primary sm" href="/settings/token-optimizer">Token Optimizer</a>
+            <a class="btn ghost sm" href="/settings/network">网络限速</a>
+          </div>
+        </div>
+      </div>
+
+      <form method="post" action="/settings/token-optimizer" class="card work-surface">
         <div class="card-header">
           <div>
             <div class="card-title">ChatGPT Token Optimizer</div>
@@ -46,36 +111,36 @@
           <div class="form">
             <div class="form-row c2">
               <div class="field">
-                <label>模式</label>
-                <select name="mode">
+                <label for="token-optimizer-mode">模式</label>
+                <select id="token-optimizer-mode" name="mode">
                   <option value="off" {{if eq .Opt.Mode "off"}}selected{{end}}>off - 关闭，保持直连 Codex 等价</option>
                   <option value="cleanup" {{if eq .Opt.Mode "cleanup"}}selected{{end}}>cleanup - 只清理 ANSI/进度条/空行</option>
                   <option value="guarded" {{if eq .Opt.Mode "guarded"}}selected{{end}}>guarded - 保守压缩大段工具输出</option>
                 </select>
               </div>
               <div class="field">
-                <label>触发阈值 bytes</label>
-                <input type="number" name="min_tool_output_bytes" min="1" value="{{.Opt.MinToolOutputBytes}}">
+                <label for="token-optimizer-min-bytes">触发阈值 bytes</label>
+                <input id="token-optimizer-min-bytes" type="number" name="min_tool_output_bytes" min="1" value="{{.Opt.MinToolOutputBytes}}">
               </div>
             </div>
             <div class="form-row c3">
               <div class="field">
-                <label>优化后最大 bytes</label>
-                <input type="number" name="max_optimized_tool_output_bytes" min="1" value="{{.Opt.MaxOptimizedToolOutputBytes}}">
+                <label for="token-optimizer-max-bytes">优化后最大 bytes</label>
+                <input id="token-optimizer-max-bytes" type="number" name="max_optimized_tool_output_bytes" min="1" value="{{.Opt.MaxOptimizedToolOutputBytes}}">
               </div>
               <div class="field">
-                <label>保留头部行数</label>
-                <input type="number" name="head_lines" min="1" value="{{.Opt.HeadLines}}">
+                <label for="token-optimizer-head-lines">保留头部行数</label>
+                <input id="token-optimizer-head-lines" type="number" name="head_lines" min="1" value="{{.Opt.HeadLines}}">
               </div>
               <div class="field">
-                <label>保留尾部行数</label>
-                <input type="number" name="tail_lines" min="1" value="{{.Opt.TailLines}}">
+                <label for="token-optimizer-tail-lines">保留尾部行数</label>
+                <input id="token-optimizer-tail-lines" type="number" name="tail_lines" min="1" value="{{.Opt.TailLines}}">
               </div>
             </div>
             <div class="form-row c2">
               <div class="field">
-                <label>错误上下文行数</label>
-                <input type="number" name="error_context_lines" min="1" value="{{.Opt.ErrorContextLines}}">
+                <label for="token-optimizer-error-lines">错误上下文行数</label>
+                <input id="token-optimizer-error-lines" type="number" name="error_context_lines" min="1" value="{{.Opt.ErrorContextLines}}">
               </div>
             </div>
           </div>
@@ -102,5 +167,5 @@
     </div>
   </main>
 </div>
-<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+
 </body></html>

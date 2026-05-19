@@ -5,7 +5,7 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export const API = import.meta.env.VITE_API_BASE || '/api'
+export const API = import.meta.env.VITE_API_BASE || '/api/autoreg'
 export const API_BASE = API
 
 export function getAuthToken(): string {

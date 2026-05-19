@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{or .Title "添加账号"}} · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -14,42 +14,49 @@
       <div class="topbar-title">{{or .Title "手动添加账号"}}</div>
       <div class="topbar-actions">
         <a href="/accounts" class="btn ghost">← 账号池</a>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
-      <div class="grid g2" style="align-items:start">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Account enrollment</div>
+          <h1 class="hero-title">{{or .Title "添加账号"}}</h1>
+          <p class="hero-subtitle">优先使用 OAuth 登录；手动添加只保留必要配置，凭据、代理和 TLS Profile 分层填写。</p>
+        </div>
+      </section>
+      <div class="grid g2 form-workbench" style="align-items:start">
         <div class="card">
           <div class="card-header"><div class="card-title">账号配置</div></div>
           <div class="card-body">
             <form method="post" action="{{or .FormAction "/accounts/new"}}" class="form">
               <div class="form-section-title">基础信息</div>
               <div class="form-row c2">
-                <div class="field"><label>Provider *</label>
-                  <select name="provider">
+                <div class="field"><label for="account-form-provider">Provider *</label>
+                  <select id="account-form-provider" name="provider">
                     <option value="chatgpt" {{if eq .Account.Provider "chatgpt"}}selected{{end}}>chatgpt (OpenAI)</option>
                     <option value="claude"  {{if eq .Account.Provider "claude"}}selected{{end}}>claude (Anthropic)</option>
                     <option value="gemini"  {{if eq .Account.Provider "gemini"}}selected{{end}}>gemini (Google)</option>
                     <option value="kiro"    {{if eq .Account.Provider "kiro"}}selected{{end}}>kiro (Kiro)</option>
                   </select></div>
-                <div class="field"><label>租户</label>
-                  <select name="tenant_id">
+                <div class="field"><label for="account-form-tenant-id">租户</label>
+                  <select id="account-form-tenant-id" name="tenant_id">
                     {{range .Tenants}}<option value="{{.ID}}" {{if eq .ID $.Account.TenantID}}selected{{end}}>{{.Name}}</option>{{end}}
                   </select></div>
               </div>
               <div class="form-row c2">
-                <div class="field"><label>Plan Tier</label>
-                  <select name="plan_tier">
+                <div class="field"><label for="account-form-plan-tier">Plan Tier</label>
+                  <select id="account-form-plan-tier" name="plan_tier">
                     <option value="plus"  {{if eq .Account.PlanTier "plus"}}selected{{end}}>Plus</option>
                     <option value="pro"   {{if eq .Account.PlanTier "pro"}}selected{{end}}>Pro</option>
                     <option value="free"  {{if eq .Account.PlanTier "free"}}selected{{end}}>Free</option>
                   </select></div>
-                <div class="field"><label>注册邮箱</label>
-                  <input type="email" name="email" value="{{.Account.Email}}" placeholder="name@example.com"/></div>
+                <div class="field"><label for="account-form-email">注册邮箱</label>
+                  <input id="account-form-email" type="email" name="email" value="{{.Account.Email}}" placeholder="name@example.com"/></div>
               </div>
               <div class="form-row c2">
-                <div class="field"><label>TLS Profile</label>
-                  <select name="stealth_profile">
+                <div class="field"><label for="account-form-stealth-profile">TLS Profile</label>
+                  <select id="account-form-stealth-profile" name="stealth_profile">
                     <option value="chrome_124_windows">Chrome 124 Windows</option>
                     <option value="chrome_120_mac">Chrome 120 Mac</option>
                     <option value="firefox_125_linux">Firefox 125 Linux</option>
@@ -59,8 +66,8 @@
 
               <div class="form-section">
                 <div class="form-section-title">凭证</div>
-                <div class="field"><label>Session Token / Session JSON {{if .IsEdit}}(留空则保留原凭证){{else}}*{{end}}</label>
-                  <textarea name="session_token" rows="4"
+                <div class="field"><label for="account-form-session-token">Session Token / Session JSON {{if .IsEdit}}(留空则保留原凭证){{else}}*{{end}}</label>
+                  <textarea id="account-form-session-token" name="session_token" rows="4"
                     placeholder='粘贴 __Secure-next-auth.session-token cookie 值，&#10;或 {"accessToken":"...","refreshToken":"...","account":{...}} JSON'
                   >{{.SessionToken}}</textarea></div>
               </div>
@@ -68,10 +75,10 @@
               <div class="form-section">
                 <div class="form-section-title">可选配置</div>
                 <div class="form-row c2">
-                  <div class="field"><label>User-Agent</label>
-                    <input name="ua" value="{{.Account.UA}}" placeholder="留空使用默认"/></div>
-                  <div class="field"><label>出站代理</label>
-                    <input name="proxy" value="{{.Account.Proxy}}" placeholder="socks5://127.0.0.1:1080"/></div>
+                  <div class="field"><label for="account-form-ua">User-Agent</label>
+                    <input id="account-form-ua" name="ua" value="{{.Account.UA}}" placeholder="留空使用默认"/></div>
+                  <div class="field"><label for="account-form-proxy">出站代理</label>
+                    <input id="account-form-proxy" name="proxy" value="{{.Account.Proxy}}" placeholder="socks5://127.0.0.1:1080"/></div>
                 </div>
               </div>
 
@@ -96,5 +103,5 @@
     </div>
   </main>
 </div>
-<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+
 </body></html>

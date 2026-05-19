@@ -42,18 +42,20 @@
   window.renderRequestSeries = function (host, rollups) {
     if (!rollups || !Array.isArray(rollups) || rollups.length === 0) return;
     host.innerHTML = "";
+    const configuredH = parseInt(host.dataset.chartHeight || "", 10) || 0;
     const oldH = host.clientHeight || host.offsetHeight || 220;
     host.style.height = "auto";
     const W = host.clientWidth || host.offsetWidth || 800;
-    const H = Math.max(180, Math.min(260, oldH));
-    host.style.minHeight = (H + 26) + "px";
-    const pad = { l: 52, r: 12, t: 16, b: 28 };
+    const H = configuredH || Math.max(150, Math.min(220, oldH));
+    host.style.minHeight = (H + 8) + "px";
+    const pad = { l: 44, r: 10, t: 14, b: 24 };
     const innerW = W - pad.l - pad.r;
     const innerH = H - pad.t - pad.b;
 
     const counts = rollups.map(r => r.Count || 0);
     const lats = rollups.map(r => r.AvgLatencyMs || 0);
     const errs = rollups.map(r => r.ErrCount || 0);
+    const totalCount = counts.reduce((a, b) => a + b, 0);
 
     const maxCnt = Math.max(1, ...counts);
     const maxLat = Math.max(1, ...lats);
@@ -63,6 +65,34 @@
     svg.style.maxWidth = "100%";
     svg.style.height = H + "px";
     host.appendChild(svg);
+
+    if (totalCount === 0) {
+      svg.appendChild(el("rect", {
+        x: pad.l, y: pad.t, width: innerW, height: innerH,
+        rx: 10, fill: "rgba(127,127,127,0.035)", stroke: "rgba(127,127,127,0.12)",
+      }));
+      const bars = [0.26, 0.42, 0.34, 0.58, 0.48, 0.36, 0.62, 0.52, 0.39, 0.46, 0.31, 0.55];
+      const barGap = 7;
+      const barW = Math.max(6, (innerW - barGap * (bars.length + 1)) / bars.length);
+      bars.forEach((v, i) => {
+        const h = Math.max(10, innerH * v * 0.52);
+        const x = pad.l + barGap + i * (barW + barGap);
+        const y = pad.t + innerH - h - 12;
+        svg.appendChild(el("rect", {
+          x, y, width: barW, height: h, rx: 5,
+          fill: "var(--accent)", opacity: String(0.06 + (i % 3) * 0.025),
+        }));
+      });
+      svg.appendChild(el("text", {
+        x: W / 2, y: pad.t + innerH / 2 - 8, "text-anchor": "middle",
+        "font-size": "13", "font-weight": "650", fill: "currentColor", opacity: "0.72",
+      })).textContent = "暂无请求流量";
+      svg.appendChild(el("text", {
+        x: W / 2, y: pad.t + innerH / 2 + 14, "text-anchor": "middle",
+        "font-size": "11", fill: "currentColor", opacity: "0.48",
+      })).textContent = "请求进入后这里展示吞吐、延迟与错误趋势";
+      return;
+    }
 
     // Grid
     for (let i = 0; i <= 4; i++) {
@@ -87,13 +117,16 @@
     }
     const fillPath = pathD + `L${pad.l + (N - 1) * stepX},${pad.t + innerH} L${pad.l},${pad.t + innerH} Z`;
 
-    svg.appendChild(el("path", {
-      d: fillPath, fill: "url(#grad-blue)", opacity: "0.35",
-    }));
-    svg.appendChild(el("path", {
-      d: pathD, fill: "none", stroke: "var(--accent)",
-      "stroke-width": "2", "stroke-linejoin": "round", "stroke-linecap": "round",
-    }));
+    if (totalCount > 0) {
+      svg.appendChild(el("path", {
+        d: fillPath, fill: "url(#grad-blue)", opacity: "0.18",
+      }));
+      svg.appendChild(el("path", {
+        d: pathD, fill: "none", stroke: "var(--viz-accent,var(--accent))",
+        "stroke-width": "1.6", "stroke-linejoin": "round", "stroke-linecap": "round",
+        opacity: "0.82",
+      }));
+    }
 
     // Error bars at bottom
     for (let i = 0; i < N; i++) {
@@ -108,8 +141,8 @@
     // Defs (gradient)
     const defs = el("defs");
     const grad = el("linearGradient", { id: "grad-blue", x1: "0", x2: "0", y1: "0", y2: "1" });
-    grad.appendChild(el("stop", { offset: "0%", "stop-color": "var(--accent)", "stop-opacity": "0.7" }));
-    grad.appendChild(el("stop", { offset: "100%", "stop-color": "var(--accent)", "stop-opacity": "0.05" }));
+    grad.appendChild(el("stop", { offset: "0%", "stop-color": "var(--viz-accent,var(--accent))", "stop-opacity": "0.42" }));
+    grad.appendChild(el("stop", { offset: "100%", "stop-color": "var(--viz-accent,var(--accent))", "stop-opacity": "0.03" }));
     defs.appendChild(grad);
     svg.appendChild(defs);
 
@@ -146,11 +179,11 @@
     const cx = W / 2, cy = H / 2, r = Math.max(34, Math.min(W, H) / 2 - 10), ir = Math.max(18, r - 18);
 
     const colors = {
-      healthy: "#30d158",
-      low_quota: "#ff9f0a",
-      no_quota: "#ff453a",
-      banned: "#ff375f",
-      abnormal: "#8e8e93",
+      healthy: "var(--viz-ok,var(--ok))",
+      low_quota: "var(--warn)",
+      no_quota: "var(--err)",
+      banned: "var(--err)",
+      abnormal: "var(--fg-muted)",
     };
     const total = buckets.reduce((a, b) => a + (b.count || 0), 0);
 
@@ -237,6 +270,15 @@
     const svg = makeSvg(W, H, null, {stretch: true});
     host.appendChild(svg);
 
+    if (!vals.some(v => v > 0)) {
+      svg.appendChild(el("line", {
+        x1: "0", x2: String(W), y1: String(H / 2), y2: String(H / 2),
+        stroke: "var(--viz-track,var(--sep))", "stroke-width": "1",
+        "stroke-linecap": "round", opacity: "0.72",
+      }));
+      return;
+    }
+
     let pathD = "";
     for (let i = 0; i < vals.length; i++) {
       const x = i * stepX;
@@ -246,6 +288,7 @@
     svg.appendChild(el("path", {
       d: pathD, fill: "none", stroke: opts?.color || "var(--accent)",
       "stroke-width": "1.5", "stroke-linejoin": "round", "stroke-linecap": "round",
+      opacity: "0.72",
     }));
   };
 
@@ -272,6 +315,7 @@
     svg.appendChild(el("path", {
       d: arcPath(start, filledEnd), fill: "none",
       stroke: opts?.color || "var(--accent)", "stroke-width": "12", "stroke-linecap": "round",
+      opacity: "0.76",
     }));
     const t = el("text", {
       x: cx, y: cy - 8, "text-anchor": "middle",
@@ -379,7 +423,7 @@
     const fillD = pTotal + "L" + ((points.length-1)*stepX).toFixed(1) + "," + H + " L0," + H + " Z";
     svg.appendChild(el("path", { d: fillD, fill: "var(--fg-muted)", opacity: "0.06" }));
     svg.appendChild(el("path", { d: pTotal, fill: "none", stroke: "var(--fg-muted)", "stroke-width": "1", opacity: "0.4" }));
-    svg.appendChild(el("path", { d: pHits, fill: "none", stroke: "var(--ok)", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    svg.appendChild(el("path", { d: pHits, fill: "none", stroke: "var(--viz-ok,var(--ok))", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", opacity: "0.72" }));
   };
 
   function truncate(s, n) {
@@ -412,7 +456,7 @@
       abnormal: '账号异常的',
     }[statusCategory] || '账号异常的');
     const statusColor = ({
-      healthy: 'var(--ok)',
+      healthy: 'var(--ok-quiet,var(--ok))',
       low_quota: 'var(--warn)',
       no_quota: 'var(--err)',
       banned: 'var(--err)',
@@ -424,16 +468,18 @@
 
     // Load pressure: 0-1 scale based on inflight+latency (calibrated for pool use)
     const pressure = Math.min(1, (inflight / 10) * 0.5 + (latMs / 3000) * 0.3 + (inflight > 0 ? 0.1 : 0));
-    const pressureColor = pressure > 0.8 ? 'var(--err)' : pressure > 0.5 ? 'var(--warn)' : 'var(--ok)';
+    const pressureColor = pressure > 0.8 ? 'var(--err)' : pressure > 0.5 ? 'var(--warn)' : 'var(--ok-quiet,var(--ok))';
 
     const sUsed = slot.quotaShortUsed || 0, sLim = slot.quotaShortLimit || 0;
     const lUsed = slot.quotaLongUsed  || 0, lLim = slot.quotaLongLimit  || 0;
     const sRemain = sLim > 0 ? Math.max(0, Math.min(100, ((sLim - sUsed) / sLim) * 100)) : 100;
     const lRemain = lLim > 0 ? Math.max(0, Math.min(100, ((lLim - lUsed) / lLim) * 100)) : 100;
-    const remainColor = (r) => r < 20 ? 'var(--err)' : r < 50 ? 'var(--warn)' : 'var(--ok)';
+    const remainColor = (r) => r < 20 ? 'var(--err)' : r < 50 ? 'var(--warn)' : 'var(--ok-quiet,var(--ok))';
 
     const provClass = 'provider-tag provider-' + (slot.provider || 'openai');
-    const models = (slot.discoveredModels || []).slice(0, 3).join(', ');
+    const modelList = slot.discoveredModels || [];
+    const models = modelList.slice(0, 2).join(', ');
+    const modelMore = modelList.length > 2 ? ` +${modelList.length - 2}` : '';
     const sReset = slot.quotaShortReset ? fmtRelTime(slot.quotaShortReset) : '—';
     const lReset = slot.quotaLongReset  ? fmtRelTime(slot.quotaLongReset)  : '—';
 
@@ -480,17 +526,91 @@
   <span style="font-size:10px;color:${pressureColor};white-space:nowrap">${Math.round(pressure*100)}%</span>
 </div>
 
-${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${models}</div>` : ''}
+${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${models}${modelMore}</div>` : ''}
 `;
+  };
+
+  window.renderAccountRow = function(host, slot) {
+    const statusCategory = slot.statusCategory || 'abnormal';
+    const statusLabel = slot.statusLabel || ({
+      healthy: '健康的',
+      low_quota: '额度低',
+      no_quota: '没有额度',
+      banned: '账号被封禁的',
+      abnormal: '账号异常的',
+    }[statusCategory] || '账号异常的');
+    const statusColor = ({
+      healthy: 'var(--ok-quiet,var(--ok))',
+      low_quota: 'var(--warn)',
+      no_quota: 'var(--err)',
+      banned: 'var(--err)',
+      abnormal: 'var(--fg-muted)',
+    }[statusCategory] || 'var(--fg-muted)');
+
+    const latMs = Math.round(slot.ewmaLatency || 0);
+    const inflight = slot.inflight || 0;
+    const sUsed = slot.quotaShortUsed || 0, sLim = slot.quotaShortLimit || 0;
+    const lUsed = slot.quotaLongUsed || 0, lLim = slot.quotaLongLimit || 0;
+    const sRemain = sLim > 0 ? Math.max(0, Math.min(100, ((sLim - sUsed) / sLim) * 100)) : 100;
+    const lRemain = lLim > 0 ? Math.max(0, Math.min(100, ((lLim - lUsed) / lLim) * 100)) : 100;
+    const remainColor = (r) => r < 20 ? 'var(--err)' : r < 50 ? 'var(--warn)' : 'var(--ok-quiet,var(--ok))';
+    const sPct = sLim ? Math.round(sRemain) : 0;
+    const lPct = lLim ? Math.round(lRemain) : 0;
+    const sColor = sLim ? remainColor(sRemain) : 'var(--hairline-2)';
+    const lColor = lLim ? remainColor(lRemain) : 'var(--hairline-2)';
+    const id = slot.accountID || '';
+    const prov = slot.provider || 'unknown';
+    const href = '/accounts/' + encodeURIComponent(id);
+    host.innerHTML = `
+<div class="pool-row-main">
+  <span class="pool-row-dot" style="background:${statusColor}"></span>
+  <a class="pool-row-id" href="${href}" title="${escapeHtml(id)}">${escapeHtml(id)}</a>
+  <span class="provider-tag provider-${escapeHtml(prov)}" style="font-size:9px">${escapeHtml(prov)}</span>
+</div>
+<div class="pool-row-meta">
+  <span class="pool-row-stat" title="${escapeHtml(statusLabel)}">${latMs}ms · ×${inflight}</span>
+  <div class="pool-row-bar">
+    <span>5h ${sLim ? Math.round(sRemain) + '%' : '—'}</span>
+    <div class="pool-row-track"><i style="width:${sPct}%;background:${sColor}"></i></div>
+  </div>
+  <div class="pool-row-bar">
+    <span>7d ${lLim ? Math.round(lRemain) + '%' : '—'}</span>
+    <div class="pool-row-track"><i style="width:${lPct}%;background:${lColor}"></i></div>
+  </div>
+</div>`;
   };
 
   // renderPoolGrid renders the full accounts grid with cards.
   window.renderPoolGrid = function(host, slots) {
-    if (!host || !slots || !slots.length) return;
+    if (!host) return;
     host.innerHTML = '';
+    if (!slots || !slots.length) {
+      host.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:34px 18px"><div class="empty-icon">◯</div><div class="empty-title">暂无账号数据</div><div class="empty-sub">添加账号后这里会展示额度、负载与模型能力。</div></div>';
+      return;
+    }
+    const compact = host.classList.contains('compact-pool');
     for (const slot of slots) {
+      if (compact) {
+        const row = document.createElement('div');
+        row.className = 'pool-runtime-row';
+        row.tabIndex = 0;
+        const href = '/accounts/' + encodeURIComponent(slot.accountID || '');
+        row.addEventListener('click', (ev) => {
+          if (ev.target.closest('a')) return;
+          location.href = href;
+        });
+        row.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            location.href = href;
+          }
+        });
+        renderAccountRow(row, slot);
+        host.appendChild(row);
+        continue;
+      }
       const card = document.createElement('div');
-      card.className = 'card';
+      card.className = 'card pool-runtime-card';
       card.style.cssText = 'padding:14px;cursor:pointer;transition:box-shadow 0.2s';
       card.addEventListener('mouseenter', () => card.style.boxShadow = 'var(--s2)');
       card.addEventListener('mouseleave', () => card.style.boxShadow = '');
@@ -509,7 +629,7 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
     host.innerHTML = '';
     for (const g of groups) {
       const pct = Math.min(100, Math.round((g.avgPressure || 0) * 100));
-      const color = pct > 70 ? 'var(--err)' : pct > 40 ? 'var(--warn)' : 'var(--ok)';
+      const color = pct > 70 ? 'var(--err)' : pct > 40 ? 'var(--warn)' : 'var(--ok-quiet,var(--ok))';
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:10px';
       row.innerHTML = `
@@ -530,7 +650,7 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
     const W = host.clientWidth || host.offsetWidth || 120, H = W;
     const cx = W/2, cy = H/2, r = W/2 - 12, ir = r - 16;
     const pct = Math.max(0, Math.min(1, hitRatio || 0));
-    const color = pct > 0.6 ? 'var(--ok)' : pct > 0.3 ? 'var(--warn)' : 'var(--err)';
+    const color = pct > 0.6 ? 'var(--viz-ok,var(--ok))' : pct > 0.3 ? 'var(--warn)' : 'var(--err)';
 
     const svg = makeSvg(W, H, null, {pxSize: true});
     // Background track
@@ -703,9 +823,9 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
     const svg = makeSvg(pieSize, pieSize);
 
     const provColors = {
-      chatgpt: "#10a37f", openai: "#10a37f", claude: "#bf5af2",
-      gemini: "#4285f4", deepseek: "#0066ff", groq: "#f55036",
-      mistral: "#ff7000", cohere: "#39594d", xai: "#888",
+      chatgpt: "var(--provider-chatgpt)", openai: "var(--provider-openai)", claude: "var(--provider-claude)",
+      gemini: "var(--provider-gemini)", deepseek: "var(--provider-deepseek)", groq: "var(--provider-groq)",
+      mistral: "var(--provider-mistral)", cohere: "var(--provider-cohere)", xai: "#888",
     };
 
     let start = -Math.PI / 2;
@@ -751,7 +871,7 @@ ${models ? `<div style="font-size:10px;color:var(--fg-muted);margin-top:4px;over
   window.renderQuotaBar = function (host, used, limit, label) {
     if (!host) return;
     const remain = limit > 0 ? Math.max(0, Math.min(100, Math.round((limit - used) / limit * 100))) : 100;
-    const color = remain < 20 ? "var(--err)" : remain < 50 ? "var(--warn)" : "var(--ok)";
+    const color = remain < 20 ? "var(--err)" : remain < 50 ? "var(--warn)" : "var(--ok-quiet,var(--ok))";
     host.innerHTML = `
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--fg-muted);margin-bottom:2px">
         <span>${label || ""}</span><span style="color:${color};font-weight:600">剩余 ${remain}%</span>

@@ -4,7 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>API Keys · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
+<style>
+.key-mobile-grid{display:none}
+.key-card{padding:14px;display:flex;flex-direction:column;gap:10px}
+.key-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.key-secret-row{display:flex;align-items:center;gap:8px;min-width:0}
+.key-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.key-meta{padding:8px 10px;border:1px solid var(--hairline);border-radius:var(--r-sm);background:var(--sep)}
+.guide-code{display:block;line-height:1.8}
+@media(max-width:760px){
+  .keys-table-wrap{display:none}
+  .key-mobile-grid{display:grid;grid-template-columns:1fr;gap:12px}
+  .key-meta-grid{grid-template-columns:1fr}
+  .key-secret-row{flex-wrap:wrap}
+}
+</style>
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -13,11 +28,63 @@
     <header class="topbar">
       <div class="topbar-title">API Keys</div>
       <div class="topbar-actions">
-        <button class="btn primary" onclick="showModal('modal-new-key')">+ 生成 Key</button>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn primary" type="button" onclick="showModal('modal-new-key')">+ 生成 Key</button>
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/keys")}}
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Access control</div>
+          <h1 class="hero-title">API Key 分发与接入</h1>
+          <p class="hero-subtitle">集中管理租户、分组和调用凭据；复制、吊销、接入示例保持在一个页面完成，减少在配置与凭据之间来回跳转。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{len .Keys}}</b><span>已签发 Key</span></div>
+          <div class="hero-metric"><b>{{len .Groups}}</b><span>动态分组</span></div>
+          <div class="hero-metric"><b>{{len .Tenants}}</b><span>动态租户</span></div>
+        </div>
+      </section>
+
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">访问链路 <span>Access map</span></div>
+          <div class="viz-flow" aria-label="Key 到租户边界的访问链路">
+            <div class="viz-node"><span>凭据</span><b>{{len .Keys}} Keys</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>分组</span><b>{{len .Groups}} Groups</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>租户</span><b>{{len .Tenants}} Tenants</b></div>
+          </div>
+          <div class="viz-caption">用链路表达权限边界，比单纯列 Key 更容易判断调用会流向哪里。</div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-ring-row">
+            <div class="viz-ring" style="--p:{{percent (len .Keys) 10}}"><b>{{len .Keys}}</b></div>
+            <div>
+              <div class="viz-title">签发规模</div>
+              <div class="viz-value">{{len .Keys}}</div>
+              <div class="viz-caption">Key 越多越需要关注分组归属和吊销路径。</div>
+            </div>
+          </div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">分组承载 <span>Keys / Group</span></div>
+          <div class="viz-meter-list">
+            {{range .Groups}}
+            {{$kc := fieldEqCount $.Keys "GroupID" .ID}}
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">{{.ID}}</span>
+              <span class="viz-meter"><i style="--w:{{percent $kc 6}}%;--c:var(--provider-{{.Provider}})"></i></span>
+              <span class="viz-meter-num">{{$kc}}</span>
+            </div>
+            {{end}}
+            {{if empty .Groups}}
+            <div class="viz-caption">暂无动态分组，签发 Key 后会在这里看到承载关系。</div>
+            {{end}}
+          </div>
+        </div>
+      </div>
 
       {{if .FlashKey}}
       <div class="alert alert-ok" id="flash-key">
@@ -30,13 +97,16 @@
       </div>
       {{end}}
 
-      <div class="card">
+      <div class="card work-surface">
         <div class="card-header">
-          <div class="card-title">所有 Key ({{len .Keys}})</div>
-          <span class="tiny muted">客户端使用此 Key 调用网关</span>
+          <div>
+            <div class="card-title">凭据清单</div>
+            <div class="tiny muted">客户端使用此 Key 调用网关；优先按租户和分组检查权限边界。</div>
+          </div>
+          <span class="table-count">{{len .Keys}} keys</span>
         </div>
-        <div class="table-wrap">
-          <table class="data">
+        <div class="table-wrap keys-table-wrap">
+          <table class="data keys-table">
             <thead>
               <tr>
                 <th>Key（脱敏）</th><th>分组</th><th>租户</th>
@@ -77,58 +147,90 @@
             </tbody>
           </table>
         </div>
+        <div class="card-body key-mobile-grid">
+          {{range .Keys}}
+          <div class="card key-card">
+            <div class="key-card-head">
+              <div class="key-secret-row">
+                <code class="mono">{{truncate 12 .Value}}••••••••</code>
+                <button class="btn ghost sm" onclick="copyText('{{.Value}}','Key')">复制</button>
+              </div>
+              <form method="post" action="/keys/{{.Value}}/revoke" class="form-inline"
+                    onsubmit="return confirm('吊销此 Key?')">
+                <button class="btn ghost sm danger" type="submit">吊销</button>
+              </form>
+            </div>
+            <div class="key-meta-grid">
+              <div class="key-meta"><div class="tiny muted">分组</div><code>{{.GroupID}}</code></div>
+              <div class="key-meta"><div class="tiny muted">租户</div><div class="small bold">{{.TenantID}}</div></div>
+              <div class="key-meta"><div class="tiny muted">备注</div><div class="small">{{or .Label "—"}}</div></div>
+              <div class="key-meta"><div class="tiny muted">创建</div><div class="small">{{.CreatedAt.Format "01-02 15:04"}}</div></div>
+            </div>
+          </div>
+          {{end}}
+          {{if empty .Keys}}
+          <div class="empty">
+            <div class="empty-icon">⚿</div>
+            <div class="empty-title">还没有 API Key</div>
+            <div class="empty-sub">点击右上角「生成 Key」分配给下游客户端</div>
+          </div>
+          {{end}}
+        </div>
       </div>
 
       <!-- Integration guide with dynamic URL -->
-      <div class="card flat">
-        <div class="card-header"><div class="card-title">接入方式</div></div>
+      <details class="card disclosure-card">
+        <summary>
+          <span>接入方式</span>
+          <small>OpenAI / Claude / Gemini 示例</small>
+        </summary>
         <div class="card-body grid g3" style="gap:16px">
           <div>
             <div class="bold small mb-4">OpenAI / Cursor / Codex</div>
-            <code class="tiny" style="display:block;line-height:1.8">OPENAI_BASE_URL={{.GatewayURL}}/v1<br>OPENAI_API_KEY=sk-pool-xxx</code>
+            <code class="tiny guide-code">OPENAI_BASE_URL={{.GatewayURL}}/v1<br>OPENAI_API_KEY=sk-pool-xxx</code>
           </div>
           <div>
             <div class="bold small mb-4">Claude Code / Anthropic</div>
-            <code class="tiny" style="display:block;line-height:1.8">ANTHROPIC_BASE_URL={{.GatewayURL}}/v1<br>ANTHROPIC_API_KEY=sk-pool-xxx</code>
+            <code class="tiny guide-code">ANTHROPIC_BASE_URL={{.GatewayURL}}/v1<br>ANTHROPIC_API_KEY=sk-pool-xxx</code>
           </div>
           <div>
             <div class="bold small mb-4">Gemini CLI</div>
-            <code class="tiny" style="display:block;line-height:1.8">GEMINI_API_BASE={{.GatewayURL}}/v1<br>GOOGLE_API_KEY=sk-pool-xxx</code>
+            <code class="tiny guide-code">GEMINI_API_BASE={{.GatewayURL}}/v1<br>GOOGLE_API_KEY=sk-pool-xxx</code>
           </div>
         </div>
-      </div>
+      </details>
     </div>
   </main>
 </div>
 
 <!-- 生成 Key 弹窗 -->
-<div id="modal-new-key" class="modal-overlay" style="display:none">
-  <div class="card" style="width:420px;border-radius:var(--r-xl);box-shadow:var(--s3)">
+<div id="modal-new-key" class="modal-overlay" style="display:none" aria-hidden="true">
+  <div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-new-key-title" tabindex="-1">
     <div class="card-header">
-      <div class="card-title">生成 API Key</div>
-      <button class="btn-icon" onclick="hideModal('modal-new-key')">✕</button>
+      <div class="card-title" id="modal-new-key-title">生成 API Key</div>
+      <button class="btn-icon" type="button" aria-label="关闭生成 API Key 弹窗" onclick="hideModal('modal-new-key')">✕</button>
     </div>
     <div class="card-body">
       <form method="post" action="/keys/new" class="form">
         <div class="field">
-          <label>租户 *</label>
-          <select name="tenant_id" required>
+          <label for="key-tenant-id">租户 *</label>
+          <select id="key-tenant-id" name="tenant_id" required data-autofocus>
             <option value="">— 选择 —</option>
             {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
             {{range .Tenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
           </select>
         </div>
         <div class="field">
-          <label>分组 *</label>
-          <select name="group_id" required>
+          <label for="key-group-id">分组 *</label>
+          <select id="key-group-id" name="group_id" required>
             <option value="">— 选择 —</option>
             {{range .YamlGroups}}<option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>{{end}}
             {{range .Groups}}<option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>{{end}}
           </select>
         </div>
         <div class="field">
-          <label>备注（可选）</label>
-          <input name="label" placeholder="例如：Cursor 专用"/>
+          <label for="key-label">备注（可选）</label>
+          <input id="key-label" name="label" placeholder="例如：Cursor 专用"/>
         </div>
         <div class="form-actions">
           <button class="btn primary w-full" type="submit">生成</button>
@@ -140,12 +242,49 @@
 
 <div id="toast-ct"></div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
+let activeModal = null;
+let modalRestoreFocus = null;
+const modalFocusableSelector = 'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function modalFocusable(modal){
+  return Array.from(modal.querySelectorAll(modalFocusableSelector))
+    .filter(el => !el.getAttribute('aria-hidden') && (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0));
+}
 function showModal(id){
   const el=document.getElementById(id);
-  if(el){el.style.display='flex';el.addEventListener('click',e=>{if(e.target===el)hideModal(id)});}
+  if(!el)return;
+  modalRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  activeModal = el;
+  el.style.display='flex';
+  el.classList.add('open');
+  el.setAttribute('aria-hidden','false');
+  requestAnimationFrame(()=>{
+    const target = el.querySelector('[data-autofocus]') || modalFocusable(el)[0] || el.querySelector('[role="dialog"]');
+    if(target && target.focus) target.focus();
+  });
 }
-function hideModal(id){const el=document.getElementById(id);if(el)el.style.display='none';}
+function hideModal(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.style.display='none';
+  el.classList.remove('open');
+  el.setAttribute('aria-hidden','true');
+  if(activeModal===el) activeModal=null;
+  if(modalRestoreFocus && modalRestoreFocus.focus) modalRestoreFocus.focus();
+  modalRestoreFocus=null;
+}
+document.addEventListener('click',e=>{
+  if(e.target && e.target.classList && e.target.classList.contains('modal-overlay')) hideModal(e.target.id);
+});
+document.addEventListener('keydown',e=>{
+  if(!activeModal)return;
+  if(e.key==='Escape'){e.preventDefault();hideModal(activeModal.id);return;}
+  if(e.key!=='Tab')return;
+  const items=modalFocusable(activeModal);
+  if(items.length===0){e.preventDefault();const dialog=activeModal.querySelector('[role="dialog"]');if(dialog)dialog.focus();return;}
+  const first=items[0], last=items[items.length-1];
+  if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}
+});
 function showToast(m){
   const c=document.getElementById('toast-ct');
   const t=document.createElement('div');t.className='toast';t.textContent=m;

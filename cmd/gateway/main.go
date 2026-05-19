@@ -85,6 +85,7 @@ func main() {
 		logger.Error("bootstrap admin", "err", err)
 	}
 	applyStoredTokenOptimizer(context.Background(), st, cfg, logger)
+	applyStoredNetworkShaper(context.Background(), st, cfg, logger)
 
 	// Seed built-in cyber groups before the resolver loads DB-backed dynamic
 	// groups, otherwise the current process can miss freshly seeded prompts.
@@ -312,6 +313,7 @@ func main() {
 		Logger:       logger,
 		ProbeFunc:    probeFn,
 		DiscoverFunc: discoverFn,
+		NetShaper:    gw,
 	}).WithCrud(admin.CrudDeps{
 		Resolver: resolver,
 		Audit:    auditLog,
@@ -378,6 +380,30 @@ func applyStoredTokenOptimizer(ctx context.Context, st *store.Store, cfg *config
 	}
 	cfg.TokenOptimizer = config.NormalizeTokenOptimizer(opt)
 	logger.Info("token optimizer setting loaded", "mode", cfg.TokenOptimizer.Mode)
+}
+
+func applyStoredNetworkShaper(ctx context.Context, st *store.Store, cfg *config.Root, logger *slog.Logger) {
+	if st == nil || cfg == nil {
+		return
+	}
+	value, ok, err := st.GetSetting(ctx, store.SettingNetworkShaper)
+	if err != nil {
+		logger.Warn("network shaper setting read", "err", err)
+		return
+	}
+	if !ok || strings.TrimSpace(value) == "" {
+		return
+	}
+	var network config.NetworkShaper
+	if err := json.Unmarshal([]byte(value), &network); err != nil {
+		logger.Warn("network shaper setting parse", "err", err)
+		return
+	}
+	config.ApplyNetworkShaperToServer(network, &cfg.Server)
+	logger.Info("network shaper setting loaded",
+		"ingress_bytes_per_sec", cfg.Server.NetworkIngressBytesPerSec,
+		"egress_bytes_per_sec", cfg.Server.NetworkEgressBytesPerSec,
+		"burst_bytes", cfg.Server.NetworkBurstBytes)
 }
 
 func loadAccounts(ctx context.Context, st *store.Store, sched *scheduler.Scheduler, log *slog.Logger) error {

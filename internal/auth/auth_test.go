@@ -147,3 +147,27 @@ func TestLoadFromConfig_Reload(t *testing.T) {
 		t.Error("new key should resolve after reload")
 	}
 }
+
+func TestLoadFromConfig_GroupRuntimeControls(t *testing.T) {
+	r := NewResolver()
+	r.LoadFromConfig(&config.Root{
+		Groups: []config.Group{{
+			ID:              "g-runtime",
+			TenantID:        "t1",
+			Provider:        "chatgpt",
+			APIKeys:         []string{"sk-runtime"},
+			ReasoningEffort: "high",
+			ForcedModel:     "gpt-5.2",
+		}},
+	})
+	res, ok := r.Resolve("", "sk-runtime", "")
+	if !ok {
+		t.Fatal("should resolve runtime control group")
+	}
+	if res.Group.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort not propagated: %q", res.Group.ReasoningEffort)
+	}
+	if res.Group.ForcedModel != "gpt-5.2" {
+		t.Fatalf("forced model not propagated: %q", res.Group.ForcedModel)
+	}
+}

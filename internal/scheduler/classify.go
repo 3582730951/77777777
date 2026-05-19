@@ -17,11 +17,11 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 		if strings.Contains(sLower, "account banned") || isBanSignal(sLower) {
 			return domain.ErrBanned
 		}
-		if strings.Contains(s, "upstream quota:") {
-			return domain.ErrQuotaExhausted
-		}
 		if isCapacitySignal(sLower) {
 			return domain.ErrRateLimited
+		}
+		if strings.Contains(sLower, "upstream quota:") {
+			return domain.ErrQuotaExhausted
 		}
 		var nerr interface{ Timeout() bool }
 		if errors.As(err, &nerr) && nerr.Timeout() {

@@ -4,7 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
+<style>
+.detail-email-control{display:inline-flex;min-width:0;align-items:center;justify-content:flex-end;gap:8px}
+.detail-email-value{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:"SF Mono",Menlo,monospace;font-size:12px;color:var(--fg)}
+.detail-email-value.placeholder{font-family:inherit;color:var(--fg-muted)}
+.email-toggle{display:inline-flex;width:24px;height:24px;align-items:center;justify-content:center;border:1px solid var(--hairline);
+  border-radius:6px;background:transparent;color:var(--fg-muted);cursor:pointer}
+.email-toggle:hover,.email-toggle.active{color:var(--fg);background:var(--sep)}
+.email-toggle svg{width:14px;height:14px}
+@media(max-width:720px){.detail-email-value{max-width:180px}}
+</style>
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -21,11 +32,10 @@
               onsubmit="return confirm('删除账号 {{.Account.ID}}?')">
           <button class="btn ghost danger" type="submit">删除</button>
         </form>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
-
       <!-- 基本信息 + 健康度 -->
       <div class="grid g3">
         <div class="card glass">
@@ -33,6 +43,19 @@
           <div class="card-body">
             <div class="kv">
               <div class="kv-row"><span class="kv-key">ID</span><code class="kv-val">{{.Account.ID}}</code></div>
+              <div class="kv-row">
+                <span class="kv-key">导入邮箱</span>
+                <span class="detail-email-control">
+                  <span class="detail-email-value placeholder">点击查看</span>
+                  <button type="button" class="email-toggle" data-email="{{.Account.Email}}" aria-label="显示导入邮箱" title="显示导入邮箱"
+                          onclick="toggleAccountDetailEmail(this)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M2.1 12s3.6-6.5 9.9-6.5 9.9 6.5 9.9 6.5-3.6 6.5-9.9 6.5S2.1 12 2.1 12Z"></path>
+                      <circle cx="12" cy="12" r="2.8"></circle>
+                    </svg>
+                  </button>
+                </span>
+              </div>
               <div class="kv-row"><span class="kv-key">Provider</span>
                 <span class="provider-tag provider-{{.Account.Provider}}">{{.Account.Provider}}</span></div>
               <div class="kv-row"><span class="kv-key">租户</span><span class="kv-val">{{.Account.TenantID}}</span></div>
@@ -162,9 +185,26 @@
     </div>
   </main>
 </div>
-<script src="/static/charts.js?v=2"></script>
+<script src="/static/charts.js?v=8"></script>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
+function toggleAccountDetailEmail(btn){
+  const holder=btn.closest('.detail-email-control')?.querySelector('.detail-email-value');
+  if(!holder)return;
+  const showing=btn.classList.contains('active');
+  if(showing){
+    holder.textContent='点击查看';
+    holder.classList.add('placeholder');
+    btn.classList.remove('active');
+    btn.setAttribute('aria-label','显示导入邮箱');
+    btn.setAttribute('title','显示导入邮箱');
+    return;
+  }
+  holder.textContent=btn.dataset.email||'未记录邮箱';
+  holder.classList.remove('placeholder');
+  btn.classList.add('active');
+  btn.setAttribute('aria-label','隐藏导入邮箱');
+  btn.setAttribute('title','隐藏导入邮箱');
+}
 fetch('/api/admin/accounts/{{.Account.ID}}/series?window=6h')
   .then(r=>r.json())
   .then(data=>{
@@ -174,7 +214,7 @@ fetch('/api/admin/accounts/{{.Account.ID}}/series?window=6h')
     const lat=last.EWMAMs||0;
     const g=document.getElementById('gauge-ewma');
     if(g){
-      const color=lat>1500?'var(--err)':lat>800?'var(--warn)':'var(--ok)';
+      const color=lat>1500?'var(--err)':lat>800?'var(--warn)':'var(--ok-quiet,var(--ok))';
       window.renderGauge&&renderGauge(g,lat,2000,{color,label:Math.round(lat)+' ms'});
     }
     document.getElementById('val-ewma').textContent=Math.round(lat)+' ms';

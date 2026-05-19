@@ -5,17 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/llm-pool/gateway/internal/auth"
 	"github.com/llm-pool/gateway/internal/config"
 	"github.com/llm-pool/gateway/internal/domain"
 	"github.com/llm-pool/gateway/internal/protocol/ir"
 	"github.com/llm-pool/gateway/internal/provider"
 	"github.com/llm-pool/gateway/internal/scheduler"
+	"github.com/llm-pool/gateway/internal/stealth"
 	"github.com/llm-pool/gateway/internal/stream"
 	"github.com/tidwall/gjson"
 )
@@ -375,6 +380,195 @@ func TestResponsesPassthroughScrubsClientMetadataBeforeRawInvoke(t *testing.T) {
 	}
 	if got := gjson.GetBytes(raw.body, "tools.0.name").String(); got != "shell" {
 		t.Fatalf("tools changed: %q body=%s", got, raw.body)
+	}
+}
+
+func TestBackendAPICodexResponsesRouteUsesRawPassthrough(t *testing.T) {
+	cfg := &config.Root{
+		Groups: []config.Group{{
+			ID:         "g",
+			TenantID:   "default",
+			Provider:   "raw",
+			APIKeys:    []string{"sk-test"},
+			AccountIDs: []string{"acc-1"},
+		}},
+	}
+	resolver := auth.NewResolver()
+	resolver.LoadFromConfig(cfg)
+	sched := scheduler.New(cfg.Scheduler)
+	sched.Register(&domain.Account{
+		ID:       "acc-1",
+		TenantID: "default",
+		Provider: "raw",
+		State:    domain.StateActive,
+	})
+	raw := &captureRawProvider{}
+	reg := provider.NewRegistry()
+	reg.Register(raw)
+	gw := NewGateway(Deps{
+		Cfg:       cfg,
+		Resolver:  resolver,
+		Sched:     sched,
+		Providers: reg,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	r := chi.NewRouter()
+	gw.Mount(r)
+
+	body := `{"model":"gpt-5.5","input":[],"reasoning":{"effort":"high"},"service_tier":"priority","max_output_tokens":200000,"store":false,"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer sk-test")
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(raw.body) == 0 {
+		t.Fatal("raw provider did not receive backend-api/codex/responses request")
+	}
+	for path, want := range map[string]string{
+		"model":            "gpt-5.5",
+		"reasoning.effort": "high",
+		"service_tier":     "priority",
+	} {
+		if got := gjson.GetBytes(raw.body, path).String(); got != want {
+			t.Fatalf("%s changed: got %q want %q body=%s", path, got, want, raw.body)
+		}
+	}
+	if got := gjson.GetBytes(raw.body, "max_output_tokens").Int(); got != 200000 {
+		t.Fatalf("max_output_tokens changed: got %d body=%s", got, raw.body)
+	}
+}
+
+func TestResponsesPassthroughUsesPersistedIdentityRewrite(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "identity.json")
+	baseBundle := stealth.IdentityBundle{
+		Username:        "root",
+		Hostname:        "vps-alpha",
+		Platform:        "linux",
+		OS:              "linux",
+		OSVersion:       "6.1",
+		Arch:            "amd64",
+		Shell:           "/bin/bash",
+		Terminal:        "xterm-256color",
+		Runtime:         "node",
+		RuntimeVersion:  "v24.3.0",
+		AppVersion:      "2.1.138",
+		IPAddress:       "10.0.0.10",
+		ASN:             "AS64512",
+		Region:          "us-east",
+		Timezone:        "UTC",
+		DNSResolvers:    []string{"10.0.0.53", "1.1.1.1"},
+		DNSProvider:     "vps-dns",
+		StatsigStableID: "stable_base",
+		StatsigUserID:   "statsig_user_base",
+		FeatureGateSeed: "fgseed_base",
+		FeatureGates: map[string]bool{
+			"claude_code_plan_mode": true,
+		},
+		ExperimentGroups: map[string]string{
+			"claude_code_ui": "variant_a",
+		},
+		UserID:           "user_vps",
+		SessionID:        "sess_vps",
+		AccountID:        "acct_vps",
+		AccountUUID:      "00000000-0000-0000-0000-000000000001",
+		OrganizationID:   "org_vps",
+		OrganizationUUID: "00000000-0000-0000-0000-000000000002",
+		Email:            "root@vps-alpha.local",
+	}
+	identityPayload, _ := json.Marshal(map[string]any{
+		"version": 1,
+		"bundle":  baseBundle,
+	})
+	if err := os.WriteFile(identityPath, identityPayload, 0600); err != nil {
+		t.Fatalf("write identity fixture: %v", err)
+	}
+	wantBundle, err := stealth.LoadOrCreateAccountIdentityBundle(identityPath, "raw", "acc-1", "")
+	if err != nil {
+		t.Fatalf("create account identity fixture: %v", err)
+	}
+
+	cfg := &config.Root{}
+	cfg.Stealth.IdentityRewrite = true
+	cfg.Stealth.IdentityPath = identityPath
+	cfg.Scheduler.Retry.MaxAttempts = 1
+	cfg.Scheduler.Failover.HeadBuffer.MaxBytes = 4096
+	cfg.Scheduler.Failover.HeadBuffer.MaxEvents = 2
+	sched := scheduler.New(cfg.Scheduler)
+	sched.Register(&domain.Account{
+		ID:       "acc-1",
+		TenantID: "default",
+		Provider: "raw",
+		State:    domain.StateActive,
+	})
+	raw := &captureRawProvider{}
+	reg := provider.NewRegistry()
+	reg.Register(raw)
+	gw := NewGateway(Deps{
+		Cfg:       cfg,
+		Sched:     sched,
+		Providers: reg,
+	})
+
+	group := &domain.Group{
+		ID:         "g",
+		TenantID:   "default",
+		Provider:   "raw",
+		AccountIDs: []string{"acc-1"},
+	}
+	body := `{"model":"gpt-5.5","session_id":"client-session","user":{"id":"client-user","email":"alice@example.test","account_uuid":"client-account"},"organization":{"id":"client-org"},"cwd":"/Users/alice/private/app","workspace":{"host_paths":["/Users/alice/private/app"]},"terminal":{"type":"iTerm.app"},"app":{"version":"0.0.1"},"platform":"darwin","os":{"type":"darwin"},"host":{"arch":"arm64","name":"alice-mbp.local"},"ip_address":"192.0.2.44","dns":{"provider":"google","resolvers":["8.8.8.8"]},"statsig":{"stable_id":"local-stable","user_id":"local-statsig-user","feature_gates":{"claude_code_plan_mode":false}},"feature":{"gate":{"seed":"local-seed"}},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"cwd=/Users/alice/private/app hostname=alice-mbp.local"}]}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), ctxResolved, auth.Resolved{Group: group, APIKey: "sk-test"}))
+	rec := httptest.NewRecorder()
+
+	gw.handleResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, leaked := range []string{
+		"client-session", "client-user", "client-account", "client-org",
+		"alice-mbp.local", "iTerm.app", `"version":"0.0.1"`, `"darwin"`, `"arm64"`,
+		"192.0.2.44", "8.8.8.8", "google", "local-stable", "local-statsig-user", "local-seed",
+	} {
+		if bytes.Contains(raw.body, []byte(leaked)) {
+			t.Fatalf("client identity leaked into raw provider body via %q: %s", leaked, raw.body)
+		}
+	}
+	for path, want := range map[string]string{
+		"session_id":        wantBundle.SessionID,
+		"user.id":           wantBundle.UserID,
+		"user.email":        wantBundle.Email,
+		"user.account_uuid": wantBundle.AccountUUID,
+		"organization.id":   wantBundle.OrganizationID,
+		"cwd":               "/Users/alice/private/app",
+		"terminal.type":     wantBundle.Terminal,
+		"app.version":       wantBundle.AppVersion,
+		"platform":          wantBundle.Platform,
+		"os.type":           wantBundle.OS,
+		"host.arch":         wantBundle.Arch,
+		"host.name":         wantBundle.Hostname,
+		"ip_address":        wantBundle.IPAddress,
+		"dns.provider":      wantBundle.DNSProvider,
+		"statsig.stable_id": wantBundle.StatsigStableID,
+		"statsig.user_id":   wantBundle.StatsigUserID,
+		"feature.gate.seed": wantBundle.FeatureGateSeed,
+	} {
+		if got := gjson.GetBytes(raw.body, path).String(); got != want {
+			t.Fatalf("%s = %q, want %q body=%s", path, got, want, raw.body)
+		}
+	}
+	if gotPath := gjson.GetBytes(raw.body, "workspace.host_paths.0").String(); gotPath != "/Users/alice/private/app" {
+		t.Fatalf("workspace.host_paths should be preserved, got %q body=%s", gotPath, raw.body)
+	}
+	if gotResolver := gjson.GetBytes(raw.body, "dns.resolvers.0").String(); gotResolver != "10.0.0.53" {
+		t.Fatalf("dns resolver not rewritten: got %q body=%s", gotResolver, raw.body)
+	}
+	if text := gjson.GetBytes(raw.body, "input.0.content.0.text").String(); !strings.Contains(text, "/Users/alice/private/app") || !strings.Contains(text, wantBundle.Hostname) {
+		t.Fatalf("input text was not identity rewritten: %q body=%s", text, raw.body)
 	}
 }
 

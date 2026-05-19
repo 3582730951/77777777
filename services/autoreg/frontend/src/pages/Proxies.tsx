@@ -54,9 +54,9 @@ export default function Proxies() {
   const totalFail = proxies.reduce((sum, item) => sum + Number(item.fail_count || 0), 0)
   const metricCards = [
     { label: '代理数', value: proxies.length, icon: Globe2, tone: 'text-[var(--accent)]' },
-    { label: '启用', value: activeCount, icon: ShieldCheck, tone: 'text-emerald-400' },
+    { label: '启用', value: activeCount, icon: ShieldCheck, tone: 'text-[var(--state-success)]' },
     { label: '成功次数', value: totalSuccess, icon: Activity, tone: 'text-[var(--accent)]' },
-    { label: '失败次数', value: totalFail, icon: CircleOff, tone: 'text-red-400' },
+    { label: '失败次数', value: totalFail, icon: CircleOff, tone: 'text-[var(--state-danger)]' },
   ]
 
   return (
@@ -149,9 +149,9 @@ export default function Proxies() {
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--text-secondary)]">{p.url}</td>
                 <td className="px-4 py-2.5 text-[var(--text-muted)]">{p.region || '-'}</td>
                 <td className="px-4 py-2.5">
-                  <span className="text-emerald-400">{p.success_count}</span>
+                  <span className="text-[var(--state-success)]">{p.success_count}</span>
                   <span className="text-[var(--text-muted)]"> / </span>
-                  <span className="text-red-400">{p.fail_count}</span>
+                  <span className="text-[var(--state-danger)]">{p.fail_count}</span>
                 </td>
                 <td className="px-4 py-2.5">
                   <Badge variant={p.is_active ? 'success' : 'danger'}>

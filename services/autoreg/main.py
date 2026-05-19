@@ -27,7 +27,7 @@ if sys.stderr is not None and getattr(sys.stderr, "encoding", "").lower() not in
     except Exception:
         pass
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -125,10 +125,20 @@ app.include_router(kiro_gateway_router, prefix="/api")
 
 _static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(_static_dir):
+    _static_root = os.path.abspath(_static_dir)
     app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
+        if full_path in {"api", "assets"} or full_path.startswith(("api/", "assets/")):
+            raise HTTPException(status_code=404)
+        static_file = os.path.abspath(os.path.join(_static_root, full_path))
+        if os.path.commonpath([_static_root, static_file]) != _static_root:
+            raise HTTPException(status_code=404)
+        if os.path.isfile(static_file):
+            return FileResponse(static_file)
+        if full_path.endswith((".js", ".css", ".svg", ".json", ".png", ".ico", ".webmanifest")):
+            raise HTTPException(status_code=404)
         return FileResponse(os.path.join(_static_dir, "index.html"))
 
 

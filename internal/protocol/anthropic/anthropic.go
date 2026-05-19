@@ -2,31 +2,34 @@
 package anthropic
 
 import (
-	"strings"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/llm-pool/gateway/internal/protocol/ir"
 )
 
 type request struct {
-	Model       string          `json:"model"`
-	System      json.RawMessage `json:"system,omitempty"`
-	Messages    []rawMessage    `json:"messages"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	MaxTokens   int             `json:"max_tokens"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []rawTool       `json:"tools,omitempty"`
-	Thinking    *thinkingCfg    `json:"thinking,omitempty"`
+	Model             string          `json:"model"`
+	System            json.RawMessage `json:"system,omitempty"`
+	Messages          []rawMessage    `json:"messages"`
+	Temperature       *float64        `json:"temperature,omitempty"`
+	TopP              *float64        `json:"top_p,omitempty"`
+	MaxTokens         int             `json:"max_tokens"`
+	Stream            bool            `json:"stream,omitempty"`
+	Tools             []rawTool       `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
+	Thinking          *thinkingCfg    `json:"thinking,omitempty"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
 }
 
 type thinkingCfg struct {
-	Type        string `json:"type"`
-	BudgetTokens int   `json:"budget_tokens,omitempty"`
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type rawMessage struct {
@@ -35,9 +38,10 @@ type rawMessage struct {
 }
 
 type rawTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
 func Decode(r io.Reader) (*ir.Request, error) {
@@ -61,12 +65,26 @@ func Decode(r io.Reader) (*ir.Request, error) {
 	}
 	if req.Thinking != nil {
 		out.ThinkingTokens = req.Thinking.BudgetTokens
+		out.ThinkingType = req.Thinking.Type
 	} else if effortStr != "" && effortStr != "none" {
 		// Auto-enable thinking when effort is specified via /model syntax.
 		out.ThinkingTokens = effortToClaudeBudget(effortStr)
+		out.ThinkingType = "adaptive"
 	}
 	if len(req.System) > 0 {
 		out.System = decodeText(req.System)
+		out.AnthropicSystemText = out.System
+		out.AnthropicSystem = cloneRaw(req.System)
+	}
+	if len(req.Metadata) > 0 {
+		out.AnthropicMetadata = cloneRaw(req.Metadata)
+	}
+	if len(req.ContextManagement) > 0 {
+		out.AnthropicContextManagement = cloneRaw(req.ContextManagement)
+	}
+	if len(req.ToolChoice) > 0 {
+		out.AnthropicToolChoice = cloneRaw(req.ToolChoice)
+		parseToolChoice(req.ToolChoice, &out.ToolChoice)
 	}
 	for _, m := range req.Messages {
 		msg := ir.Message{Role: ir.Role(m.Role)}
@@ -75,23 +93,29 @@ func Decode(r io.Reader) (*ir.Request, error) {
 			for _, blk := range arr {
 				if t, _ := blk["type"].(string); t == "text" {
 					if txt, _ := blk["text"].(string); txt != "" {
-						msg.Parts = append(msg.Parts, ir.Part{Kind: ir.PartText, Text: txt})
+						msg.Parts = append(msg.Parts, ir.Part{Kind: ir.PartText, Text: txt, CacheControl: rawBlockField(blk, "cache_control")})
 					}
 				} else if t == "image" {
 					src, _ := blk["source"].(map[string]any)
 					if src != nil {
+						sourceType, _ := src["type"].(string)
 						media, _ := src["media_type"].(string)
 						data, _ := src["data"].(string)
-						msg.Parts = append(msg.Parts, ir.Part{
-							Kind: ir.PartImage, ImageMedia: media, ImageBytes: []byte(data),
-						})
+						url, _ := src["url"].(string)
+						part := ir.Part{Kind: ir.PartImage, ImageMedia: media, CacheControl: rawBlockField(blk, "cache_control")}
+						if sourceType == "url" {
+							part.ImageURL = url
+						} else {
+							part.ImageBytes = []byte(data)
+						}
+						msg.Parts = append(msg.Parts, part)
 					}
 				} else if t == "tool_use" {
 					id, _ := blk["id"].(string)
 					name, _ := blk["name"].(string)
 					inb, _ := json.Marshal(blk["input"])
 					msg.Parts = append(msg.Parts, ir.Part{
-						Kind: ir.PartToolUse, ToolUseID: id, ToolUseName: name, ToolUseInput: inb,
+						Kind: ir.PartToolUse, ToolUseID: id, ToolUseName: name, ToolUseInput: inb, CacheControl: rawBlockField(blk, "cache_control"),
 					})
 				} else if t == "tool_result" {
 					id, _ := blk["tool_use_id"].(string)
@@ -101,7 +125,7 @@ func Decode(r io.Reader) (*ir.Request, error) {
 					}
 					isErr, _ := blk["is_error"].(bool)
 					msg.Parts = append(msg.Parts, ir.Part{
-						Kind: ir.PartToolResult, ToolResultID: id, ToolResultBytes: content, ToolResultErr: isErr,
+						Kind: ir.PartToolResult, ToolResultID: id, ToolResultBytes: content, ToolResultErr: isErr, CacheControl: rawBlockField(blk, "cache_control"),
 					})
 				}
 			}
@@ -115,10 +139,51 @@ func Decode(r io.Reader) (*ir.Request, error) {
 	}
 	for _, t := range req.Tools {
 		out.Tools = append(out.Tools, ir.ToolDef{
-			Name: t.Name, Description: t.Description, Schema: []byte(t.InputSchema),
+			Name: t.Name, Description: t.Description, Schema: cloneRaw(t.InputSchema), CacheControl: cloneRaw(t.CacheControl),
 		})
 	}
 	return out, nil
+}
+
+func cloneRaw(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]byte, len(raw))
+	copy(out, raw)
+	return out
+}
+
+func rawBlockField(block map[string]any, key string) []byte {
+	v, ok := block[key]
+	if !ok || v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func parseToolChoice(raw json.RawMessage, out *ir.ToolChoice) {
+	if out == nil || len(raw) == 0 {
+		return
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		out.Mode = s
+		return
+	}
+	var obj struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return
+	}
+	out.Mode = obj.Type
+	out.Name = obj.Name
 }
 
 func decodeText(raw json.RawMessage) string {
@@ -218,12 +283,12 @@ func (e *Encoder) Stream(events <-chan ir.Event) error {
 	if err := e.writeEvent("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id":    e.msgID,
-			"type":  "message",
-			"role":  "assistant",
-			"model": e.model,
-			"content": []any{},
-			"usage": map[string]int{"input_tokens": 0, "output_tokens": 0},
+			"id":          e.msgID,
+			"type":        "message",
+			"role":        "assistant",
+			"model":       e.model,
+			"content":     []any{},
+			"usage":       map[string]int{"input_tokens": 0, "output_tokens": 0},
 			"stop_reason": nil,
 		},
 	}); err != nil {
@@ -235,8 +300,8 @@ func (e *Encoder) Stream(events <-chan ir.Event) error {
 			if !e.thinkOpen {
 				e.closeCurrentBlock()
 				if err := e.writeEvent("content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": e.contentIdx,
+					"type":          "content_block_start",
+					"index":         e.contentIdx,
 					"content_block": map[string]any{"type": "thinking", "thinking": ""},
 				}); err != nil {
 					return err
@@ -254,8 +319,8 @@ func (e *Encoder) Stream(events <-chan ir.Event) error {
 			if !e.textOpen {
 				e.closeCurrentBlock()
 				if err := e.writeEvent("content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": e.contentIdx,
+					"type":          "content_block_start",
+					"index":         e.contentIdx,
 					"content_block": map[string]any{"type": "text", "text": ""},
 				}); err != nil {
 					return err

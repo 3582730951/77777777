@@ -3,6 +3,7 @@ import { apiFetch } from '@/lib/utils'
 import type { ProviderOption, ProviderSetting } from '@/lib/config-options'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Dialog } from '@/components/ui/dialog'
 import { Save, Eye, EyeOff, X, Pencil, Plus, Trash2, FlaskConical } from 'lucide-react'
 import { invalidateConfigOptionsCache } from '@/lib/app-data'
 
@@ -16,12 +17,13 @@ const CATEGORY_GROUPS = [
 /* ------------------------------------------------------------------ */
 /*  Toggle                                                             */
 /* ------------------------------------------------------------------ */
-function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+function Toggle({ checked, onChange, disabled, label }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
@@ -118,36 +120,38 @@ function EditModal({
   }
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-sm flex flex-col" onClick={e => e.stopPropagation()}>
+    <Dialog titleId="provider-edit-title" onClose={onClose} className="dialog-panel-sm flex flex-col">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{provider.label}</h2>
+            <h2 id="provider-edit-title" className="text-base font-semibold text-[var(--text-primary)]">{provider.label}</h2>
             {provider.description && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{provider.description}</p>}
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="关闭 Provider 编辑弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {fields.length === 0 ? (
             <p className="text-sm text-[var(--text-muted)]">此服务无需额外配置。</p>
           ) : fields.map(field => {
             const sk = `${provider.value}:${field.key}`
+            const fieldId = `provider-edit-${sk.replace(/[^a-zA-Z0-9_-]/g, '-')}`
             return (
               <div key={field.key}>
-                <label className="mb-1.5 block text-sm font-medium text-[var(--text-secondary)]">{field.label}</label>
+                <label htmlFor={fieldId} className="mb-1.5 block text-sm font-medium text-[var(--text-secondary)]">{field.label}</label>
                 <div className="relative">
                   {field.type === 'select' && field.options?.length ? (
-                    <select value={form[field.key] || ''} onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))} className="control-surface appearance-none">
+                    <select id={fieldId} value={form[field.key] || ''} onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))} className="control-surface appearance-none">
                       {field.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   ) : (
                     <>
-                      <input type={field.secret && !showSecret[sk] ? 'password' : 'text'} value={form[field.key] || ''}
+                      <input id={fieldId} type={field.secret && !showSecret[sk] ? 'password' : 'text'} value={form[field.key] || ''}
                         onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))}
                         placeholder={field.placeholder || ''} className="control-surface pr-9" autoComplete="new-password"
                         data-1p-ignore data-lpignore="true" />
                       {field.secret && (
-                        <button onClick={() => setShowSecret(s => ({ ...s, [sk]: !s[sk] }))}
+                        <button type="button"
+                          aria-label={showSecret[sk] ? `隐藏${field.label}` : `显示${field.label}`}
+                          onClick={() => setShowSecret(s => ({ ...s, [sk]: !s[sk] }))}
                           className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
                           {showSecret[sk] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                         </button>
@@ -163,8 +167,8 @@ function EditModal({
         {testResult && (
           <div className={`mx-5 rounded-lg px-3 py-2 text-xs ${
             testResult.ok
-              ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-              : 'border border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-400'
+              ? 'border border-[var(--badge-success-border)] bg-[var(--badge-success-bg)] text-[var(--badge-success-fg)]'
+              : 'border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] text-[var(--badge-danger-fg)]'
           }`}>
             {testResult.ok ? testResult.message : testResult.error}
           </div>
@@ -182,8 +186,7 @@ function EditModal({
           </Button>
           <Button variant="outline" onClick={onClose}>取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -304,7 +307,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
 
     return (
       <div key={key}>
-        <div className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
+        <div className="flex flex-col gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 sm:flex-row sm:items-center">
           {/* Left: name + desc + badge */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -317,54 +320,61 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
           </div>
 
           {/* Right: actions */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:flex-wrap sm:items-center sm:justify-end">
             <button
+              type="button"
               onClick={() => hasFields && isEnabled ? setEditTarget({ provider, setting }) : undefined}
               disabled={!hasFields || !isEnabled}
-              className={`table-action-btn ${(!hasFields || !isEnabled) ? 'opacity-30 cursor-not-allowed' : ''}`}
+              className={`table-action-btn justify-center ${(!hasFields || !isEnabled) ? 'opacity-30 cursor-not-allowed' : ''}`}
             >
               <Pencil className="h-3 w-3 mr-1" /> 编辑
             </button>
 
             <button
+              type="button"
               onClick={() => isEnabled ? handleTestInline(provider) : undefined}
               disabled={!isEnabled || testingKeys[key]}
-              className={`table-action-btn ${!isEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
+              className={`table-action-btn justify-center ${!isEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
             >
               <FlaskConical className="h-3 w-3 mr-1" /> {testingKeys[key] ? '测试中' : '测试'}
             </button>
 
             <button
+              type="button"
               onClick={() => isEnabled && !isDefault ? handleSetDefault(provider) : undefined}
               disabled={!isEnabled || isDefault || loading[key]}
-              className={`table-action-btn ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
+              className={`table-action-btn justify-center ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
             >
               {isDefault ? '默认 ✓' : '设默认'}
             </button>
 
             {allowDelete && (
               <button
+                type="button"
                 onClick={() => isEnabled ? handleDelete(provider) : undefined}
                 disabled={!isEnabled || isDefault || loading[key]}
-                className={`table-action-btn table-action-btn-danger ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
+                className={`table-action-btn table-action-btn-danger justify-center ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
               >
                 <Trash2 className="h-3 w-3 mr-1" /> 删除
               </button>
             )}
 
-            <Toggle
-              checked={isEnabled}
-              onChange={v => handleToggle(provider, v)}
-              disabled={loading[key] || isDefault}
-            />
+            <div className="flex items-center justify-center rounded-md border border-[var(--border)] bg-[var(--bg-pane)]/40 px-3 py-1 sm:border-0 sm:bg-transparent sm:px-0 sm:py-0">
+              <Toggle
+                checked={isEnabled}
+                onChange={v => handleToggle(provider, v)}
+                disabled={loading[key] || isDefault}
+                label={`${isEnabled ? '停用' : '启用'} ${provider.label}`}
+              />
+            </div>
           </div>
         </div>
         {/* Inline test result */}
         {testResults[key] && (
           <div className={`mt-1 rounded-lg px-3 py-2 text-xs ${
             testResults[key].ok
-              ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-600'
-              : 'border border-red-500/20 bg-red-500/10 text-red-600'
+              ? 'border border-[var(--badge-success-border)] bg-[var(--badge-success-bg)] text-[var(--badge-success-fg)]'
+              : 'border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] text-[var(--badge-danger-fg)]'
           }`}>
             {testResults[key].ok ? testResults[key].message : testResults[key].error}
           </div>
@@ -395,6 +405,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
                 {visible.map(p => renderCard(p, cat === 'custom'))}
                 {cat === 'custom' && (
                   <button
+                    type="button"
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border)] px-4 py-3 text-sm text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
                     onClick={() => onCreateCustom?.()}
                   >

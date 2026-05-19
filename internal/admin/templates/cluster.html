@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>集群 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -17,6 +17,53 @@
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Federation control</div>
+          <h1 class="hero-title">{{if .Peers}}集群节点运行态{{else}}单实例运行{{end}}</h1>
+          <p class="hero-subtitle">跨 VPS 只同步状态快照，不共享账号凭据。先确认本实例，再观察对端节点容量和可用性。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{len .Peers}}</b><span>对端节点</span></div>
+          <div class="hero-metric"><b>{{.Self.HealthyAccounts}}/{{.Self.TotalAccounts}}</b><span>本机账号</span></div>
+          <div class="hero-metric"><b>{{printf "%.1f" .Self.RPS}}</b><span>本机 RPS</span></div>
+        </div>
+      </section>
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-ring-row">
+            <div class="viz-ring" style="--p:{{percent .Self.HealthyAccounts .Self.TotalAccounts}}"><b>{{.Self.HealthyAccounts}}/{{.Self.TotalAccounts}}</b></div>
+            <div>
+              <div class="viz-title">本机容量</div>
+              <div class="viz-value">{{.Self.HealthyAccounts}}/{{.Self.TotalAccounts}}</div>
+              <div class="viz-caption">健康账号占比决定本实例可承载能力。</div>
+            </div>
+          </div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">联邦拓扑 <span>Snapshot</span></div>
+          <div class="viz-flow">
+            <div class="viz-node"><span>本机</span><b>{{or .Self.Region "local"}}</b></div>
+            <span class="viz-arrow">↔</span>
+            <div class="viz-node"><span>对端</span><b>{{len .Peers}} nodes</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>同步</span><b>Status only</b></div>
+          </div>
+          <div class="viz-caption">只同步状态快照，不共享账号凭据。</div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">流量脉冲 <span>RPS</span></div>
+          <div class="viz-value">{{printf "%.1f" .Self.RPS}}</div>
+          <div class="viz-meter-list">
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">Self</span>
+              <span class="viz-meter"><i style="--w:{{percent .Self.RPS 10}}%;--c:var(--accent)"></i></span>
+              <span class="viz-meter-num">{{printf "%.1f" .Self.RPS}}</span>
+            </div>
+          </div>
+          <div class="viz-caption">出现请求后，脉冲条会比静态数字更直观。</div>
+        </div>
+      </div>
       {{if .Peers}}
       <div class="card">
         <div class="card-header">
@@ -57,19 +104,16 @@
       <!-- 本机信息 -->
       <div class="card">
         <div class="card-header"><div class="card-title">本实例</div></div>
-        <div class="card-body grid g3">
+        <div class="card-body grid g2">
           <div class="kv">
             <div class="kv-row"><span class="kv-key">实例 ID</span><code class="kv-val">{{or .Self.Identity "—"}}</code></div>
             <div class="kv-row"><span class="kv-key">区域</span><span class="kv-val">{{or .Self.Region "—"}}</span></div>
             <div class="kv-row"><span class="kv-key">版本</span><span class="kv-val">{{or .Self.Version "—"}}</span></div>
           </div>
           <div class="kv">
-            <div class="kv-row"><span class="kv-key">账号总数</span><span class="kv-val">{{.Self.TotalAccounts}}</span></div>
-            <div class="kv-row"><span class="kv-key">健康账号</span><span class="kv-val ok">{{.Self.HealthyAccounts}}</span></div>
-            <div class="kv-row"><span class="kv-key">RPS</span><span class="kv-val">{{printf "%.1f" .Self.RPS}}</span></div>
-          </div>
-          <div class="kv">
             <div class="kv-row"><span class="kv-key">启动时间</span><span class="kv-val tiny muted">{{.Self.StartedAt.Format "01-02 15:04"}}</span></div>
+            <div class="kv-row"><span class="kv-key">容量快照</span><span class="kv-val tiny muted">见上方「本机容量」</span></div>
+            <div class="kv-row"><span class="kv-key">流量快照</span><span class="kv-val tiny muted">见上方「流量脉冲」</span></div>
           </div>
         </div>
       </div>
@@ -88,5 +132,5 @@
     </div>
   </main>
 </div>
-<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+
 </body></html>

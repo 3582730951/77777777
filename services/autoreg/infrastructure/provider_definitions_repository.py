@@ -14,6 +14,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_PROVIDER_KEY_ALIASES: dict[tuple[str, str], str] = {
+    ("sms", "herosms"): "herosms_api",
+    ("sms", "sms_activate"): "sms_activate_api",
+}
+
+
+def public_provider_key(provider_type: str, provider_key: str) -> str:
+    reverse = {
+        (ptype, canonical): public_key
+        for (ptype, public_key), canonical in _PROVIDER_KEY_ALIASES.items()
+    }
+    return reverse.get((provider_type, provider_key), provider_key)
+
+
+def canonical_provider_key(provider_type: str, provider_key: str) -> str:
+    return _PROVIDER_KEY_ALIASES.get((provider_type, provider_key), provider_key)
+
+
 _BUILTIN_DEFINITIONS: list[dict] = [
     # ── mailbox ──────────────────────────────────────────────────────
     {
@@ -299,6 +317,24 @@ _BUILTIN_DEFINITIONS: list[dict] = [
     },
     {
         "provider_type": "proxy",
+        "provider_key": "kookeey_dynamic",
+        "label": "Kookeey 动态代理",
+        "description": "通过 Kookeey pickdynamicips 接口自动提取动态代理，支持 socks5/http 和多种返回格式",
+        "driver_type": "kookeey_dynamic",
+        "default_auth_mode": "",
+        "enabled": False,
+        "category": "thirdparty",
+        "auth_modes": [],
+        "fields": [
+            {"key": "kookeey_api_url", "label": "Kookeey 提取地址", "placeholder": "https://www.kookeey.com/pickdynamicips?..."},
+            {"key": "proxy_protocol", "label": "协议", "placeholder": "auto / http / socks5"},
+            {"key": "proxy_timeout", "label": "请求超时秒数", "placeholder": "10"},
+            {"key": "proxy_username", "label": "用户名 (返回值不含账号时可选)"},
+            {"key": "proxy_password", "label": "密码 (返回值不含密码时可选)", "secret": True},
+        ],
+    },
+    {
+        "provider_type": "proxy",
         "provider_key": "rotating_gateway",
         "label": "旋转网关代理",
         "description": "固定入口地址，每次请求自动分配不同出口 IP，适用于 BrightData / Oxylabs / IPRoyal 等",
@@ -372,11 +408,12 @@ class ProviderDefinitionsRepository:
             return session.exec(query.order_by(ProviderDefinitionModel.id)).all()
 
     def get_by_key(self, provider_type: str, provider_key: str) -> ProviderDefinitionModel | None:
+        canonical_key = canonical_provider_key(provider_type, provider_key)
         with Session(engine) as session:
             return session.exec(
                 select(ProviderDefinitionModel)
                 .where(ProviderDefinitionModel.provider_type == provider_type)
-                .where(ProviderDefinitionModel.provider_key == provider_key)
+                .where(ProviderDefinitionModel.provider_key == canonical_key)
             ).first()
 
     def list_driver_templates(self, provider_type: str) -> list[dict]:

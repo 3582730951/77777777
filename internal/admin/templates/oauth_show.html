@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OAuth 登录 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -16,21 +16,40 @@
       </div>
       <div class="topbar-actions">
         <a href="/accounts" class="btn ghost">← 账号池</a>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">OAuth callback</div>
+          <h1 class="hero-title">{{if .Cfg}}{{.Cfg.DisplayName}}{{else}}Provider{{end}} 授权进行中</h1>
+          <p class="hero-subtitle">先点击登录按钮完成授权；如果浏览器和网关不在同一台机器，再使用右侧的回调 URL 粘贴通道。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{if .Cfg}}{{.Cfg.ID}}{{else}}oauth{{end}}</b><span>Provider</span></div>
+          <div class="hero-metric"><b>{{.Pending.TenantID}}</b><span>Tenant</span></div>
+          <div class="hero-metric"><b>{{.Pending.ExpiresAt.Format "15:04"}}</b><span>Expires</span></div>
+        </div>
+      </section>
+
       <!-- 状态横幅 -->
-      <div id="status-bar" class="status-bar status-pending">
-        <span class="spin"></span>
-        <span id="status-txt">等待登录回调…</span>
+      <div class="status-command">
+        <div id="status-bar" class="status-bar status-pending" role="status" aria-live="polite" aria-atomic="true">
+          <span class="spin"></span>
+          <span id="status-txt">等待登录回调…</span>
+        </div>
+        <a href="/accounts" class="btn ghost sm">返回账号池</a>
       </div>
 
-      <div class="grid g2">
+      <div class="layout-with-rail">
         <!-- 步骤 1 -->
-        <div class="card">
+        <div class="card work-surface">
           <div class="card-header">
-            <div class="card-title">第一步：在浏览器中登录</div>
+            <div>
+              <div class="card-title">第一步：在浏览器中登录</div>
+              <div class="tiny muted">这是主路径。授权完成后本页会自动刷新状态。</div>
+            </div>
           </div>
           <div class="card-body flex-col items-center gap-16" style="padding-top:24px">
             <a href="{{.AuthURL}}" target="_blank" class="big-btn">
@@ -56,11 +75,13 @@
         </div>
 
         <!-- 步骤 2（跨机粘贴）-->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">第二步（跨机部署）：粘贴回调 URL</div>
+        <aside class="assist-rail sticky">
+        <div class="assist-card">
+          <div class="assist-card-head">
+            <div class="assist-card-title">跨机部署通道</div>
+            <div class="assist-card-sub">只有 localhost 回调失败时才需要使用</div>
           </div>
-          <div class="card-body">
+          <div class="assist-card-body">
             <p class="small muted mb-12">
               {{if and .Cfg (eq .Cfg.ID "claude")}}
                 浏览器登录并授权后，<b>platform.claude.com</b> 会把含 <code>?code=...&state=...</code> 的完整 URL 重定向到你的浏览器地址栏。复制该完整 URL 粘贴到这里：
@@ -72,8 +93,8 @@
             </p>
             <form method="post" action="/accounts/oauth/{{.Pending.ID}}/paste" class="form">
               <div class="field">
-                <label>回调 URL</label>
-                <textarea name="callback_url" rows="3"
+                <label for="oauth-callback-url">回调 URL</label>
+                <textarea id="oauth-callback-url" name="callback_url" rows="3"
                   placeholder="http://localhost:{{if .Cfg}}{{.Cfg.CallbackPort}}{{.Cfg.CallbackPath}}{{else}}/callback{{end}}?code=XXX&state=YYY"></textarea>
               </div>
               <div class="form-actions">
@@ -82,10 +103,12 @@
             </form>
           </div>
         </div>
+        </aside>
       </div>
 
       <!-- 技术信息 -->
-      <div class="card flat">
+      <details class="card disclosure-card">
+        <summary>技术信息 <small>Enrollment / state / expiry</small></summary>
         <div class="card-body">
           <div class="kv">
             <div class="kv-row"><span class="kv-key tiny">Enrollment ID</span><code class="kv-val tiny">{{.Pending.ID}}</code></div>
@@ -97,12 +120,11 @@
               <span class="kv-val tiny" id="state-txt">{{.Pending.Status}}</span></div>
           </div>
         </div>
-      </div>
+      </details>
     </div>
   </main>
 </div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 const id="{{.Pending.ID}}";
 const bar=document.getElementById('status-bar');
 const txt=document.getElementById('status-txt');
@@ -119,6 +141,7 @@ async function poll(){
     }
     if(j.status==='failed'){
       bar.className='status-bar status-failed';
+      bar.setAttribute('aria-live','assertive');
       txt.textContent='✗ 失败：'+(j.error||'未知错误');
       return false;
     }

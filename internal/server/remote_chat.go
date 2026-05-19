@@ -112,6 +112,7 @@ func (g *Gateway) handleRemoteChat(w http.ResponseWriter, r *http.Request) {
 		req.OriginalProto = "remote_chat"
 	}
 	normalize.Request(req)
+	applyGroupSystemPrompt(req, res.Group)
 
 	if g.providers == nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("unknown_provider", "provider registry is not configured"))

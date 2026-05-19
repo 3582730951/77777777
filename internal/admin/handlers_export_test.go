@@ -212,3 +212,95 @@ func TestHandleTokenOptimizerSettingsPostPersistsAndUpdatesRuntimeConfig(t *test
 		t.Fatalf("unexpected stored setting: %+v", stored)
 	}
 }
+
+type recordingNetworkShaper struct {
+	called bool
+	cfg    config.Server
+}
+
+func (r *recordingNetworkShaper) ApplyNetworkShapingConfig(cfg config.Server) {
+	r.called = true
+	r.cfg = cfg
+}
+
+func TestHandleNetworkSettingsPostPersistsUpdatesRuntimeConfigAndAppliesLimiter(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Root{}
+	cfg.Server.NetworkIngressBytesPerSec = 8 << 20
+	cfg.Server.NetworkEgressBytesPerSec = 4 << 20
+	cfg.Server.NetworkBurstBytes = 1 << 20
+	recorder := &recordingNetworkShaper{}
+	s := &Server{
+		deps: Deps{
+			Cfg:       cfg,
+			Store:     st,
+			NetShaper: recorder,
+		},
+		crud: CrudDeps{Audit: audit.NewLogger(st)},
+	}
+
+	form := "network_ingress_bytes_per_sec=8388608&network_egress_bytes_per_sec=0&network_burst_bytes=1048576"
+	req := httptest.NewRequest(http.MethodPost, "/settings/network", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp := httptest.NewRecorder()
+	s.handleNetworkSettingsPost(resp, req)
+
+	if resp.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if cfg.Server.NetworkIngressBytesPerSec != 8<<20 ||
+		cfg.Server.NetworkEgressBytesPerSec != 0 ||
+		cfg.Server.NetworkBurstBytes != 1<<20 {
+		t.Fatalf("runtime config not updated: %+v", cfg.Server)
+	}
+	if !recorder.called {
+		t.Fatal("network shaper was not updated at runtime")
+	}
+	if recorder.cfg.NetworkEgressBytesPerSec != 0 {
+		t.Fatalf("network shaper did not receive disabled egress config: %+v", recorder.cfg)
+	}
+	value, ok, err := st.GetSetting(t.Context(), store.SettingNetworkShaper)
+	if err != nil {
+		t.Fatalf("get setting: %v", err)
+	}
+	if !ok {
+		t.Fatal("network shaper setting not persisted")
+	}
+	var stored config.NetworkShaper
+	if err := json.Unmarshal([]byte(value), &stored); err != nil {
+		t.Fatalf("decode setting: %v", err)
+	}
+	if stored.NetworkEgressBytesPerSec != 0 || stored.NetworkIngressBytesPerSec != 8<<20 {
+		t.Fatalf("unexpected stored network setting: %+v", stored)
+	}
+}
+
+func TestHandleNetworkSettingsRenders(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	cfg := &config.Root{}
+	cfg.Server.NetworkIngressBytesPerSec = 8 << 20
+	cfg.Server.NetworkEgressBytesPerSec = 0
+	cfg.Server.NetworkBurstBytes = 1 << 20
+	s := New(Deps{Cfg: cfg, Store: st})
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/network", nil)
+	resp := httptest.NewRecorder()
+	s.handleNetworkSettings(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "已关闭限速") {
+		t.Fatalf("network settings page did not render disabled egress state: %s", resp.Body.String())
+	}
+}

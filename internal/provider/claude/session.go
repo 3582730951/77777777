@@ -252,7 +252,7 @@ func (r *sessionResolver) doRefresh(ctx context.Context, refreshToken string) (s
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "claude-cli/2.1.92 (external, cli)")
+	req.Header.Set("User-Agent", cliUserAgent)
 
 	resp, err := r.httpClient.Do(req)
 	if err != nil {

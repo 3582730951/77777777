@@ -80,6 +80,34 @@ func TestNormalizeJSONSchema_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestRequest_PreservesNativeAnthropicShape(t *testing.T) {
+	req := &ir.Request{
+		OriginalProto:              "anthropic",
+		System:                     "native system  ",
+		AnthropicSystemText:        "native system  ",
+		AnthropicSystem:            []byte(`[{"type":"text","text":"native system  "}]`),
+		AnthropicMetadata:          []byte(`{"user_id":"native"}`),
+		AnthropicContextManagement: []byte(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`),
+		Tools:                      []ir.ToolDef{{Name: "z", Schema: []byte(`{"b":1,"a":2}`)}, {Name: "a"}},
+		Messages:                   []ir.Message{{Role: ir.RoleAssistant, Parts: []ir.Part{{Kind: ir.PartToolUse, ToolUseInput: []byte(`{"b":1,"a":2}`)}}}},
+	}
+
+	Request(req)
+
+	if req.System != "native system" {
+		t.Fatalf("system prompt was not normalized: %q", req.System)
+	}
+	if req.AnthropicSystemText != req.System {
+		t.Fatalf("raw system text marker not kept in sync: %q != %q", req.AnthropicSystemText, req.System)
+	}
+	if req.Tools[0].Name != "z" || string(req.Tools[0].Schema) != `{"b":1,"a":2}` {
+		t.Fatalf("native Anthropic tools were modified: %#v", req.Tools)
+	}
+	if got := string(req.Messages[0].Parts[0].ToolUseInput); got != `{"b":1,"a":2}` {
+		t.Fatalf("native Anthropic message JSON was modified: %s", got)
+	}
+}
+
 func TestSortTools(t *testing.T) {
 	tools := []ir.ToolDef{
 		{Name: "zebra"},

@@ -14,14 +14,12 @@ def _result_text(result, key: str) -> str:
 
 
 def _assert_complete_oauth_callback(result) -> None:
-    has_access = bool(_result_text(result, "access_token"))
-    has_session = bool(_result_text(result, "session_token"))
-    has_cookies = bool(_result_text(result, "cookies"))
-    has_email = bool(_result_text(result, "email"))
-    # 只要有邮箱就认为注册成功（token 可后续获取）
-    if not has_access and not has_session and not has_cookies and not has_email:
+    required = ("account_id", "access_token", "refresh_token", "id_token")
+    missing = [key for key in required if not _result_text(result, key)]
+    if missing:
         raise RuntimeError(
-            "ChatGPT 注册未完成: 缺少所有认证信息"
+            "ChatGPT 注册未完成: 未获取完整 OAuth callback，缺少 "
+            + ", ".join(missing)
         )
 
 
@@ -327,23 +325,13 @@ class ChatGPTPlatform(BasePlatform):
             return {"ok": True, "data": data}
 
         if action_id == "auto_upgrade":
-            from platforms.chatgpt.auto_upgrade import auto_upgrade_with_browser, UpgradeConfig
+            from platforms.chatgpt.auto_upgrade import auto_upgrade_with_browser, parse_upgrade_config
 
-            # 解析卡信息: "卡号 ---- 过期 ---- CVV ---- 3DS手机 ---- 3DS SMS API ---- 姓名 ---- 地址"
-            card_parts = [p.strip() for p in (params.get("card_info", "") or "").split("----")]
-            # 解析 PayPal: "手机|SMS API"
-            paypal_parts = [p.strip() for p in (params.get("paypal_info", "") or "").split("|")]
-
-            upgrade_config = UpgradeConfig(
-                card_number=card_parts[0] if len(card_parts) > 0 else "",
-                card_expiry=card_parts[1] if len(card_parts) > 1 else "",
-                card_cvv=card_parts[2] if len(card_parts) > 2 else "",
-                card_phone=card_parts[3] if len(card_parts) > 3 else "",
-                card_sms_api=card_parts[4] if len(card_parts) > 4 else "",
-                card_name=card_parts[5] if len(card_parts) > 5 else "",
-                card_address=card_parts[6] if len(card_parts) > 6 else "",
-                paypal_phone=paypal_parts[0] if len(paypal_parts) > 0 else "",
-                paypal_sms_api=paypal_parts[1] if len(paypal_parts) > 1 else "",
+            upgrade_config = parse_upgrade_config(
+                card_info=params.get("card_info", "") or "",
+                paypal_info=params.get("paypal_info", "") or "",
+                payurl_base=params.get("payurl_base", "") or "",
+                plan=params.get("plan", "") or "plus",
             )
 
             result = auto_upgrade_with_browser(

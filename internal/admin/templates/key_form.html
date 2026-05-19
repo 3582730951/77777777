@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>生成 API Key · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -14,10 +14,17 @@
       <div class="topbar-title">生成 API Key</div>
       <div class="topbar-actions">
         <a href="/keys" class="btn ghost">← API Keys</a>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Credential issue</div>
+          <h1 class="hero-title">生成 API Key</h1>
+          <p class="hero-subtitle">Key 只显示一次；先选择租户与分组，确保访问边界正确后再签发。</p>
+        </div>
+      </section>
 
       {{if .FlashKey}}
       <div class="alert alert-ok">
@@ -30,7 +37,7 @@
       </div>
       {{end}}
 
-      <div class="grid g2" style="align-items:start">
+      <div class="grid g2 form-workbench" style="align-items:start">
         <div class="card">
           <div class="card-header"><div class="card-title">Key 配置</div></div>
           <div class="card-body">
@@ -38,16 +45,16 @@
               <div class="form-section-title">绑定关系</div>
               <div class="form-row c2">
                 <div class="field">
-                  <label>租户 *</label>
-                  <select name="tenant_id" required>
+                  <label for="key-form-tenant-id">租户 *</label>
+                  <select id="key-form-tenant-id" name="tenant_id" required>
                     <option value="">— 选择租户 —</option>
                     {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
                     {{range .Tenants}}<option value="{{.ID}}">{{.Name}} ({{.ID}})</option>{{end}}
                   </select>
                 </div>
                 <div class="field">
-                  <label>分组 *</label>
-                  <select name="group_id" required>
+                  <label for="key-form-group-id">分组 *</label>
+                  <select id="key-form-group-id" name="group_id" required>
                     <option value="">— 选择分组 —</option>
                     {{range .YamlGroups}}
                       <option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>
@@ -59,8 +66,8 @@
                 </div>
               </div>
               <div class="field">
-                <label>备注（可选）</label>
-                <input name="label" placeholder="例如：Cursor 专用 Key"/>
+                <label for="key-form-label">备注（可选）</label>
+                <input id="key-form-label" name="label" placeholder="例如：Cursor 专用 Key"/>
               </div>
               <div class="form-actions">
                 <button class="btn primary" type="submit">生成 Key</button>
@@ -93,7 +100,6 @@
 </div>
 <div id="toast-ct"></div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 function showToast(m){
   const c=document.getElementById('toast-ct');
   const t=document.createElement('div');t.className='toast';t.textContent=m;

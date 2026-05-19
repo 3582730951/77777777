@@ -189,6 +189,21 @@ func TestRemoteChatAppliesGroupSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestPreserveAnthropicClaudeCodeShapeForClaudeGroups(t *testing.T) {
+	req := &ir.Request{
+		OriginalProto:              "anthropic",
+		AnthropicSystem:            []byte(`[{"type":"text","text":"native"}]`),
+		AnthropicMetadata:          []byte(`{"user_id":"native"}`),
+		AnthropicContextManagement: []byte(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`),
+	}
+	if !preserveAnthropicClaudeCodeShape(req, &domain.Group{Provider: "claude"}) {
+		t.Fatal("native Claude Code request shape should be preserved for claude groups")
+	}
+	if preserveAnthropicClaudeCodeShape(req, &domain.Group{Provider: "chatgpt"}) {
+		t.Fatal("non-claude groups should still allow cross-provider normalization")
+	}
+}
+
 type remoteChatSystemCaptureProvider struct {
 	mu  sync.Mutex
 	req *ir.Request

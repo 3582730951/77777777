@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
+from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository, public_provider_key
 
 
 class ProviderDefinitionsService:
@@ -35,11 +35,12 @@ class ProviderDefinitionsService:
         return self._serialize(item) if item else None
 
     def _serialize(self, item) -> dict:
+        value = public_provider_key(item.provider_type, item.provider_key)
         return {
             "id": int(item.id or 0),
             "provider_type": item.provider_type,
             "provider_key": item.provider_key,
-            "value": item.provider_key,
+            "value": value,
             "label": item.label,
             "description": item.description,
             "driver_type": item.driver_type,

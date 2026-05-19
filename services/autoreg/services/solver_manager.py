@@ -72,6 +72,9 @@ def _ensure_camoufox_browser() -> bool:
 
 def start():
     global _proc, _consecutive_failures, _last_failure_reason
+    if os.environ.get("AUTOREG_DISABLE_SOLVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        _last_failure_reason = "disabled by AUTOREG_DISABLE_SOLVER"
+        return
     with _lock:
         if is_running():
             print("[Solver] 已在运行")

@@ -10,9 +10,29 @@ import time
 from typing import Optional, Callable
 from dataclasses import dataclass
 
-from curl_cffi import requests as cffi_requests
-
 logger = logging.getLogger(__name__)
+
+
+class _CurlCffiRequestsProxy:
+    """Lazy curl_cffi requests proxy for parser-only tests."""
+
+    def get(self, *args, **kwargs):
+        from curl_cffi import requests as _requests
+
+        return _requests.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        from curl_cffi import requests as _requests
+
+        return _requests.post(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        from curl_cffi import requests as _requests
+
+        return getattr(_requests, name)
+
+
+cffi_requests = _CurlCffiRequestsProxy()
 
 
 @dataclass
@@ -42,6 +62,178 @@ class UpgradeResult:
     chatgpt_url: str = ""
     error: str = ""
     logs: list = None
+
+
+@dataclass
+class BillingAddress:
+    street: str = ""
+    city: str = ""
+    state: str = ""
+    postal_code: str = ""
+    country: str = "US"
+
+
+def _part(value: str) -> str:
+    return str(value or "").strip()
+
+
+def _split_card_info(card_info: str) -> list[str]:
+    parts = [_part(part) for part in str(card_info or "").split("----")]
+    if len(parts) > 7:
+        parts = parts[:6] + ["----".join(parts[6:])]
+    return parts
+
+
+def normalize_card_expiry(value: str) -> str:
+    """Normalize common expiry inputs to MM/YY for checkout forms."""
+    raw = _part(value)
+    if not raw:
+        return ""
+
+    numbers = re.findall(r"\d+", raw)
+    if len(numbers) < 2:
+        return raw
+
+    first, second = numbers[0], numbers[1]
+    year = ""
+    month = ""
+
+    if len(first) == 4:
+        year = first
+        month = second
+    elif int(first) > 12 and len(first) >= 2:
+        year = first
+        month = second
+    elif len(second) == 4 or int(second) > 31:
+        month = first
+        year = second
+    else:
+        month = first
+        year = second
+
+    month_int = int(month or "0")
+    if month_int <= 0 or month_int > 12:
+        return raw
+    month_text = f"{month_int:02d}"
+    year_text = str(year)[-2:].zfill(2)
+    return f"{month_text}/{year_text}"
+
+
+def normalize_us_phone_for_form(value: str) -> str:
+    """Return the local 10-digit US number for PayPal signup forms."""
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits or _part(value)
+
+
+def parse_paypal_info(paypal_info: str) -> dict:
+    """Parse ``phone|sms_api`` PayPal test-account config."""
+    phone, sep, sms_api = str(paypal_info or "").partition("|")
+    raw_phone = _part(phone)
+    return {
+        "paypal_phone": normalize_us_phone_for_form(raw_phone),
+        "paypal_phone_raw": raw_phone,
+        "paypal_sms_api": _part(sms_api) if sep else "",
+    }
+
+
+def parse_card_info(card_info: str) -> dict:
+    """Parse ``card----expiry----cvv----3ds phone----3ds sms api----name----address``."""
+    parts = _split_card_info(card_info)
+    while len(parts) < 7:
+        parts.append("")
+    return {
+        "card_number": parts[0],
+        "card_expiry": normalize_card_expiry(parts[1]),
+        "card_expiry_raw": parts[1],
+        "card_cvv": parts[2],
+        "card_phone": parts[3],
+        "card_sms_api": parts[4],
+        "card_name": parts[5],
+        "card_address": parts[6],
+    }
+
+
+def parse_upgrade_config(
+    *,
+    card_info: str = "",
+    paypal_info: str = "",
+    payurl_base: str = "",
+    plan: str = "",
+) -> UpgradeConfig:
+    """Build an UpgradeConfig from UI/API text fields."""
+    card = parse_card_info(card_info)
+    paypal = parse_paypal_info(paypal_info)
+    return UpgradeConfig(
+        card_number=card["card_number"],
+        card_expiry=card["card_expiry"],
+        card_cvv=card["card_cvv"],
+        card_phone=card["card_phone"],
+        card_sms_api=card["card_sms_api"],
+        card_name=card["card_name"],
+        card_address=card["card_address"],
+        paypal_phone=paypal["paypal_phone"],
+        paypal_sms_api=paypal["paypal_sms_api"],
+        payurl_base=payurl_base or UpgradeConfig.payurl_base,
+        plan=plan or UpgradeConfig.plan,
+    )
+
+
+def parse_billing_address(address: str) -> BillingAddress:
+    """Parse compact test billing addresses.
+
+    Supported examples:
+      - ``Street,CITY ST 12345,US``
+      - ``Street,CITY 12345-6789,US``
+      - ``Street,City,ST,12345,US``
+    """
+    raw_parts = [_part(part) for part in str(address or "").split(",")]
+    parts = [part for part in raw_parts if part]
+    if not parts:
+        return BillingAddress()
+
+    street = parts[0]
+    country = "US"
+    if parts and re.fullmatch(r"[A-Za-z]{2}", parts[-1]):
+        country = parts[-1].upper()
+        parts = parts[:-1]
+
+    city = ""
+    state = ""
+    postal_code = ""
+
+    if len(parts) >= 4 and re.fullmatch(r"[A-Za-z]{2}", parts[-2]):
+        city = parts[1]
+        state = parts[-2].upper()
+        postal_code = parts[-1]
+    elif len(parts) >= 3 and re.fullmatch(r"[A-Za-z]{2}", parts[-1]):
+        city = parts[1]
+        state = parts[-1].upper()
+    elif len(parts) >= 2:
+        city_state_zip = parts[1]
+        match = re.match(r"^(.*?)\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$", city_state_zip)
+        if match:
+            city = match.group(1).strip()
+            state = match.group(2).upper()
+            postal_code = match.group(3)
+        else:
+            match = re.match(r"^(.*?)\s+(\d{5}(?:-\d{4})?)$", city_state_zip)
+            if match:
+                city = match.group(1).strip()
+                postal_code = match.group(2)
+            else:
+                city = city_state_zip
+        if len(parts) >= 3 and not postal_code:
+            postal_code = parts[2]
+
+    return BillingAddress(
+        street=street,
+        city=city,
+        state=state,
+        postal_code=postal_code,
+        country=country,
+    )
 
 
 def _get_sms_code(sms_api_url: str, timeout: int = 120, log_fn: Callable = print) -> Optional[str]:
@@ -317,32 +509,17 @@ def _fill_card_info(page, config: UpgradeConfig, log_fn):
             target = f
             break
 
-    # 解析地址
-    address_parts = config.card_address.split(",") if config.card_address else []
-    street = address_parts[0].strip() if len(address_parts) > 0 else ""
-    city_state_zip = address_parts[1].strip() if len(address_parts) > 1 else ""
-    country = address_parts[2].strip() if len(address_parts) > 2 else "US"
-
-    # 解析 city state zip
-    csz_match = re.match(r'(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)', city_state_zip)
-    city = csz_match.group(1) if csz_match else city_state_zip
-    state = csz_match.group(2) if csz_match else ""
-    zipcode = csz_match.group(3) if csz_match else ""
-
-    # 解析过期日期
-    exp_parts = config.card_expiry.split("/")
-    exp_month = exp_parts[0].strip() if len(exp_parts) > 0 else ""
-    exp_year = exp_parts[1].strip() if len(exp_parts) > 1 else ""
+    address = parse_billing_address(config.card_address)
 
     field_map = {
         "card_number": config.card_number,
         "card_name": config.card_name,
         "card_expiry": config.card_expiry,
         "card_cvv": config.card_cvv,
-        "street": street,
-        "city": city,
-        "state": state,
-        "zip": zipcode,
+        "street": address.street,
+        "city": address.city,
+        "state": address.state,
+        "zip": address.postal_code,
     }
 
     # 通用填写逻辑

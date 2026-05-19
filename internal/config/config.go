@@ -56,6 +56,43 @@ type Server struct {
 	RateLimitBurst            int           `yaml:"rate_limit_burst"`
 }
 
+type NetworkShaper struct {
+	NetworkIngressBytesPerSec int64 `json:"network_ingress_bytes_per_sec" yaml:"network_ingress_bytes_per_sec"`
+	NetworkEgressBytesPerSec  int64 `json:"network_egress_bytes_per_sec" yaml:"network_egress_bytes_per_sec"`
+	NetworkBurstBytes         int64 `json:"network_burst_bytes" yaml:"network_burst_bytes"`
+}
+
+func NetworkShaperFromServer(cfg Server) NetworkShaper {
+	return NetworkShaper{
+		NetworkIngressBytesPerSec: cfg.NetworkIngressBytesPerSec,
+		NetworkEgressBytesPerSec:  cfg.NetworkEgressBytesPerSec,
+		NetworkBurstBytes:         cfg.NetworkBurstBytes,
+	}
+}
+
+func NormalizeNetworkShaper(cfg NetworkShaper) NetworkShaper {
+	if cfg.NetworkIngressBytesPerSec < 0 {
+		cfg.NetworkIngressBytesPerSec = 0
+	}
+	if cfg.NetworkEgressBytesPerSec < 0 {
+		cfg.NetworkEgressBytesPerSec = 0
+	}
+	if cfg.NetworkBurstBytes < 0 {
+		cfg.NetworkBurstBytes = 0
+	}
+	return cfg
+}
+
+func ApplyNetworkShaperToServer(cfg NetworkShaper, server *Server) {
+	if server == nil {
+		return
+	}
+	cfg = NormalizeNetworkShaper(cfg)
+	server.NetworkIngressBytesPerSec = cfg.NetworkIngressBytesPerSec
+	server.NetworkEgressBytesPerSec = cfg.NetworkEgressBytesPerSec
+	server.NetworkBurstBytes = cfg.NetworkBurstBytes
+}
+
 type Resource struct {
 	Profile              string        `yaml:"profile"`
 	GoMemLimit           string        `yaml:"go_mem_limit"`
@@ -95,6 +132,8 @@ type Group struct {
 	// "thread_once" injects once per known ChatGPT Responses thread, then
 	// reinjects after compact or account replay.
 	SystemPromptInjection string `yaml:"system_prompt_injection"`
+	ReasoningEffort       string `yaml:"reasoning_effort"`
+	ForcedModel           string `yaml:"forced_model"`
 	SourcePlatform        string `yaml:"source_platform"`
 	AutoRegister          bool   `yaml:"auto_register"`
 }
@@ -231,6 +270,8 @@ type Stealth struct {
 	DefaultTLSProfile string   `yaml:"default_tls_profile"`
 	UserAgents        []string `yaml:"user_agents"`
 	WarmupOnFirstUse  bool     `yaml:"warmup_on_first_use"`
+	IdentityRewrite   bool     `yaml:"identity_rewrite"`
+	IdentityPath      string   `yaml:"identity_path"`
 	MaxRPSPerPersona  float64  `yaml:"max_rps_per_persona"`
 	JitterPercent     int      `yaml:"jitter_percent"`
 }
@@ -362,6 +403,8 @@ func defaults() *Root {
 
 	r.Stealth.DefaultTLSProfile = "chrome_124"
 	r.Stealth.WarmupOnFirstUse = true
+	r.Stealth.IdentityRewrite = true
+	r.Stealth.IdentityPath = "data/identity_bundle.json"
 	r.Stealth.MaxRPSPerPersona = 0.5
 	r.Stealth.JitterPercent = 20
 

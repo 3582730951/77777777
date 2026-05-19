@@ -24,7 +24,7 @@ import (
 const (
 	// CLIVersion is the version our gateway presents as.
 	// Must match cliUserAgent in provider/claude/claude.go.
-	CLIVersion = "2.1.92"
+	CLIVersion = "2.1.138"
 
 	// cchSeed is the same seed sub2api uses; must not change.
 	cchSeed = uint64(0x6E52736AC806831E)
@@ -42,8 +42,8 @@ var (
 // billing attribution block as the first system text block.
 //
 // If the body already has a billing block (client is Claude Code itself), we:
-//   1. Sync cc_version to our CLIVersion.
-//   2. Re-sign the cch field.
+//  1. Sync cc_version to our CLIVersion.
+//  2. Re-sign the cch field.
 //
 // If no billing block exists, we inject a minimal one so upstream attributes
 // the request to Claude Code quota.
@@ -180,18 +180,19 @@ func extractFirstUserText(body []byte) string {
 func injectBlock(body []byte) []byte {
 	fp := computeFingerprint(body, CLIVersion)
 	billingText := fmt.Sprintf(
-		"x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli; cch=00000;",
+		"x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli; cch=00000;",
 		CLIVersion, fp,
 	)
-	claudeCodeText := "You are Claude Code, Anthropic's official CLI for Claude."
+	claudeCodeText := "You are a Claude agent, built on Anthropic's Claude Agent SDK."
 
 	block := map[string]any{
 		"type": "text",
 		"text": billingText,
 	}
 	block2 := map[string]any{
-		"type": "text",
-		"text": claudeCodeText,
+		"type":          "text",
+		"text":          claudeCodeText,
+		"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
 	}
 
 	var raw map[string]json.RawMessage

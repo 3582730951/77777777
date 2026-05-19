@@ -166,3 +166,21 @@ func TestApply_NonClaudeProvider(t *testing.T) {
 		t.Errorf("tools should still be normalized, got %s", got)
 	}
 }
+
+func TestApply_PreservesNativeAnthropicShape(t *testing.T) {
+	req := &ir.Request{
+		OriginalProto:              "anthropic",
+		AnthropicSystem:            []byte(`[{"type":"text","text":"native"}]`),
+		System:                     string(make([]byte, 900)),
+		Tools:                      []ir.ToolDef{{Name: "z", Schema: []byte(`{"b":1,"a":2}`)}, {Name: "a"}},
+		AnthropicContextManagement: []byte(`{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`),
+		AnthropicMetadata:          []byte(`{"user_id":"native"}`),
+	}
+	Apply(req, "claude")
+	if req.SystemCached {
+		t.Fatal("native Anthropic system should not get synthetic cache breakpoint")
+	}
+	if req.Tools[0].Name != "z" || string(req.Tools[0].Schema) != `{"b":1,"a":2}` {
+		t.Fatalf("native Anthropic tools were modified: %#v", req.Tools)
+	}
+}

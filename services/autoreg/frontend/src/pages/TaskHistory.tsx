@@ -69,9 +69,9 @@ export default function TaskHistory() {
 
   const metricCards = [
     { label: '任务数', value: tasks.length, icon: Activity, tone: 'text-[var(--accent)]' },
-    { label: '成功', value: succeeded, icon: CheckCircle2, tone: 'text-emerald-500' },
-    { label: '失败', value: failed, icon: AlertTriangle, tone: 'text-red-500' },
-    { label: '进行中', value: running, icon: Clock3, tone: 'text-amber-500' },
+    { label: '成功', value: succeeded, icon: CheckCircle2, tone: 'text-[var(--state-success)]' },
+    { label: '失败', value: failed, icon: AlertTriangle, tone: 'text-[var(--state-danger)]' },
+    { label: '进行中', value: running, icon: Clock3, tone: 'text-[var(--state-warning)]' },
   ]
 
   return (
@@ -105,15 +105,15 @@ export default function TaskHistory() {
 
       {/* Filters — inline with table header */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden">
-        <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-2.5">
+        <div className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-3 sm:flex-row sm:items-center sm:py-2.5">
           <span className="text-sm font-medium text-[var(--text-primary)]">最近任务</span>
-          <div className="flex-1" />
-          <div className="flex items-center gap-2">
-            <div className="relative">
+          <div className="hidden flex-1 sm:block" />
+          <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
+            <div className="relative min-w-0">
               <select
                 value={platform}
                 onChange={(e) => setPlatform(e.target.value)}
-                className="h-8 appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-auto"
               >
                 <option value="">全部平台</option>
                 {platforms.map((item: any) => (
@@ -122,11 +122,11 @@ export default function TaskHistory() {
               </select>
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--text-muted)]" />
             </div>
-            <div className="relative">
+            <div className="relative min-w-0">
               <select
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
-                className="h-8 appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-auto"
               >
                 <option value="">全部状态</option>
                 <option value="running">运行中</option>
@@ -140,7 +140,7 @@ export default function TaskHistory() {
             {(platform || status) && (
               <button
                 onClick={() => { setPlatform(''); setStatus('') }}
-                className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)]"
+                className="h-8 rounded-md border border-[var(--border)] px-3 text-xs text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] sm:border-0 sm:px-0"
               >
                 清除
               </button>
@@ -215,21 +215,21 @@ export default function TaskHistory() {
                             <div className="flex h-1.5 w-16 overflow-hidden rounded-full bg-[var(--chip-bg)]">
                               {success > 0 && (
                                 <div
-                                  className="h-full bg-emerald-500 rounded-full"
+                                  className="h-full rounded-full bg-[var(--state-success-strong)]"
                                   style={{ width: `${(success / total) * 100}%` }}
                                 />
                               )}
                               {errorCount > 0 && (
                                 <div
-                                  className="h-full bg-red-500 rounded-full"
+                                  className="h-full rounded-full bg-[var(--state-danger-strong)]"
                                   style={{ width: `${(errorCount / total) * 100}%` }}
                                 />
                               )}
                             </div>
                             <span className="text-xs text-[var(--text-muted)] whitespace-nowrap">
-                              <span className="text-emerald-500">{success}</span>
+                              <span className="text-[var(--state-success)]">{success}</span>
                               {' / '}
-                              <span className="text-red-500">{errorCount}</span>
+                              <span className="text-[var(--state-danger)]">{errorCount}</span>
                             </span>
                           </>
                         ) : (
@@ -240,7 +240,7 @@ export default function TaskHistory() {
                     <td className="max-w-[280px] px-4 py-3">
                       {errorText ? (
                         <span
-                          className="block truncate text-xs text-red-500 cursor-default"
+                          className="block truncate text-xs text-[var(--state-danger)] cursor-default"
                           title={task.error || ''}
                         >
                           {errorText}

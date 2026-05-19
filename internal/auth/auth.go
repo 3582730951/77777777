@@ -64,6 +64,8 @@ func (r *Resolver) LoadFromConfig(cfg *config.Root) {
 			SystemPrompt:          g.SystemPrompt,
 			SystemPromptMode:      g.SystemPromptMode,
 			SystemPromptInjection: g.SystemPromptInjection,
+			ReasoningEffort:       g.ReasoningEffort,
+			ForcedModel:           g.ForcedModel,
 			SourcePlatform:        g.SourcePlatform,
 			AutoRegister:          g.AutoRegister,
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	pathpkg "path"
 	"strings"
 )
 
@@ -25,6 +26,10 @@ func (s *Server) autoregSPAHandler() http.Handler {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Write(indexBytes)
+			return
+		}
+		if path != pathpkg.Clean(path) || strings.Contains(path, "..") {
+			http.NotFound(w, r)
 			return
 		}
 
@@ -57,6 +62,20 @@ func (s *Server) autoregSPAHandler() http.Handler {
 				return
 			}
 		}
+		if path == "api" ||
+			path == "assets" ||
+			strings.HasPrefix(path, "api/") ||
+			strings.HasPrefix(path, "assets/") ||
+			strings.HasSuffix(path, ".js") ||
+			strings.HasSuffix(path, ".css") ||
+			strings.HasSuffix(path, ".svg") ||
+			strings.HasSuffix(path, ".json") ||
+			strings.HasSuffix(path, ".png") ||
+			strings.HasSuffix(path, ".ico") ||
+			strings.HasSuffix(path, ".webmanifest") {
+			http.NotFound(w, r)
+			return
+		}
 
 		// SPA fallback
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -75,11 +94,16 @@ func (s *Server) autoregProxyHandler() http.Handler {
 	proxy.FlushInterval = -1
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "/api/autoreg"
-		if len(r.URL.Path) > len(prefix) {
-			r.URL.Path = "/api" + r.URL.Path[len(prefix):]
-		} else {
-			r.URL.Path = "/api"
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/autoreg"):
+			const prefix = "/api/autoreg"
+			if len(r.URL.Path) > len(prefix) {
+				r.URL.Path = "/api" + r.URL.Path[len(prefix):]
+			} else {
+				r.URL.Path = "/api"
+			}
+		case strings.HasPrefix(r.URL.Path, "/api/kiro-gateway"):
+			// Keep the path as-is: the Python service mounts this router under /api/kiro-gateway.
 		}
 		r.URL.RawPath = ""
 		proxy.ServeHTTP(w, r)

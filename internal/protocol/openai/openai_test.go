@@ -48,6 +48,31 @@ func TestDecodeMultimodalText(t *testing.T) {
 	}
 }
 
+func TestDecodePreservesFastServiceTier(t *testing.T) {
+	body := `{"model":"gpt-5.5","service_tier":"fast","messages":[{"role":"user","content":"hello"}],"stream":true}`
+	req, err := openai.Decode(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if req.ServiceTier != "fast" {
+		t.Fatalf("service tier not preserved: got %q want fast", req.ServiceTier)
+	}
+}
+
+func TestDecodeResponsesPreservesFastServiceTier(t *testing.T) {
+	body := `{"model":"gpt-5.5","input":[],"service_tier":"fast","reasoning":{"effort":"high"},"stream":true}`
+	req, err := openai.Decode(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode responses: %v", err)
+	}
+	if req.ServiceTier != "fast" {
+		t.Fatalf("responses service tier not preserved: got %q want fast", req.ServiceTier)
+	}
+	if req.ReasoningEffort != "high" {
+		t.Fatalf("responses reasoning effort changed: got %q want high", req.ReasoningEffort)
+	}
+}
+
 func TestStreamEncodeRoundTrip(t *testing.T) {
 	rw := httptest.NewRecorder()
 	enc := openai.NewEncoder(rw, "gpt-5.3", true)

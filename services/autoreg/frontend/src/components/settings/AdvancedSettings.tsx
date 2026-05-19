@@ -40,14 +40,14 @@ function SolverPanel() {
           {solverRunning === null ? (
             <RefreshCw className="h-4 w-4 animate-spin text-[var(--text-muted)]" />
           ) : solverRunning ? (
-            <CheckCircle className="h-4 w-4 text-emerald-400" />
+            <CheckCircle className="h-4 w-4 text-[var(--state-success)]" />
           ) : (
-            <XCircle className="h-4 w-4 text-red-400" />
+            <XCircle className="h-4 w-4 text-[var(--state-danger)]" />
           )}
           <span
             className={cn(
               'text-sm font-medium',
-              solverRunning ? 'text-emerald-400' : 'text-[var(--text-secondary)]'
+              solverRunning ? 'text-[var(--state-success)]' : 'text-[var(--text-secondary)]'
             )}
           >
             {solverLabel}

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/llm-pool/gateway/internal/config"
 )
 
 func TestByteRateLimiterDelaysWithoutChangingPayload(t *testing.T) {
@@ -54,5 +56,53 @@ func TestShapedResponseWriterDoesNotChangePayload(t *testing.T) {
 	}
 	if time.Since(start) < 500*time.Millisecond {
 		t.Fatalf("expected egress backpressure delay, got %s", time.Since(start))
+	}
+}
+
+func TestGatewayNetworkShaperCanBeDisabledWithZeroConfig(t *testing.T) {
+	gw := NewGateway(Deps{Cfg: &config.Root{}})
+	if gw.ingressLimiter != nil {
+		t.Fatal("ingress limiter should be disabled when configured rate is 0")
+	}
+	if gw.egressLimiter != nil {
+		t.Fatal("egress limiter should be disabled when configured rate is 0")
+	}
+}
+
+func TestGatewayApplyNetworkShapingConfigUpdatesRuntimeLimiters(t *testing.T) {
+	cfg := &config.Root{}
+	cfg.Server.NetworkIngressBytesPerSec = 64 << 10
+	cfg.Server.NetworkEgressBytesPerSec = 64 << 10
+	cfg.Server.NetworkBurstBytes = 32 << 10
+	gw := NewGateway(Deps{Cfg: cfg})
+	if gw.currentIngressLimiter() == nil || gw.currentEgressLimiter() == nil {
+		t.Fatal("expected initial runtime limiters")
+	}
+
+	gw.ApplyNetworkShapingConfig(config.Server{
+		NetworkIngressBytesPerSec: 0,
+		NetworkEgressBytesPerSec:  0,
+		NetworkBurstBytes:         0,
+	})
+	if gw.currentIngressLimiter() != nil {
+		t.Fatal("ingress limiter should be disabled after runtime update")
+	}
+	if gw.currentEgressLimiter() != nil {
+		t.Fatal("egress limiter should be disabled after runtime update")
+	}
+	if cfg.Server.NetworkIngressBytesPerSec != 0 || cfg.Server.NetworkEgressBytesPerSec != 0 {
+		t.Fatalf("runtime config not updated: %+v", cfg.Server)
+	}
+
+	gw.ApplyNetworkShapingConfig(config.Server{
+		NetworkIngressBytesPerSec: 128 << 10,
+		NetworkEgressBytesPerSec:  256 << 10,
+		NetworkBurstBytes:         32 << 10,
+	})
+	if gw.currentIngressLimiter() == nil || gw.currentEgressLimiter() == nil {
+		t.Fatal("limiters should be re-enabled after runtime update")
+	}
+	if cfg.Server.NetworkIngressBytesPerSec != 128<<10 || cfg.Server.NetworkEgressBytesPerSec != 256<<10 {
+		t.Fatalf("runtime config not updated after re-enable: %+v", cfg.Server)
 	}
 }

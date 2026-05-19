@@ -6,6 +6,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,8 +55,10 @@ type Gateway struct {
 	responses      *responsesstate.Store
 	limiter        *ratelimit.Limiter
 	bodyGate       *bodyGate
+	networkMu      sync.RWMutex
 	ingressLimiter *byteRateLimiter
 	egressLimiter  *byteRateLimiter
+	identity       *stealth.IdentityStore
 	// QuotaRefreshFunc is called asynchronously after each request to push
 	// provider-cached quota data into the scheduler. Set by main.go.
 	QuotaRefreshFunc func(accountID string)
@@ -105,15 +108,15 @@ func NewGateway(d Deps) *Gateway {
 		if d.Cfg.Server.RequestBodyMemoryBudget > 0 {
 			bodyBudget = d.Cfg.Server.RequestBodyMemoryBudget
 		}
-		if d.Cfg.Server.NetworkIngressBytesPerSec > 0 {
-			ingressRate = d.Cfg.Server.NetworkIngressBytesPerSec
-		}
-		if d.Cfg.Server.NetworkEgressBytesPerSec > 0 {
-			egressRate = d.Cfg.Server.NetworkEgressBytesPerSec
-		}
-		if d.Cfg.Server.NetworkBurstBytes > 0 {
-			networkBurst = d.Cfg.Server.NetworkBurstBytes
-		}
+		// Network shapers intentionally honor explicit 0 values so operators can
+		// disable byte-rate shaping for latency-sensitive streaming.
+		ingressRate = d.Cfg.Server.NetworkIngressBytesPerSec
+		egressRate = d.Cfg.Server.NetworkEgressBytesPerSec
+		networkBurst = d.Cfg.Server.NetworkBurstBytes
+	}
+	var identity *stealth.IdentityStore
+	if d.Cfg != nil && d.Cfg.Stealth.IdentityRewrite {
+		identity = stealth.NewIdentityStore(d.Cfg.Stealth.IdentityPath)
 	}
 	return &Gateway{
 		cfg:            d.Cfg,
@@ -129,11 +132,47 @@ func NewGateway(d Deps) *Gateway {
 		bodyGate:       newBodyGate(bodyBudget),
 		ingressLimiter: newByteRateLimiter(ingressRate, networkBurst),
 		egressLimiter:  newByteRateLimiter(egressRate, networkBurst),
+		identity:       identity,
 	}
 }
 
 // ConvMap exposes the mapper so admin handlers can read live in-memory stats.
 func (g *Gateway) ConvMap() *conversation.Mapper { return g.convMap }
+
+// ApplyNetworkShapingConfig updates byte-rate shaping without rebuilding the gateway.
+// A 0 ingress or egress rate disables that direction.
+func (g *Gateway) ApplyNetworkShapingConfig(serverCfg config.Server) {
+	if g == nil {
+		return
+	}
+	g.networkMu.Lock()
+	defer g.networkMu.Unlock()
+	if g.cfg != nil {
+		g.cfg.Server.NetworkIngressBytesPerSec = serverCfg.NetworkIngressBytesPerSec
+		g.cfg.Server.NetworkEgressBytesPerSec = serverCfg.NetworkEgressBytesPerSec
+		g.cfg.Server.NetworkBurstBytes = serverCfg.NetworkBurstBytes
+	}
+	g.ingressLimiter = newByteRateLimiter(serverCfg.NetworkIngressBytesPerSec, serverCfg.NetworkBurstBytes)
+	g.egressLimiter = newByteRateLimiter(serverCfg.NetworkEgressBytesPerSec, serverCfg.NetworkBurstBytes)
+}
+
+func (g *Gateway) currentIngressLimiter() *byteRateLimiter {
+	if g == nil {
+		return nil
+	}
+	g.networkMu.RLock()
+	defer g.networkMu.RUnlock()
+	return g.ingressLimiter
+}
+
+func (g *Gateway) currentEgressLimiter() *byteRateLimiter {
+	if g == nil {
+		return nil
+	}
+	g.networkMu.RLock()
+	defer g.networkMu.RUnlock()
+	return g.egressLimiter
+}
 
 func (g *Gateway) Mount(r chi.Router) {
 	r.Use(middleware.Recoverer)
@@ -174,7 +213,7 @@ func (g *Gateway) Mount(r chi.Router) {
 
 	// -- Codex CLI compatibility endpoints -----------------------------------
 	// Codex CLI uses these when OPENAI_BASE_URL points to our gateway.
-	r.Post("/backend-api/codex/responses", g.handleOpenAI)
+	r.HandleFunc("/backend-api/codex/responses", g.handleResponses)
 	// Codex compact: called when context limit is reached.
 	// Expects OpenAI Responses API shape, returns non-streaming JSON summary.
 	r.Post("/backend-api/codex/responses/compact", g.handleCodexCompact)
@@ -188,11 +227,13 @@ func (g *Gateway) Mount(r chi.Router) {
 
 func (g *Gateway) networkMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if g.ingressLimiter != nil && r.Body != nil {
-			r.Body = &rateLimitedReadCloser{ReadCloser: r.Body, ctx: r.Context(), limiter: g.ingressLimiter}
+		ingressLimiter := g.currentIngressLimiter()
+		egressLimiter := g.currentEgressLimiter()
+		if ingressLimiter != nil && r.Body != nil {
+			r.Body = &rateLimitedReadCloser{ReadCloser: r.Body, ctx: r.Context(), limiter: ingressLimiter}
 		}
-		if g.egressLimiter != nil && !isWebSocketUpgrade(r) {
-			w = &shapedResponseWriter{ResponseWriter: w, ctx: r.Context(), limiter: g.egressLimiter}
+		if egressLimiter != nil && !isWebSocketUpgrade(r) {
+			w = &shapedResponseWriter{ResponseWriter: w, ctx: r.Context(), limiter: egressLimiter}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -474,6 +515,7 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 	}
 
 	convHash := router.HashConversation(req)
+	req.UpstreamSessionKey = buildUpstreamSessionKey(r, res, req, convHash)
 
 	prevConv, hadPrev := g.convMap.Lookup(convHash)
 	_ = prevConv
@@ -495,7 +537,10 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 	}
 
 	// ── Stealth: tool name obfuscation ──
-	toolRewriter := stealth.NewToolRewriter(req.Tools)
+	var toolRewriter *stealth.ToolRewriter
+	if !preserveAnthropicClaudeCodeShape(req, res.Group) {
+		toolRewriter = stealth.NewToolRewriter(req.Tools)
+	}
 	if toolRewriter != nil {
 		toolRewriter.Apply(req)
 	}
@@ -605,7 +650,17 @@ func (g *Gateway) serveRequest(w http.ResponseWriter, r *http.Request, res auth.
 					return nil, func() {}, fmt.Errorf("no provider for %s", slot.Account.Provider)
 				}
 			}
-			ch, ierr := prov.Invoke(failoverCtx, slot.Account, req)
+			invokeReq := req
+			if g.identity != nil {
+				rewriter, rerr := g.identity.RewriterForAccount(slot.Account.ID, slot.Account.Provider, slot.Account.Email)
+				if rerr != nil {
+					g.sched.DecInflight(slot.Account.ID)
+					return nil, func() {}, fmt.Errorf("identity rewrite: %w", rerr)
+				}
+				invokeReq = cloneIRRequest(req)
+				rewriter.RewriteIRRequest(invokeReq)
+			}
+			ch, ierr := prov.Invoke(failoverCtx, slot.Account, invokeReq)
 			if ierr != nil {
 				g.sched.DecInflight(slot.Account.ID)
 				class := scheduler.ClassifyError(0, "", ierr)
@@ -753,6 +808,139 @@ func newEncoderForProto(proto string, w http.ResponseWriter, displayModel string
 	default:
 		return &openaiWriter{enc: openai.NewEncoder(w, displayModel, streamReq), stream: streamReq}
 	}
+}
+
+func preserveAnthropicClaudeCodeShape(req *ir.Request, group *domain.Group) bool {
+	return req != nil &&
+		group != nil &&
+		group.Provider == "claude" &&
+		req.OriginalProto == "anthropic" &&
+		(len(req.AnthropicSystem) > 0 ||
+			len(req.AnthropicMetadata) > 0 ||
+			len(req.AnthropicContextManagement) > 0)
+}
+
+func buildUpstreamSessionKey(r *http.Request, res auth.Resolved, req *ir.Request, convHash string) string {
+	if req == nil {
+		return ""
+	}
+	groupID := ""
+	if res.Group != nil {
+		groupID = res.Group.ID
+	} else if res.Federation != nil {
+		groupID = "federation:" + res.Federation.ID
+	}
+	tenantID := ""
+	if res.Tenant != nil {
+		tenantID = res.Tenant.ID
+	}
+	anchor := firstUserText(req)
+	if anchor == "" {
+		anchor = convHash
+	}
+	if anchor == "" {
+		anchor = req.System
+	}
+	if anchor == "" && groupID == "" && res.APIKey == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		"session-v1",
+		tenantID,
+		groupID,
+		res.APIKey,
+		clientIPForSession(r),
+		req.OriginalProto,
+		req.OriginalModel,
+		anchor,
+	}, "\x00")))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func firstUserText(req *ir.Request) string {
+	if req == nil {
+		return ""
+	}
+	for _, msg := range req.Messages {
+		if msg.Role != ir.RoleUser {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if part.Kind == ir.PartText && strings.TrimSpace(part.Text) != "" {
+				return part.Text
+			}
+		}
+	}
+	return ""
+}
+
+func clientIPForSession(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	for _, key := range []string{"X-Real-IP", "Cf-Connecting-IP", "True-Client-IP"} {
+		if v := strings.TrimSpace(r.Header.Get(key)); v != "" {
+			return v
+		}
+	}
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndexByte(host, ':'); i > 0 {
+		return host[:i]
+	}
+	return host
+}
+
+func cloneIRRequest(req *ir.Request) *ir.Request {
+	if req == nil {
+		return nil
+	}
+	cp := *req
+	if req.Messages != nil {
+		cp.Messages = make([]ir.Message, len(req.Messages))
+		for i := range req.Messages {
+			cp.Messages[i].Role = req.Messages[i].Role
+			if req.Messages[i].Parts != nil {
+				cp.Messages[i].Parts = make([]ir.Part, len(req.Messages[i].Parts))
+				for j := range req.Messages[i].Parts {
+					cp.Messages[i].Parts[j] = cloneIRPart(req.Messages[i].Parts[j])
+				}
+			}
+		}
+	}
+	if req.Tools != nil {
+		cp.Tools = make([]ir.ToolDef, len(req.Tools))
+		for i := range req.Tools {
+			cp.Tools[i] = req.Tools[i]
+			cp.Tools[i].Schema = cloneBytes(req.Tools[i].Schema)
+			cp.Tools[i].CacheControl = cloneBytes(req.Tools[i].CacheControl)
+		}
+	}
+	cp.AnthropicSystem = cloneBytes(req.AnthropicSystem)
+	cp.AnthropicMetadata = cloneBytes(req.AnthropicMetadata)
+	cp.AnthropicContextManagement = cloneBytes(req.AnthropicContextManagement)
+	cp.AnthropicToolChoice = cloneBytes(req.AnthropicToolChoice)
+	return &cp
+}
+
+func cloneIRPart(p ir.Part) ir.Part {
+	p.ImageBytes = cloneBytes(p.ImageBytes)
+	p.ToolUseInput = cloneBytes(p.ToolUseInput)
+	p.ToolResultBytes = cloneBytes(p.ToolResultBytes)
+	p.CacheControl = cloneBytes(p.CacheControl)
+	return p
+}
+
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	return append([]byte(nil), b...)
 }
 
 // Each protocol's encoder exposes Stream(<-chan Event); to match the EventWriter

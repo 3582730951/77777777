@@ -6,6 +6,7 @@ import { apiFetch } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
 import { Save, Eye, EyeOff, Mail, Shield, Cpu, Sliders, Plus, X, Orbit, Package2, MessageSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import ProviderCards from '@/components/settings/ProviderCards'
@@ -38,7 +39,7 @@ const PROVIDER_META: Record<ProviderType, {
     createTitle: '新建动态邮箱 Provider',
     addDialogHint: '从邮箱 provider catalog 中选择',
     usageHint: '只有在注册身份选择“系统邮箱”时，才会使用这里的邮箱服务配置。列表行内可以直接查看详情、编辑、设默认和删除。',
-    usageHintClassName: 'rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-[var(--text-secondary)]',
+    usageHintClassName: 'rounded-lg border border-[var(--badge-success-border)] bg-[var(--badge-success-bg)] px-4 py-3 text-sm text-[var(--text-secondary)]',
     listTitle: '邮箱 Provider 列表',
     listDescription: (count: number) => `${count} 个配置，支持查看详情、编辑、设默认、删除。`,
     noAvailableText: '当前没有可新增的邮箱 provider',
@@ -54,7 +55,7 @@ const PROVIDER_META: Record<ProviderType, {
     createTitle: '新建动态验证 Provider',
     addDialogHint: '从验证 provider catalog 中选择',
     usageHint: '协议模式会按已启用顺序自动选择远程打码服务；浏览器模式使用当前默认的验证码 provider。列表行内可以直接查看详情、编辑、设默认、删除。',
-    usageHintClassName: 'rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-[var(--text-secondary)]',
+    usageHintClassName: 'rounded-lg border border-[var(--badge-warning-border)] bg-[var(--badge-warning-bg)] px-4 py-3 text-sm text-[var(--text-secondary)]',
     listTitle: '验证 Provider 列表',
     listDescription: (count: number) => `${count} 个配置，协议模式会依次读取这里的可用项。`,
     noAvailableText: '当前没有可新增的验证 provider',
@@ -70,7 +71,7 @@ const PROVIDER_META: Record<ProviderType, {
     createTitle: '新建动态接码 Provider',
     addDialogHint: '从接码 provider catalog 中选择',
     usageHint: '当平台需要手机号验证时，会按这里启用的接码 provider 创建临时号码并回填短信验证码。列表行内可以直接查看详情、编辑、设默认和删除。',
-    usageHintClassName: 'rounded-lg border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-[var(--text-secondary)]',
+    usageHintClassName: 'rounded-lg border border-[var(--accent-edge)] bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--text-secondary)]',
     listTitle: '接码 Provider 列表',
     listDescription: (count: number) => `${count} 个配置，补手机和短信校验会优先使用这里的默认项。`,
     noAvailableText: '当前没有可新增的接码 provider',
@@ -176,7 +177,7 @@ function PlatformCapsTab() {
                 <h3 className="text-sm font-semibold text-[var(--text-primary)]">{p.display_name}</h3>
                 <p className="text-xs text-[var(--text-muted)] mt-0.5">{p.name} v{p.version}</p>
               </div>
-              <button onClick={() => reset(p.name)}
+              <button type="button" onClick={() => reset(p.name)}
                 className="table-action-btn">
                 恢复默认
               </button>
@@ -186,8 +187,8 @@ function PlatformCapsTab() {
                 <p className="text-xs text-[var(--text-muted)] mb-2">执行方式</p>
                 <div className="flex flex-wrap gap-4">
                   {executorOptions.map(option => (
-                    <label key={option.value} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
-                      <input type="checkbox" checked={executors.includes(option.value)}
+                    <label key={option.value} htmlFor={`platform-${p.name}-executor-${option.value}`} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+                      <input id={`platform-${p.name}-executor-${option.value}`} type="checkbox" checked={executors.includes(option.value)}
                         onChange={() => toggle(p.name, 'supported_executors', option.value)}
                         className="checkbox-accent" />
                       {option.label}
@@ -199,8 +200,8 @@ function PlatformCapsTab() {
                 <p className="text-xs text-[var(--text-muted)] mb-2">注册身份</p>
                 <div className="flex gap-4">
                   {identityOptions.map(option => (
-                    <label key={option.value} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
-                      <input type="checkbox" checked={modes.includes(option.value)}
+                    <label key={option.value} htmlFor={`platform-${p.name}-identity-${option.value}`} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+                      <input id={`platform-${p.name}-identity-${option.value}`} type="checkbox" checked={modes.includes(option.value)}
                         onChange={() => toggle(p.name, 'supported_identity_modes', option.value)}
                         className="checkbox-accent" />
                       {option.label}
@@ -212,8 +213,8 @@ function PlatformCapsTab() {
                 <p className="text-xs text-[var(--text-muted)] mb-2">第三方入口</p>
                 <div className="flex flex-wrap gap-4">
                   {oauthOptions.map(option => (
-                    <label key={option.value} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
-                      <input type="checkbox" checked={oauths.includes(option.value)}
+                    <label key={option.value} htmlFor={`platform-${p.name}-oauth-${option.value}`} className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] cursor-pointer">
+                      <input id={`platform-${p.name}-oauth-${option.value}`} type="checkbox" checked={oauths.includes(option.value)}
                         onChange={() => toggle(p.name, 'supported_oauth_providers', option.value)}
                         className="checkbox-accent" />
                       {option.label}
@@ -301,15 +302,17 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
 
 function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions }: any) {
   const { key, label, placeholder, secret } = field
+  const fieldId = `settings-field-${String(key).replace(/[^a-zA-Z0-9_-]/g, '-')}`
   const options = (field.options && field.options.length > 0)
     ? field.options
     : ((selectOptions && selectOptions.length > 0) ? selectOptions : null)
   return (
     <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5 last:border-0">
-      <label className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
+      <label htmlFor={fieldId} className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
       <div className="col-span-2 relative">
         {options ? (
           <select
+            id={fieldId}
             value={form[key] || options[0].value}
             onChange={e => setForm((f: any) => ({ ...f, [key]: e.target.value }))}
             className="control-surface appearance-none"
@@ -319,6 +322,7 @@ function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions 
         ) : (
           <>
             <input
+              id={fieldId}
               type={secret && !showSecret[key] ? 'password' : 'text'}
               value={form[key] || ''}
               onChange={e => setForm((f: any) => ({ ...f, [key]: e.target.value }))}
@@ -327,6 +331,8 @@ function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions 
             />
             {secret && (
               <button
+                type="button"
+                aria-label={showSecret[key] ? `隐藏${label}` : `显示${label}`}
                 onClick={() => setShowSecret((s: any) => ({ ...s, [key]: !s[key] }))}
                 className="absolute right-3 top-2.5 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
               >
@@ -342,12 +348,14 @@ function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions 
 
 function ProviderField({ field, value, onChange, showSecret, setShowSecret, secretKey, disabled = false }: any) {
   const { label, placeholder, secret, type, options } = field
+  const fieldId = `provider-field-${String(secretKey).replace(/[^a-zA-Z0-9_-]/g, '-')}`
   return (
     <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5 last:border-0">
-      <label className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
+      <label htmlFor={fieldId} className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
       <div className="col-span-2 relative">
         {type === 'select' && options?.length ? (
           <select
+            id={fieldId}
             value={value || options[0]?.value || ''}
             onChange={e => onChange(e.target.value)}
             disabled={disabled}
@@ -357,6 +365,7 @@ function ProviderField({ field, value, onChange, showSecret, setShowSecret, secr
           </select>
         ) : type === 'textarea' ? (
           <textarea
+            id={fieldId}
             value={value || ''}
             onChange={e => onChange(e.target.value)}
             disabled={disabled}
@@ -367,6 +376,7 @@ function ProviderField({ field, value, onChange, showSecret, setShowSecret, secr
         ) : (
           <>
             <input
+              id={fieldId}
               type={secret && !showSecret[secretKey] ? 'password' : 'text'}
               value={value || ''}
               onChange={e => onChange(e.target.value)}
@@ -379,6 +389,8 @@ function ProviderField({ field, value, onChange, showSecret, setShowSecret, secr
             />
             {secret && (
               <button
+                type="button"
+                aria-label={showSecret[secretKey] ? `隐藏${label}` : `显示${label}`}
                 onClick={() => setShowSecret((s: any) => ({ ...s, [secretKey]: !s[secretKey] }))}
                 disabled={disabled}
                 className="absolute right-3 top-2.5 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
@@ -444,7 +456,7 @@ function HeroSmsTools({ item }: { item: ProviderSetting }) {
   }
 
   return (
-    <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-3 text-xs text-[var(--text-secondary)]">
+    <div className="rounded-xl border border-[var(--accent-edge)] bg-[var(--accent-soft)] px-3 py-3 text-xs text-[var(--text-secondary)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="font-medium text-[var(--text-primary)]">HeroSMS 工具</div>
@@ -479,15 +491,18 @@ function ProviderDetailModal({
   onChangeField,
   onSave,
 }: any) {
+  const providerKey = String(item.provider_key || item.id || 'provider').replace(/[^a-zA-Z0-9_-]/g, '-')
+  const displayNameId = `provider-detail-${providerKey}-display-name`
+  const authModeId = `provider-detail-${providerKey}-auth-mode`
+
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-md flex flex-col" onClick={e => e.stopPropagation()}>
+    <Dialog titleId="provider-detail-title" onClose={onClose} className="dialog-panel-md flex flex-col">
         <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
+            <h2 id="provider-detail-title" className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">{item.display_name || item.catalog_label} · {item.provider_key}</p>
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="关闭 Provider 详情弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -495,7 +510,7 @@ function ProviderDetailModal({
               {item.auth_modes.find((mode: any) => mode.value === item.auth_mode)?.label || item.auth_mode || '未设置认证方式'}
             </span>
             {item.is_default ? (
-              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300">默认 Provider</span>
+              <span className="rounded-full bg-[var(--badge-success-bg)] px-2 py-0.5 text-[11px] text-[var(--badge-success-fg)] ring-1 ring-inset ring-[var(--badge-success-border)]">默认 Provider</span>
             ) : null}
           </div>
           {item.description ? (
@@ -507,9 +522,10 @@ function ProviderDetailModal({
             <HeroSmsTools item={item} />
           ) : null}
           <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-            <label className="text-sm text-[var(--text-secondary)] font-medium">配置名称</label>
+            <label htmlFor={displayNameId} className="text-sm text-[var(--text-secondary)] font-medium">配置名称</label>
             <div className="col-span-2">
               <input
+                id={displayNameId}
                 type="text"
                 value={item.display_name || ''}
                 onChange={e => onChangeName(e.target.value)}
@@ -521,9 +537,10 @@ function ProviderDetailModal({
           </div>
           {item.auth_modes?.length > 0 && (
             <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-              <label className="text-sm text-[var(--text-secondary)] font-medium">认证方式</label>
+              <label htmlFor={authModeId} className="text-sm text-[var(--text-secondary)] font-medium">认证方式</label>
               <div className="col-span-2">
                 <select
+                  id={authModeId}
                   value={item.auth_mode}
                   onChange={e => onChangeAuthMode(e.target.value)}
                   disabled={readOnly}
@@ -564,8 +581,7 @@ function ProviderDetailModal({
             </>
           )}
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -579,15 +595,16 @@ function AddProviderModal({
   onClose,
   onCreate,
 }: any) {
+  const providerSelectId = 'add-provider-select'
+
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-sm" onClick={e => e.stopPropagation()}>
+    <Dialog titleId="add-provider-title" onClose={onClose} className="dialog-panel-sm">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
+            <h2 id="add-provider-title" className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">{subtitle}</p>
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="关闭新增 Provider 弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="px-6 py-4">
           {providers.length === 0 ? (
@@ -596,8 +613,9 @@ function AddProviderModal({
             </div>
           ) : (
             <div className="space-y-3">
-              <label className="block text-sm text-[var(--text-secondary)]">选择 Provider</label>
+              <label htmlFor={providerSelectId} className="block text-sm text-[var(--text-secondary)]">选择 Provider</label>
               <select
+                id={providerSelectId}
                 value={selectedKey}
                 onChange={e => onSelect(e.target.value)}
                 className="control-surface appearance-none"
@@ -625,8 +643,7 @@ function AddProviderModal({
           </Button>
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -707,40 +724,44 @@ function CreateProviderDefinitionModal({
   const currentDriver = drivers.find((item: ProviderDriver) => item.driver_type === form.driver_type) || null
   const currentAuthModes = currentDriver?.auth_modes || []
   const currentFields = currentDriver?.fields || []
+  const labelId = `create-provider-${providerType}-label`
+  const keyId = `create-provider-${providerType}-key`
+  const descriptionId = `create-provider-${providerType}-description`
+  const driverId = `create-provider-${providerType}-driver`
+  const authModeId = `create-provider-${providerType}-auth-mode`
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-md flex flex-col" onClick={e => e.stopPropagation()}>
+    <Dialog titleId="create-provider-definition-title" onClose={onClose} className="dialog-panel-md flex flex-col">
         <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
+            <h2 id="create-provider-definition-title" className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">新增一个动态 provider definition，并同时创建首个可用配置。</p>
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="关闭新建动态 Provider 弹窗" onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
           <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-            <label className="text-sm text-[var(--text-secondary)] font-medium">Provider 名称</label>
+            <label htmlFor={labelId} className="text-sm text-[var(--text-secondary)] font-medium">Provider 名称</label>
             <div className="col-span-2">
-              <input value={form.label} onChange={e => onChange('label', e.target.value)} placeholder="My Provider" className="control-surface" />
+              <input id={labelId} value={form.label} onChange={e => onChange('label', e.target.value)} placeholder="My Provider" className="control-surface" />
             </div>
           </div>
           <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-            <label className="text-sm text-[var(--text-secondary)] font-medium">Provider Key</label>
+            <label htmlFor={keyId} className="text-sm text-[var(--text-secondary)] font-medium">Provider Key</label>
             <div className="col-span-2">
-              <input value={form.provider_key} onChange={e => onChange('provider_key', e.target.value)} placeholder="my_provider" className="control-surface" />
+              <input id={keyId} value={form.provider_key} onChange={e => onChange('provider_key', e.target.value)} placeholder="my_provider" className="control-surface" />
             </div>
           </div>
           <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-            <label className="text-sm text-[var(--text-secondary)] font-medium">描述</label>
+            <label htmlFor={descriptionId} className="text-sm text-[var(--text-secondary)] font-medium">描述</label>
             <div className="col-span-2">
-              <input value={form.description} onChange={e => onChange('description', e.target.value)} placeholder="可选" className="control-surface" />
+              <input id={descriptionId} value={form.description} onChange={e => onChange('description', e.target.value)} placeholder="可选" className="control-surface" />
             </div>
           </div>
           <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-            <label className="text-sm text-[var(--text-secondary)] font-medium">驱动族</label>
+            <label htmlFor={driverId} className="text-sm text-[var(--text-secondary)] font-medium">驱动族</label>
             <div className="col-span-2">
-              <select value={form.driver_type} onChange={e => onChange('driver_type', e.target.value)} className="control-surface appearance-none">
+              <select id={driverId} value={form.driver_type} onChange={e => onChange('driver_type', e.target.value)} className="control-surface appearance-none">
                 {drivers.map((driver: ProviderDriver) => (
                   <option key={driver.driver_type} value={driver.driver_type}>{driver.label}</option>
                 ))}
@@ -750,9 +771,9 @@ function CreateProviderDefinitionModal({
           </div>
           {currentAuthModes.length > 0 && (
             <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
-              <label className="text-sm text-[var(--text-secondary)] font-medium">认证方式</label>
+              <label htmlFor={authModeId} className="text-sm text-[var(--text-secondary)] font-medium">认证方式</label>
               <div className="col-span-2">
-                <select value={form.auth_mode} onChange={e => onChange('auth_mode', e.target.value)} className="control-surface appearance-none">
+                <select id={authModeId} value={form.auth_mode} onChange={e => onChange('auth_mode', e.target.value)} className="control-surface appearance-none">
                   {currentAuthModes.map((mode: any) => (
                     <option key={mode.value} value={mode.value}>{mode.label}</option>
                   ))}
@@ -786,8 +807,7 @@ function CreateProviderDefinitionModal({
           </Button>
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -1164,17 +1184,17 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
     return (
       <>
         {optionsError && (
-          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <div className="rounded-lg border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] px-4 py-3 text-sm text-[var(--state-danger)]">
             {optionsError}
           </div>
         )}
         {providerError[providerType] && (
-          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          <div className="rounded-lg border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] px-4 py-3 text-sm text-[var(--state-danger)]">
             {providerError[providerType]}
           </div>
         )}
         {providerNotice[providerType] && !providerError[providerType] && (
-          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          <div className="rounded-lg border border-[var(--badge-success-border)] bg-[var(--badge-success-bg)] px-4 py-3 text-sm text-[var(--badge-success-fg)]">
             {providerNotice[providerType]}
           </div>
         )}
@@ -1252,6 +1272,7 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
       <div className="flex flex-wrap gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--chip-bg)] p-1">
         {visibleTabs.map(({ id, label, icon: Icon }) => (
           <button
+            type="button"
             key={id}
             onClick={() => setActiveTab(id)}
             className={cn(

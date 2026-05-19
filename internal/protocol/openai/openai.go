@@ -19,16 +19,16 @@ import (
 )
 
 type chatRequest struct {
-	Model       string      `json:"model"`
-	Messages    []chatMsg   `json:"messages"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	TopP        *float64    `json:"top_p,omitempty"`
-	MaxTokens   int         `json:"max_tokens,omitempty"`
-	Stream      bool        `json:"stream,omitempty"`
-	ServiceTier string      `json:"service_tier,omitempty"`
-	Tools       []chatTool  `json:"tools,omitempty"`
-	ToolChoice  any         `json:"tool_choice,omitempty"`
-	ReasoningEffort string  `json:"reasoning_effort,omitempty"`
+	Model           string     `json:"model"`
+	Messages        []chatMsg  `json:"messages"`
+	Temperature     *float64   `json:"temperature,omitempty"`
+	TopP            *float64   `json:"top_p,omitempty"`
+	MaxTokens       int        `json:"max_tokens,omitempty"`
+	Stream          bool       `json:"stream,omitempty"`
+	ServiceTier     string     `json:"service_tier,omitempty"`
+	Tools           []chatTool `json:"tools,omitempty"`
+	ToolChoice      any        `json:"tool_choice,omitempty"`
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
 }
 
 type chatMsg struct {
@@ -72,17 +72,19 @@ func DecodeBytes(body []byte) (*ir.Request, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("decode openai request: invalid JSON")
 	}
-	model   := gjson.GetBytes(body, "model").String()
-	stream  := gjson.GetBytes(body, "stream").Bool()
-	maxTok  := int(gjson.GetBytes(body, "max_tokens").Int())
-	reason  := gjson.GetBytes(body, "reasoning_effort").String()
+	model := gjson.GetBytes(body, "model").String()
+	stream := gjson.GetBytes(body, "stream").Bool()
+	maxTok := int(gjson.GetBytes(body, "max_tokens").Int())
+	reason := gjson.GetBytes(body, "reasoning_effort").String()
 	serviceTier := gjson.GetBytes(body, "service_tier").String()
 	var temp, topP *float64
 	if t := gjson.GetBytes(body, "temperature"); t.Exists() {
-		v := t.Float(); temp = &v
+		v := t.Float()
+		temp = &v
 	}
 	if t := gjson.GetBytes(body, "top_p"); t.Exists() {
-		v := t.Float(); topP = &v
+		v := t.Float()
+		topP = &v
 	}
 
 	// Parse "model effort" combined syntax from /model command:
@@ -237,11 +239,12 @@ func gjsonContent(r gjson.Result) string {
 
 // decodeResponsesInput parses the Responses API "input" array into IR messages.
 // Responses API format:
-//   input: [
-//     {"type":"message","role":"user","content":[{"type":"input_text","text":"..."}]},
-//     {"type":"function_call","name":"...","call_id":"...","arguments":"..."},
-//     {"type":"function_call_output","call_id":"...","output":"..."},
-//   ]
+//
+//	input: [
+//	  {"type":"message","role":"user","content":[{"type":"input_text","text":"..."}]},
+//	  {"type":"function_call","name":"...","call_id":"...","arguments":"..."},
+//	  {"type":"function_call_output","call_id":"...","output":"..."},
+//	]
 func decodeResponsesInput(body []byte, out *ir.Request) {
 	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
 		itemType := item.Get("type").String()
@@ -400,9 +403,9 @@ type streamChunk struct {
 }
 
 type streamChoice struct {
-	Index        int       `json:"index"`
-	Delta        delta     `json:"delta"`
-	FinishReason *string   `json:"finish_reason"`
+	Index        int     `json:"index"`
+	Delta        delta   `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
 }
 
 type delta struct {
@@ -534,18 +537,18 @@ func (e *Encoder) writeSSE(v any) error {
 }
 
 type completion struct {
-	ID      string  `json:"id"`
-	Object  string  `json:"object"`
-	Created int64   `json:"created"`
-	Model   string  `json:"model"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	Model   string   `json:"model"`
 	Choices []choice `json:"choices"`
 	Usage   *usage   `json:"usage,omitempty"`
 }
 
 type choice struct {
-	Index        int      `json:"index"`
-	Message      respMsg  `json:"message"`
-	FinishReason string   `json:"finish_reason"`
+	Index        int     `json:"index"`
+	Message      respMsg `json:"message"`
+	FinishReason string  `json:"finish_reason"`
 }
 
 type respMsg struct {
@@ -603,7 +606,7 @@ func (e *Encoder) collectAndEmit(events <-chan ir.Event) error {
 			Message: respMsg{
 				Role: "assistant", Content: sb.String(),
 				ReasoningContent: reasoning.String(),
-				ToolCalls: toolCalls,
+				ToolCalls:        toolCalls,
 			},
 			FinishReason: mapFinishReason(finish),
 		}},
@@ -652,11 +655,14 @@ func randID() string {
 // splitModelEffort parses a combined "model effort" string that Claude Code
 // and Codex CLI send when the user runs /model <name> <effort>.
 // Examples: "gpt-5.5 high" → ("gpt-5.5","high")
-//           "claude-opus-4-7 max" → ("claude-opus-4-7","max")
-//           "gpt-5.5" → ("gpt-5.5","")
+//
+//	"claude-opus-4-7 max" → ("claude-opus-4-7","max")
+//	"gpt-5.5" → ("gpt-5.5","")
+//
 // Valid effort tokens (case-insensitive):
-//   Codex: low | medium | high | xhigh
-//   Claude: none | low | medium | high | max
+//
+//	Codex: low | medium | high | xhigh
+//	Claude: none | low | medium | high | max
 func splitModelEffort(raw string) (model, effort string) {
 	known := map[string]bool{
 		"low": true, "medium": true, "high": true,

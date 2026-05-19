@@ -14,6 +14,18 @@ import { API } from '@/lib/utils'
 /* ------------------------------------------------------------------ */
 /*  Tab definitions                                                    */
 /* ------------------------------------------------------------------ */
+const SETTINGS_TABS = [
+  { label: '通用', value: 'general' },
+  { label: '注册策略', value: 'register' },
+  { label: '邮箱服务', value: 'mailbox' },
+  { label: '验证服务', value: 'captcha' },
+  { label: '接码服务', value: 'sms' },
+  { label: '代理资源', value: 'proxies' },
+  { label: 'ChatGPT', value: 'chatgpt' },
+  { label: '高级', value: 'advanced' },
+  { label: '关于', value: 'about' },
+]
+
 /*  Reusable setting group card                                        */
 /* ------------------------------------------------------------------ */
 function SettingGroup({
@@ -47,20 +59,20 @@ const THEME_OPTIONS = [
 
 function ThemeSelector({ theme, setTheme }: { theme: string; setTheme: (t: string) => void }) {
   return (
-    <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--chip-bg)] p-1">
+    <div className="grid w-full grid-cols-3 gap-1 rounded-xl border border-[var(--border)] bg-[var(--chip-bg)] p-1 sm:inline-grid sm:w-auto">
       {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
-        <button
+        <button type="button"
           key={value}
           onClick={() => setTheme(value)}
           className={cn(
-            'inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium transition-all',
+            'inline-flex min-w-0 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs font-medium transition-all sm:gap-2 sm:px-5 sm:text-sm',
             theme === value
               ? 'bg-[var(--accent)] text-white shadow-sm'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
           )}
         >
-          <Icon className="h-4 w-4" />
-          {label}
+          <Icon className="h-4 w-4 shrink-0" />
+          <span className="truncate">{label}</span>
         </button>
       ))}
     </div>
@@ -123,8 +135,9 @@ function GeneralTab({
         desc="这里配置的是默认行为，账号列表和注册页会直接复用这些设置。"
       >
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] divide-y divide-[var(--border)]/50">
-          <SettingRow label="默认注册身份">
+          <SettingRow id="settings-default-identity-provider" label="默认注册身份">
             <select
+              id="settings-default-identity-provider"
               value={form.default_identity_provider || identityOptions[0]?.value || ''}
               onChange={(e) => setForm((f) => ({ ...f, default_identity_provider: e.target.value }))}
               className="control-surface appearance-none"
@@ -136,8 +149,9 @@ function GeneralTab({
               ))}
             </select>
           </SettingRow>
-          <SettingRow label="默认第三方入口">
+          <SettingRow id="settings-default-oauth-provider" label="默认第三方入口">
             <select
+              id="settings-default-oauth-provider"
               value={form.default_oauth_provider || ''}
               onChange={(e) => setForm((f) => ({ ...f, default_oauth_provider: e.target.value }))}
               className="control-surface appearance-none"
@@ -149,8 +163,9 @@ function GeneralTab({
               ))}
             </select>
           </SettingRow>
-          <SettingRow label="默认执行方式">
+          <SettingRow id="settings-default-executor" label="默认执行方式">
             <select
+              id="settings-default-executor"
               value={form.default_executor || executorOptions[0]?.value || ''}
               onChange={(e) => setForm((f) => ({ ...f, default_executor: e.target.value }))}
               className="control-surface appearance-none"
@@ -172,8 +187,9 @@ function GeneralTab({
         desc="第三方账号走后台浏览器自动时，通常需要复用本机已登录浏览器。"
       >
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] divide-y divide-[var(--border)]/50">
-          <SettingRow label="预期登录邮箱">
+          <SettingRow id="settings-oauth-email-hint" label="预期登录邮箱">
             <input
+              id="settings-oauth-email-hint"
               type="text"
               value={form.oauth_email_hint || ''}
               onChange={(e) => setForm((f) => ({ ...f, oauth_email_hint: e.target.value }))}
@@ -181,8 +197,9 @@ function GeneralTab({
               className="control-surface"
             />
           </SettingRow>
-          <SettingRow label="Chrome Profile 路径">
+          <SettingRow id="settings-chrome-user-data-dir" label="Chrome Profile 路径">
             <input
+              id="settings-chrome-user-data-dir"
               type="text"
               value={form.chrome_user_data_dir || ''}
               onChange={(e) => setForm((f) => ({ ...f, chrome_user_data_dir: e.target.value }))}
@@ -190,8 +207,9 @@ function GeneralTab({
               className="control-surface"
             />
           </SettingRow>
-          <SettingRow label="Chrome CDP 地址">
+          <SettingRow id="settings-chrome-cdp-url" label="Chrome CDP 地址">
             <input
+              id="settings-chrome-cdp-url"
               type="text"
               value={form.chrome_cdp_url || ''}
               onChange={(e) => setForm((f) => ({ ...f, chrome_cdp_url: e.target.value }))}
@@ -213,10 +231,10 @@ function GeneralTab({
 /* ------------------------------------------------------------------ */
 /*  Setting row — label + control                                      */
 /* ------------------------------------------------------------------ */
-function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
+function SettingRow({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-3.5">
-      <label className="shrink-0 text-sm font-medium text-[var(--text-secondary)]">{label}</label>
+      <label htmlFor={id} className="shrink-0 text-sm font-medium text-[var(--text-secondary)]">{label}</label>
       <div className="min-w-0 max-w-[320px] flex-1">{children}</div>
     </div>
   )
@@ -274,7 +292,7 @@ function AboutTab() {
             </div>
             <div className="flex items-center gap-2">
               {info && !info.has_update && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-400">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--badge-success-bg)] px-3 py-1 text-xs font-medium text-[var(--badge-success-fg)] ring-1 ring-inset ring-[var(--badge-success-border)]">
                   <CheckCircle className="h-3.5 w-3.5" />
                   已是最新
                 </span>
@@ -365,7 +383,7 @@ export default function SettingsPage({
   theme: string
   setTheme: (t: string) => void
 }) {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') || 'general'
 
   // Config center sub-tabs: register, mailbox, captcha, sms, chatgpt
@@ -387,9 +405,21 @@ export default function SettingsPage({
 
   return (
     <div className="mx-auto max-w-4xl">
-      <h1 className="mb-6 text-xl font-semibold text-[var(--text-primary)]">
-        {titles[tab] || '设置'}
-      </h1>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+          {titles[tab] || '设置'}
+        </h1>
+        <select
+          value={tab}
+          onChange={event => setSearchParams({ tab: event.target.value })}
+          aria-label="切换设置页面"
+          className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-44"
+        >
+          {SETTINGS_TABS.map(item => (
+            <option key={item.value} value={item.value}>{item.label}</option>
+          ))}
+        </select>
+      </div>
 
       {tab === 'general' && <GeneralTab theme={theme} setTheme={setTheme} />}
       {isConfigTab && <Settings embedded defaultTab={tab} />}

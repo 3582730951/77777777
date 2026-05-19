@@ -4,46 +4,90 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{T .Lang "enroll.title"}} · {{T .Lang "app.name"}}</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 </head>
 <body class="theme-auto">
 <div class="app">
   {{template "_sidebar" .}}
   <main class="main">
     <header class="topbar">
-      <div class="title">{{T .Lang "enroll.title"}}</div>
-      <div class="actions">
+      <div class="topbar-title">{{T .Lang "enroll.title"}}</div>
+      <div class="topbar-actions">
         <a href="/accounts/new" class="btn ghost">{{T .Lang "acct.add_title"}} (manual)</a>
         <a href="/set-lang?l=cn&back=/accounts/enroll" class="btn ghost {{if eq .Lang langCN}}primary{{end}}">中</a>
         <a href="/set-lang?l=en&back=/accounts/enroll" class="btn ghost {{if eq .Lang langEN}}primary{{end}}">EN</a>
       </div>
     </header>
     <div class="content">
-      <div class="card section">
-        <div class="card-title">{{T .Lang "enroll.title"}}</div>
-        <p class="muted small">{{T .Lang "enroll.expires_in"}}</p>
-        <form method="post" action="/accounts/enroll" class="form-grid" style="margin-top:12px">
-          <div class="form-row">
-            <label>{{T .Lang "label.tenant"}}
-              <select name="tenant_id">
-                {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-                {{range .Tenants}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-              </select>
-            </label>
-            <label>{{T .Lang "label.provider"}}
-              <select name="provider" required>
-                <option value="chatgpt">chatgpt (chatgpt.com)</option>
-                <option value="claude">claude (claude.ai)</option>
-                <option value="gemini">gemini (gemini.google.com)</option>
-              </select>
-            </label>
-            <label>{{T .Lang "enroll.note"}}<input name="note" placeholder="账号 1 / 备用..." /></label>
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Account Enrollment</div>
+          <div class="hero-title">{{T .Lang "enroll.title"}}</div>
+          <div class="hero-subtitle">创建一个短时有效的浏览器录入会话，按步骤把上游账号安全加入账号池。</div>
+          <div class="command-hero-actions">
+            <a href="/accounts/oauth" class="btn primary">优先使用 OAuth</a>
+            <a href="/accounts/new" class="btn ghost">手动录入</a>
           </div>
-          <div class="form-row">
-            <button class="btn primary" type="submit">{{T .Lang "enroll.start"}}</button>
-            <a href="/accounts/new" class="btn ghost">{{T .Lang "enroll.alt_paste"}}</a>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>3</b><span>步骤</span></div>
+          <div class="hero-metric"><b>Web</b><span>浏览器采集</span></div>
+          <div class="hero-metric"><b>Manual</b><span>可手动录入</span></div>
+        </div>
+      </section>
+
+      <div class="layout-with-rail">
+      <div class="card guide-card work-surface">
+        <div class="card-header">
+          <div>
+            <div class="card-title">{{T .Lang "enroll.title"}}</div>
+            <p class="muted small mt-4">{{T .Lang "enroll.expires_in"}}</p>
           </div>
-        </form>
+        </div>
+        <div class="card-body">
+          <form method="post" action="/accounts/enroll" class="form">
+            <div class="form-row c3">
+              <div class="field">
+                <label for="enroll-tenant">{{T .Lang "label.tenant"}}</label>
+                <select id="enroll-tenant" name="tenant_id">
+                  {{range .YamlTenants}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                  {{range .Tenants}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                </select>
+              </div>
+              <div class="field">
+                <label for="enroll-provider">{{T .Lang "label.provider"}}</label>
+                <select id="enroll-provider" name="provider" required>
+                  <option value="chatgpt">chatgpt (chatgpt.com)</option>
+                  <option value="claude">claude (claude.ai)</option>
+                  <option value="gemini">gemini (gemini.google.com)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="enroll-note">{{T .Lang "enroll.note"}}</label>
+                <input id="enroll-note" name="note" placeholder="账号 1 / 备用..." />
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn primary" type="submit">{{T .Lang "enroll.start"}}</button>
+              <a href="/accounts/new" class="btn ghost">{{T .Lang "enroll.alt_paste"}}</a>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <aside class="assist-rail sticky">
+        <div class="assist-card">
+          <div class="assist-card-head">
+            <div class="assist-card-title">处理顺序</div>
+            <div class="assist-card-sub">只保留当前步骤需要的信息</div>
+          </div>
+          <div class="assist-card-body decision-list">
+            <div class="decision-item"><span>1</span><div><b>选择租户和 Provider</b><small>确定账号归属和上游平台，系统生成独立 enrollment 会话。</small></div></div>
+            <div class="decision-item"><span>2</span><div><b>在浏览器登录上游</b><small>打开对应官网并登录目标账号，再用下一页书签按钮采集。</small></div></div>
+            <div class="decision-item"><span>3</span><div><b>自动回填账号池</b><small>采集完成后跳转账号详情；失败时可改用手动录入路径。</small></div></div>
+          </div>
+        </div>
+      </aside>
       </div>
     </div>
   </main>

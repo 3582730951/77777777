@@ -35,3 +35,10 @@ func TestClassifyUsageLimitTryAgainSignal(t *testing.T) {
 		t.Fatalf("usage limit try-again signal classified as %s", got)
 	}
 }
+
+func TestClassifyCapacitySignalOverridesLegacyQuotaPrefix(t *testing.T) {
+	err := errors.New("upstream quota: Selected model is at capacity. Please try a different model.")
+	if got := ClassifyError(0, "", err); got != domain.ErrRateLimited {
+		t.Fatalf("capacity signal classified as %s", got)
+	}
+}

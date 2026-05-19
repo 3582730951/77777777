@@ -118,10 +118,10 @@ export function TaskLogPanel({
   const progressPercent = progressTotal > 0 ? Math.min(100, Math.round((progressCurrent / progressTotal) * 100)) : 0
   const errorText = task?.error || (Array.isArray(task?.errors) ? task.errors[0] : '')
   const statusTone =
-    currentStatus === 'succeeded' ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200' :
-    currentStatus === 'failed' ? 'border-red-400/40 bg-red-400/10 text-red-200' :
-    currentStatus === 'cancelled' || currentStatus === 'interrupted' ? 'border-amber-400/40 bg-amber-400/10 text-amber-200' :
-    'border-sky-400/40 bg-sky-400/10 text-sky-200'
+    currentStatus === 'succeeded' ? 'border-[var(--badge-success-border)] bg-[var(--badge-success-bg)] text-[var(--badge-success-fg)]' :
+    currentStatus === 'failed' ? 'border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] text-[var(--badge-danger-fg)]' :
+    currentStatus === 'cancelled' || currentStatus === 'interrupted' ? 'border-[var(--badge-warning-border)] bg-[var(--badge-warning-bg)] text-[var(--badge-warning-fg)]' :
+    'border-[var(--accent-edge)] bg-[var(--accent-soft)] text-[var(--text-accent)]'
 
   const copyLogs = () => {
     copyToClipboard(lines.join('\n')).catch(() => {})
@@ -147,18 +147,18 @@ export function TaskLogPanel({
       <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)] ring-1 ring-[var(--border)]">
         <div
           className={`h-full rounded-full transition-all duration-500 ${
-            currentStatus === 'failed' ? 'bg-red-400' :
-            currentStatus === 'succeeded' ? 'bg-emerald-400' :
-            'bg-sky-400'
+            currentStatus === 'failed' ? 'bg-[var(--state-danger-strong)]' :
+            currentStatus === 'succeeded' ? 'bg-[var(--state-success-strong)]' :
+            'bg-[var(--accent-strong)]'
           }`}
           style={{ width: `${progressTotal > 0 ? progressPercent : (isTerminalTaskStatus(currentStatus) ? 100 : 18)}%` }}
         />
       </div>
 
       {errorText ? (
-        <div className="rounded-2xl border border-red-400/35 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+        <div className="rounded-2xl border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] px-4 py-3 text-sm text-[var(--state-danger)]">
           <div className="mb-1 font-semibold">失败原因</div>
-          <div className="break-words text-red-100/85">{errorText}</div>
+          <div className="break-words text-[var(--state-danger)]">{errorText}</div>
         </div>
       ) : null}
 
@@ -187,8 +187,8 @@ export function TaskLogPanel({
             <div
               key={index}
               className={`rounded-xl border border-white/5 bg-white/[0.025] px-3 py-2 leading-5 ${
-                line.includes('✓') || line.includes('成功') ? 'text-emerald-400' :
-                line.includes('✗') || line.includes('失败') || line.includes('错误') ? 'text-red-400' :
+                line.includes('✓') || line.includes('成功') ? 'text-[var(--state-success)]' :
+                line.includes('✗') || line.includes('失败') || line.includes('错误') ? 'text-[var(--state-danger)]' :
                 'text-[var(--text-secondary)]'
               }`}
             >

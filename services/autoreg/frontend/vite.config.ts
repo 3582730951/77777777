@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 export default defineConfig({
+  base: process.env.VITE_BASE || '/autoreg/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -11,12 +12,12 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../static',
+    outDir: process.env.VITE_OUT_DIR || '../../../internal/admin/autoreg_spa',
     emptyOutDir: true,
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8000',
+      '/api': 'http://localhost:9900',
     },
   },
 })

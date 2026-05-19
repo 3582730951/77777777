@@ -112,6 +112,8 @@ func mergeWithYAML(cfg *config.Root, tenants []store.Tenant, groups []store.DynG
 			} else if g.SystemPromptInjection != "" {
 				out.Groups[idx].SystemPromptInjection = g.SystemPromptInjection
 			}
+			out.Groups[idx].ReasoningEffort = g.ReasoningEffort
+			out.Groups[idx].ForcedModel = g.ForcedModel
 			continue
 		}
 		out.Groups = append(out.Groups, config.Group{
@@ -126,6 +128,8 @@ func mergeWithYAML(cfg *config.Root, tenants []store.Tenant, groups []store.DynG
 			SystemPrompt:          g.SystemPrompt,
 			SystemPromptMode:      g.SystemPromptMode,
 			SystemPromptInjection: g.SystemPromptInjection,
+			ReasoningEffort:       g.ReasoningEffort,
+			ForcedModel:           g.ForcedModel,
 		})
 	}
 	return &out

@@ -77,6 +77,8 @@ def test_provider(body: ProviderTestRequest):
         return {"ok": True, "message": "验证码服务暂不支持在线测试，请在注册任务中验证"}
     elif body.provider_type == "sms":
         return {"ok": True, "message": "接码服务暂不支持在线测试，请在注册任务中验证"}
+    elif body.provider_type == "proxy":
+        return _test_proxy(definition.driver_type or body.provider_key, extra)
     else:
         return {"ok": False, "error": f"不支持测试的 provider 类型: {body.provider_type}"}
 
@@ -102,6 +104,29 @@ def _test_mailbox(driver_type: str, extra: dict, definition) -> dict:
             "ok": True,
             "message": f"测试成功！生成邮箱: {account.email}",
             "email": account.email,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"测试失败: {str(exc)}",
+            "detail": traceback.format_exc()[-500:],
+        }
+
+
+def _test_proxy(driver_type: str, extra: dict) -> dict:
+    """Try to fetch one proxy from a dynamic proxy provider."""
+    import traceback
+    from core.proxy_providers import create_proxy_provider
+
+    try:
+        provider = create_proxy_provider(driver_type, extra)
+        proxy = provider.get_proxy()
+        if not proxy:
+            return {"ok": False, "error": "未获取到代理"}
+        return {
+            "ok": True,
+            "message": "测试成功，已获取代理",
+            "proxy": proxy,
         }
     except Exception as exc:
         return {

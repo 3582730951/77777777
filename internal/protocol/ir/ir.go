@@ -28,9 +28,9 @@ type Part struct {
 
 	Text string
 
-	ImageURL    string
-	ImageBytes  []byte
-	ImageMedia  string
+	ImageURL   string
+	ImageBytes []byte
+	ImageMedia string
 
 	ToolUseID    string
 	ToolUseName  string
@@ -42,6 +42,8 @@ type Part struct {
 
 	// CacheBreakpoint marks this part for Anthropic cache_control injection.
 	CacheBreakpoint bool
+	// CacheControl preserves an inbound Anthropic cache_control object.
+	CacheControl []byte
 }
 
 type Message struct {
@@ -57,6 +59,8 @@ type ToolDef struct {
 	// cache_control:{type:"ephemeral"} on this tool — marks the tools
 	// block as a cacheable prefix for subsequent turns.
 	CacheBreakpoint bool
+	// CacheControl preserves an inbound Anthropic cache_control object.
+	CacheControl []byte
 }
 
 type ToolChoice struct {
@@ -65,27 +69,39 @@ type ToolChoice struct {
 }
 
 type Request struct {
-	Model       string
-	System      string
+	Model  string
+	System string
 	// SystemCached, when true, tells the anthropic encoder to wrap the
 	// system prompt in a cache_control:{type:"ephemeral"} block.
 	// Set by cacheopt.InjectCacheBreakpoints when the system is large enough.
 	SystemCached bool
-	Messages    []Message
-	Tools       []ToolDef
-	ToolChoice  ToolChoice
-	Temperature *float64
-	TopP        *float64
-	MaxTokens   int
-	Stream      bool
-	ServiceTier string
+	Messages     []Message
+	Tools        []ToolDef
+	ToolChoice   ToolChoice
+	Temperature  *float64
+	TopP         *float64
+	MaxTokens    int
+	Stream       bool
+	ServiceTier  string
 
-	ReasoningEffort  string
-	ThinkingTokens   int
-	MessageCacheIdx  int // ≥0: inject cache_control on Messages[idx]'s last content block
+	ReasoningEffort string
+	ThinkingTokens  int
+	ThinkingType    string
+	MessageCacheIdx int // ≥0: inject cache_control on Messages[idx]'s last content block
 
 	OriginalModel string
 	OriginalProto string
+
+	// UpstreamSessionKey is a gateway-local stable key used by providers that
+	// need a per-conversation upstream session id when the inbound protocol did
+	// not already provide one. It is never sent upstream directly.
+	UpstreamSessionKey string
+
+	AnthropicSystem            []byte
+	AnthropicSystemText        string
+	AnthropicMetadata          []byte
+	AnthropicContextManagement []byte
+	AnthropicToolChoice        []byte
 }
 
 type EventKind int
@@ -110,10 +126,10 @@ type Event struct {
 	ToolName  string
 	ToolDelta []byte
 
-	InputTokens          int
-	OutputTokens         int
-	CacheReadTokens      int
-	CacheCreationTokens  int
+	InputTokens         int
+	OutputTokens        int
+	CacheReadTokens     int
+	CacheCreationTokens int
 
 	FinishReason string
 

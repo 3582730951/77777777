@@ -173,6 +173,14 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 			attemptBody = applyGroupSystemPromptToResponsesBody(attemptBody, res.Group)
 		}
 		attemptBody = enhanceCyberContextRawBody(attemptBody, res.Group.ID)
+		if g.identity != nil {
+			rewriter, rerr := g.identity.RewriterForAccount(slot.Account.ID, slot.Account.Provider, slot.Account.Email)
+			if rerr != nil {
+				lastErr = fmt.Errorf("identity rewrite: %w", rerr)
+				break
+			}
+			attemptBody = rewriter.RewriteJSONBody(attemptBody)
+		}
 		promptEffective := responsesSystemPromptEffective(res.Group, promptApplied, promptKnownInjected)
 
 		g.sched.IncInflight(slot.Account.ID)
@@ -1039,7 +1047,7 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			irReq.Stream = true
-			adapter := &wsResponseAdapter{conn: conn, headers: make(http.Header), ctx: r.Context(), limiter: g.egressLimiter}
+			adapter := &wsResponseAdapter{conn: conn, headers: make(http.Header), ctx: r.Context(), limiter: g.currentEgressLimiter()}
 			g.serveRequest(adapter, r, res, irReq, "openai")
 			releaseMsg()
 			continue
@@ -1232,7 +1240,7 @@ func (g *Gateway) readResponsesWSMessage(ctx context.Context, conn *websocket.Co
 	if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
 		return nil, nil, nil
 	}
-	return g.readAllGated(ctx, &rateLimitedReader{Reader: reader, ctx: ctx, limiter: g.ingressLimiter}, g.maxRequestBytes())
+	return g.readAllGated(ctx, &rateLimitedReader{Reader: reader, ctx: ctx, limiter: g.currentIngressLimiter()}, g.maxRequestBytes())
 }
 
 func (g *Gateway) forwardResponsesSSEToWSWithHeadBuffer(
@@ -1272,7 +1280,7 @@ func (g *Gateway) forwardResponsesSSEToWSWithHeadBuffer(
 		inspector responsesSSEInspector
 		head      bytes.Buffer
 		committed bool
-		writer    = responsesWSForwarder{conn: conn, ctx: ctx, limiter: g.egressLimiter}
+		writer    = responsesWSForwarder{conn: conn, ctx: ctx, limiter: g.currentEgressLimiter()}
 	)
 	defer func() {
 		result.Usage = inspector.Usage

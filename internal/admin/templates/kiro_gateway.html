@@ -4,14 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kiro Gateway · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
-.kg-status{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px}
-.kg-status-card{padding:14px 18px;border-radius:var(--r-md);border:1px solid var(--hairline);
-  background:var(--bg-elev);min-width:140px}
-.kg-status-card .label{font-size:10px;font-weight:600;text-transform:uppercase;
-  letter-spacing:0.1em;color:var(--fg-muted)}
-.kg-status-card .val{font-size:20px;font-weight:700;margin-top:4px}
 .token-table{width:100%;border-collapse:collapse;font-size:13px}
 .token-table th{text-align:left;padding:10px 14px;font-size:11px;font-weight:600;
   text-transform:uppercase;color:var(--fg-muted);background:var(--sep);border-bottom:1px solid var(--hairline)}
@@ -38,42 +32,49 @@
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero">
+        <div>
+          <div class="hero-eyebrow">Kiro capacity</div>
+          <h1 class="hero-title">Kiro Gateway 账号容量管理</h1>
+          <p class="hero-subtitle">先确认 Gateway 运行态，再维护 refreshToken 列表；获取方式和重启规则放在右侧辅助栏，主工作区只保留可操作对象。</p>
+          <div class="command-hero-actions">
+            <button class="btn primary" onclick="loadAll()">刷新状态</button>
+            <button class="btn ghost" onclick="restartGateway()">重启 Gateway</button>
+          </div>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b id="kg-hero-running">—</b><span>Gateway</span></div>
+          <div class="hero-metric"><b id="kg-hero-accounts">—</b><span>Enabled / Total</span></div>
+          <div class="hero-metric"><b id="kg-hero-models">—</b><span>Models</span></div>
+        </div>
+      </section>
 
       <!-- Status cards -->
       <div class="kg-status" id="status-row">
         <div class="kg-status-card"><div class="label">加载中...</div></div>
       </div>
 
-      <!-- Help -->
-      <div class="help-box" style="margin-bottom:20px">
-        <b>如何获取 Kiro refreshToken：</b><br>
-        1. 在桌面安装 <a href="https://kiro.dev" target="_blank">Kiro IDE</a><br>
-        2. 用注册好的邮箱密码登录 Kiro IDE<br>
-        3. 登录后在 <code>~/.aws/sso/cache/kiro-auth-token.json</code> 中找到 <code>refreshToken</code> 字段<br>
-        4. 复制粘贴到下方，点击"添加"<br>
-        5. 点击"重启 Gateway"使配置生效<br>
-        <br>
-        <b>支持的 Token 来源：</b>Kiro IDE（Google/GitHub 登录）、kiro-cli SQLite、AWS SSO OIDC refreshToken
-      </div>
+      <div class="layout-with-rail layout-wide-rail">
+      <div class="flex-col gap-16">
 
       <!-- Add token form -->
-      <div class="card" style="margin-bottom:20px">
+      <div class="card">
         <div class="card-header">
           <div class="card-title">添加 Token</div>
         </div>
         <div class="card-body">
           <div class="add-form">
             <div class="field">
-              <label>refreshToken</label>
+              <label for="f-token">refreshToken</label>
               <textarea id="f-token" placeholder="粘贴 refreshToken（从 Kiro IDE 的 ~/.aws/sso/cache/kiro-auth-token.json 中获取）"></textarea>
             </div>
             <div class="form-row c2">
               <div class="field">
-                <label>标签（可选，如邮箱）</label>
+                <label for="f-label">标签（可选，如邮箱）</label>
                 <input type="text" id="f-label" placeholder="例如: user@example.com">
               </div>
               <div class="field">
-                <label>区域</label>
+                <label for="f-region">区域</label>
                 <select id="f-region">
                   <option value="us-east-1" selected>us-east-1（默认）</option>
                   <option value="eu-central-1">eu-central-1</option>
@@ -89,7 +90,7 @@
       </div>
 
       <!-- Token list -->
-      <div class="card">
+      <div class="card work-surface">
         <div class="card-header">
           <div class="card-title">Token 列表</div>
           <button class="btn primary sm" onclick="restartGateway()">重启 Gateway</button>
@@ -106,6 +107,33 @@
             </tbody>
           </table>
         </div>
+      </div>
+
+      </div>
+      <aside class="assist-rail sticky">
+        <div class="assist-card">
+          <div class="assist-card-head">
+            <div class="assist-card-title">如何获取 Kiro refreshToken</div>
+            <div class="assist-card-sub">按顺序完成，避免粘贴错误来源</div>
+          </div>
+          <div class="assist-card-body decision-list">
+            <div class="decision-item"><span>1</span><div><b>登录 Kiro IDE</b><small>在桌面安装并用目标邮箱登录 Kiro IDE。</small></div></div>
+            <div class="decision-item"><span>2</span><div><b>读取本地缓存</b><small>在 <code>~/.aws/sso/cache/kiro-auth-token.json</code> 中找到 <code>refreshToken</code>。</small></div></div>
+            <div class="decision-item"><span>3</span><div><b>添加并重启</b><small>粘贴到左侧表单，添加后点击重启 Gateway 使配置生效。</small></div></div>
+          </div>
+        </div>
+        <div class="assist-card">
+          <div class="assist-card-head">
+            <div class="assist-card-title">支持来源</div>
+            <div class="assist-card-sub">Token 类型</div>
+          </div>
+          <div class="assist-card-body">
+            <span class="chip">Kiro IDE</span>
+            <span class="chip">kiro-cli SQLite</span>
+            <span class="chip">AWS SSO OIDC refreshToken</span>
+          </div>
+        </div>
+      </aside>
       </div>
 
     </div>
@@ -134,13 +162,22 @@ async function loadStatus() {
     document.getElementById('status-row').innerHTML = '<div class="kg-status-card"><div class="label">加载失败</div></div>';
     return;
   }
+  const enabledAccounts = d.enabled_accounts ?? d.enabledAccounts ?? 0;
+  const totalAccounts = d.accounts ?? d.total_accounts ?? d.totalAccounts ?? 0;
+  const modelCount = d.models?.length || 0;
   document.getElementById('status-row').innerHTML = [
     {label:'Gateway', val: d.running ? '运行中' : '未运行', color: d.running ? 'var(--ok)' : 'var(--err)'},
     {label:'健康状态', val: d.healthy ? '正常' : '异常', color: d.healthy ? 'var(--ok)' : 'var(--fg-muted)'},
-    {label:'账号数', val: d.enabled_accounts + '/' + d.accounts, color: 'var(--accent)'},
+    {label:'账号数', val: enabledAccounts + '/' + totalAccounts, color: 'var(--accent)'},
     {label:'端口', val: d.port || '—', color: 'var(--fg)'},
-    {label:'模型数', val: d.models?.length || 0, color: 'var(--fg)'},
+    {label:'模型数', val: modelCount, color: 'var(--fg)'},
   ].map(k => `<div class="kg-status-card"><div class="label">${k.label}</div><div class="val" style="color:${k.color}">${k.val}</div></div>`).join('');
+  const heroRunning = document.getElementById('kg-hero-running');
+  const heroAccounts = document.getElementById('kg-hero-accounts');
+  const heroModels = document.getElementById('kg-hero-models');
+  if (heroRunning) heroRunning.textContent = d.running ? '运行中' : '未运行';
+  if (heroAccounts) heroAccounts.textContent = enabledAccounts + '/' + totalAccounts;
+  if (heroModels) heroModels.textContent = modelCount;
 }
 
 async function loadTokens() {

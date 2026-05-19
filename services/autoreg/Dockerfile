@@ -4,7 +4,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
-RUN npm run build
+RUN VITE_BASE=/ VITE_API_BASE=/api VITE_OUT_DIR=../static npm run build
 
 # Stage 2: Python 后端 + 运行环境
 FROM python:3.12-slim

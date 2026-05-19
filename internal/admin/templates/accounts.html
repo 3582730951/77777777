@@ -4,14 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>账号池 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
-.acct-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.acct-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));gap:14px}
 .acct-card{padding:16px;cursor:pointer;transition:box-shadow 0.2s var(--ease)}
 .acct-card:hover{box-shadow:var(--s2)}
 .acct-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .acct-id-wrap{display:flex;min-width:0;align-items:center;gap:6px}
-.acct-id{font-family:"SF Mono",Menlo,monospace;font-size:11px;font-weight:600;color:var(--fg)}
+.acct-id{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:"SF Mono",Menlo,monospace;font-size:11px;font-weight:600;color:var(--fg)}
 .email-toggle{display:inline-flex;width:24px;height:24px;align-items:center;justify-content:center;border:1px solid var(--hairline);
   border-radius:6px;background:transparent;color:var(--fg-muted);cursor:pointer}
 .email-toggle:hover{color:var(--fg);background:var(--sep)}
@@ -27,11 +28,20 @@
 .quota-fill{height:100%;border-radius:3px;transition:width 0.5s;min-width:2px}
 .model-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
 .model-chip{padding:2px 7px;background:var(--sep);border:1px solid var(--hairline);
-  border-radius:999px;font-size:10px;color:var(--fg-muted)}
+  border-radius:999px;font-size:10px;color:var(--fg-muted);max-width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .import-status{display:none;margin-bottom:12px;padding:10px 12px;border-radius:10px;border:1px solid var(--hairline);font-size:12px}
 .import-status.show{display:block}
 .import-status.ok{border-color:rgba(52,199,89,0.28);background:rgba(52,199,89,0.10);color:var(--ok)}
 .import-status.err{border-color:rgba(255,59,48,0.28);background:rgba(255,59,48,0.10);color:var(--err)}
+@media(max-width:820px){
+  .accounts-table th:nth-child(7),.accounts-table td:nth-child(7){display:none}
+}
+@media(max-width:680px){
+  .accounts-table th:nth-child(2),.accounts-table td:nth-child(2),
+  .accounts-table th:nth-child(5),.accounts-table td:nth-child(5){display:none}
+  .acct-card{padding:14px}
+}
 </style>
 </head>
 <body class="theme-auto">
@@ -42,59 +52,76 @@
       <div class="topbar-title">账号池</div>
       <div class="topbar-actions">
         <input id="accounts-import-file" type="file" accept=".json,application/json" hidden onchange="importAccountsFromFile(this)">
-        <a href="/api/admin/accounts/export" class="btn ghost">导出</a>
-        <button type="button" id="accounts-import-btn" class="btn ghost" onclick="pickAccountsImportFile()">导入</button>
         <a href="/accounts/oauth" class="btn primary">⚡ OAuth 登录</a>
-        <a href="/accounts/enroll" class="btn ghost">Bookmarklet</a>
         <a href="/accounts/new" class="btn ghost">+ 手动添加</a>
+        <details class="action-menu">
+          <summary class="btn ghost">更多</summary>
+          <div class="action-menu-panel">
+            <a href="/api/admin/accounts/export" class="action-menu-item">导出账号</a>
+            <button type="button" id="accounts-import-btn" class="action-menu-item" onclick="pickAccountsImportFile()">导入账号</button>
+            <a href="/accounts/enroll" class="action-menu-item">Bookmarklet 接入</a>
+          </div>
+        </details>
         {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/accounts")}}
       </div>
     </header>
-    <div class="content">
+    <div class="content accounts-content">
       <div id="accounts-import-status" class="import-status"></div>
 
-      <!-- Filter bar + view toggle -->
-      <div class="flex items-center justify-between gap-8" style="flex-wrap:wrap">
-        <div class="flex gap-8 items-center" style="flex-wrap:wrap">
-          <div class="filter-bar" style="padding:8px 12px">
+      <div class="card work-surface accounts-work-surface">
+        <div class="card-header account-panel-head">
+          <div>
+            <div class="card-title">账号清单</div>
+            <div class="tiny muted">{{len .Slots}} accounts · 用筛选和搜索直接定位账号详情</div>
+          </div>
+          <div class="account-panel-tools">
+            <div class="account-search">
+              <input id="accounts-search" type="search" placeholder="搜索账号 / Provider / Model" oninput="setAccountSearch(this.value)" aria-label="搜索账号">
+            </div>
+            <div class="view-toggle" aria-label="账号视图切换">
+              <button class="vt-btn" type="button" aria-pressed="false" onclick="setView('card',this)">卡片</button>
+              <button class="vt-btn active" type="button" aria-pressed="true" onclick="setView('table',this)">表格</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="account-toolbar accounts-toolbar">
+          <div class="account-filter-stack">
+            <div class="filter-bar compact-filter" data-kind="provider">
             <span class="tiny bold muted">Provider:</span>
-            <span class="filter-chip active" data-filter="all" onclick="filterAccounts('provider','all',this)">全部</span>
+            <button type="button" class="filter-chip active" data-filter="all" onclick="filterAccounts('provider','all',this)">全部</button>
             {{range $p := providers .Slots}}
-            <span class="filter-chip" data-filter="{{$p}}" onclick="filterAccounts('provider','{{$p}}',this)">{{$p}}</span>
+            <button type="button" class="filter-chip" data-filter="{{$p}}" onclick="filterAccounts('provider','{{$p}}',this)">{{$p}}</button>
             {{end}}
-          </div>
-          <div class="filter-bar" style="padding:8px 12px">
+            </div>
+            <div class="filter-bar compact-filter" data-kind="state">
             <span class="tiny bold muted">状态:</span>
-            <span class="filter-chip active" data-filter="all" onclick="filterAccounts('state','all',this)">全部</span>
-            <span class="filter-chip" data-filter="healthy" onclick="filterAccounts('state','healthy',this)">健康的</span>
-            <span class="filter-chip" data-filter="low_quota" onclick="filterAccounts('state','low_quota',this)">额度低</span>
-            <span class="filter-chip" data-filter="no_quota" onclick="filterAccounts('state','no_quota',this)">没有额度</span>
-            <span class="filter-chip" data-filter="banned" onclick="filterAccounts('state','banned',this)">封禁</span>
-            <span class="filter-chip" data-filter="abnormal" onclick="filterAccounts('state','abnormal',this)">异常</span>
+            <button type="button" class="filter-chip active" data-filter="all" onclick="filterAccounts('state','all',this)">全部</button>
+            <button type="button" class="filter-chip" data-filter="healthy" onclick="filterAccounts('state','healthy',this)">健康的</button>
+            <button type="button" class="filter-chip" data-filter="low_quota" onclick="filterAccounts('state','low_quota',this)">额度低</button>
+            <button type="button" class="filter-chip" data-filter="no_quota" onclick="filterAccounts('state','no_quota',this)">没有额度</button>
+            <button type="button" class="filter-chip" data-filter="banned" onclick="filterAccounts('state','banned',this)">封禁</button>
+            <button type="button" class="filter-chip" data-filter="abnormal" onclick="filterAccounts('state','abnormal',this)">异常</button>
+            </div>
           </div>
         </div>
-        <div class="view-toggle">
-          <button class="vt-btn active" onclick="setView('card',this)">卡片</button>
-          <button class="vt-btn" onclick="setView('table',this)">表格</button>
-        </div>
-      </div>
 
       <!-- Card View -->
-      <div id="view-card">
+      <div id="view-card" style="display:none">
         {{if empty .Slots}}
-        <div class="card">
-          <div class="empty">
-            <div class="empty-icon">◯</div>
-            <div class="empty-title">还没有账号</div>
-            <div class="empty-sub">点击右上角「OAuth 登录」添加第一个订阅账号</div>
-            <a href="/accounts/oauth" class="btn primary mt-8">⚡ 开始添加</a>
-          </div>
+        <div class="empty accounts-empty">
+          <div class="empty-icon">◯</div>
+          <div class="empty-title">还没有账号</div>
+          <div class="empty-sub">点击右上角「OAuth 登录」添加第一个订阅账号</div>
+          <a href="/accounts/oauth" class="btn primary mt-8">⚡ 开始添加</a>
         </div>
         {{else}}
         <div class="acct-cards">
           {{range .Slots}}
-          <div class="card acct-card" data-provider="{{.Provider}}" data-status="{{.StatusCategory}}"
-               onclick="location.href='/accounts/{{.AccountID}}'">
+          <div class="card acct-card" role="link" tabindex="0" aria-label="查看账号 {{.AccountID}} 详情"
+               data-provider="{{.Provider}}" data-status="{{.StatusCategory}}"
+               onclick="location.href='/accounts/{{.AccountID}}'"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();location.href='/accounts/{{.AccountID}}'}">
             <div class="acct-hd">
               <div class="acct-id-wrap">
                 <a href="/accounts/{{.AccountID}}" class="acct-id" onclick="event.stopPropagation()">{{.AccountID}}</a>
@@ -110,8 +137,7 @@
             </div>
             <div class="account-email" hidden></div>
             <div class="acct-meta">
-              <span class="conf-dot" style="background:{{statusColor .StatusCategory}}"></span>
-              <span class="muted">{{.StatusLabel}}</span>
+              <span class="badge {{statusBadgeClass .StatusCategory}}">{{.StatusLabel}}</span>
               <span style="margin-left:auto;font-weight:600;color:{{latColor .EWMALatency}}">{{printf "%.0f" .EWMALatency}}ms</span>
               <span class="muted">×{{.Inflight}}</span>
             </div>
@@ -137,8 +163,8 @@
             </div>
             {{if .DiscoveredModels}}
             <div class="model-chips">
-              {{range limitSlice .DiscoveredModels 4}}<span class="model-chip">{{.}}</span>{{end}}
-              {{if gt (len .DiscoveredModels) 4}}<span class="model-chip muted">+{{sub (len .DiscoveredModels) 4}}</span>{{end}}
+              {{range limitSlice .DiscoveredModels 2}}<span class="model-chip">{{.}}</span>{{end}}
+              {{if gt (len .DiscoveredModels) 2}}<span class="model-chip muted">+{{sub (len .DiscoveredModels) 2}}</span>{{end}}
             </div>
             {{end}}
           </div>
@@ -147,24 +173,22 @@
         {{end}}
       </div>
 
-      <!-- Table View (hidden by default) -->
-      <div id="view-table" style="display:none">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">所有账号 ({{len .Slots}})</div>
-          </div>
+      <!-- Table View -->
+      <div id="view-table">
           <div class="table-wrap">
-            <table class="data">
+            <table class="data accounts-table">
               <thead>
                 <tr>
-                  <th>账号 ID</th><th>Provider</th><th>租户</th><th>Plan</th>
-                  <th>状态</th><th>EWMA</th><th>5h 剩余</th><th>7d 剩余</th>
+                  <th>账号</th><th>Provider</th><th>状态</th>
+                  <th>5h 额度</th><th>7d 额度</th><th>负载</th>
                   <th>最近成功</th><th class="right">操作</th>
                 </tr>
               </thead>
               <tbody>
               {{range .Slots}}
-                <tr data-provider="{{.Provider}}" data-status="{{.StatusCategory}}">
+                <tr data-provider="{{.Provider}}" data-status="{{.StatusCategory}}" data-search="{{.AccountID}} {{.Provider}} {{.PlanTier}} {{range .DiscoveredModels}}{{.}} {{end}}"
+                    tabindex="0" onclick="if(!event.target.closest('a,button,form,input')) location.href='/accounts/{{.AccountID}}'"
+                    onkeydown="if((event.key==='Enter'||event.key===' ')&&!event.target.closest('a,button,form,input')){event.preventDefault();location.href='/accounts/{{.AccountID}}'}">
                   <td>
                     <div class="table-id-cell">
                       <div class="table-id-main">
@@ -177,18 +201,45 @@
                           </svg>
                         </button>
                       </div>
+                      <div class="account-row-meta">
+                        <span>{{or .TenantID "default"}}</span>
+                        <span>{{or .PlanTier "—"}}</span>
+                      </div>
                       <div class="account-email" hidden></div>
                     </div>
                   </td>
                   <td><span class="provider-tag provider-{{.Provider}}">{{.Provider}}</span></td>
-                  <td class="muted tiny">{{or .TenantID "—"}}</td>
-                  <td class="tiny muted">{{or .PlanTier "—"}}</td>
                   <td>
                     <span class="badge {{statusBadgeClass .StatusCategory}}">{{.StatusLabel}}</span>
                   </td>
-                  <td class="mono tiny">{{printf "%.0f" .EWMALatency}}ms</td>
-                  <td class="tiny" style="color:{{remainColor .QuotaShortUsed .QuotaShortLimit}}">{{if .QuotaShortLimit}}{{fmtf (subf .QuotaShortLimit .QuotaShortUsed)}}%{{else}}—{{end}}</td>
-                  <td class="tiny" style="color:{{remainColor .QuotaLongUsed .QuotaLongLimit}}">{{if .QuotaLongLimit}}{{fmtf (subf .QuotaLongLimit .QuotaLongUsed)}}%{{else}}—{{end}}</td>
+                  <td>
+                    <div class="quota-cell">
+                      <div class="quota-cell-head">
+                        <span>剩余</span>
+                        <b style="color:{{remainColor .QuotaShortUsed .QuotaShortLimit}}">{{if .QuotaShortLimit}}{{fmtf (subf .QuotaShortLimit .QuotaShortUsed)}}%{{else}}—{{end}}</b>
+                      </div>
+                      <div class="mini-quota-track">
+                        <div style="width:{{if .QuotaShortLimit}}{{remainPct .QuotaShortUsed .QuotaShortLimit}}{{else}}0{{end}}%;background:{{if .QuotaShortLimit}}{{remainColor .QuotaShortUsed .QuotaShortLimit}}{{else}}var(--hairline-2){{end}}"></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="quota-cell">
+                      <div class="quota-cell-head">
+                        <span>剩余</span>
+                        <b style="color:{{remainColor .QuotaLongUsed .QuotaLongLimit}}">{{if .QuotaLongLimit}}{{fmtf (subf .QuotaLongLimit .QuotaLongUsed)}}%{{else}}—{{end}}</b>
+                      </div>
+                      <div class="mini-quota-track">
+                        <div style="width:{{if .QuotaLongLimit}}{{remainPct .QuotaLongUsed .QuotaLongLimit}}{{else}}0{{end}}%;background:{{if .QuotaLongLimit}}{{remainColor .QuotaLongUsed .QuotaLongLimit}}{{else}}var(--hairline-2){{end}}"></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="load-cell">
+                      <span class="mono" style="color:{{latColor .EWMALatency}}">{{printf "%.0f" .EWMALatency}}ms</span>
+                      <span class="tiny muted">并发 ×{{.Inflight}}</span>
+                    </div>
+                  </td>
                   <td class="muted tiny">{{if .LastSuccess.IsZero}}—{{else}}{{.LastSuccess.Format "15:04"}}{{end}}</td>
                   <td>
                     <div class="actions-cell">
@@ -205,7 +256,7 @@
                 </tr>
               {{end}}
               {{if empty .Slots}}
-                <tr><td colspan="10">
+                <tr><td colspan="8">
                   <div class="empty">
                     <div class="empty-icon">◯</div>
                     <div class="empty-title">还没有账号</div>
@@ -223,9 +274,8 @@
   </main>
 </div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 
-let _provFilter='all',_statusFilter='all';
+let _provFilter='all',_statusFilter='all',_searchFilter='';
 
 function readImportField(raw,keys){
   for(const key of keys){
@@ -329,8 +379,12 @@ function toggleAccountEmail(event,btn){
 }
 
 function setView(view,btn){
-  document.querySelectorAll('.view-toggle .vt-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.view-toggle .vt-btn').forEach(b=>{
+    b.classList.remove('active');
+    b.setAttribute('aria-pressed','false');
+  });
   btn.classList.add('active');
+  btn.setAttribute('aria-pressed','true');
   document.getElementById('view-card').style.display=view==='card'?'':'none';
   document.getElementById('view-table').style.display=view==='table'?'':'none';
 }
@@ -343,6 +397,16 @@ function filterAccounts(type,val,btn){
   applyFilters();
 }
 
+function quickStatusFilter(val){
+  const btn=document.querySelector(`.filter-bar[data-kind="state"] [data-filter="${val}"]`);
+  if(btn)filterAccounts('state',val,btn);
+}
+
+function setAccountSearch(value){
+  _searchFilter=String(value||'').trim().toLowerCase();
+  applyFilters();
+}
+
 function applyFilters(){
   const items=document.querySelectorAll('[data-provider]');
   items.forEach(el=>{
@@ -351,6 +415,8 @@ function applyFilters(){
     let show=true;
     if(_provFilter!=='all'&&prov!==_provFilter)show=false;
     if(_statusFilter!=='all'&&status!==_statusFilter)show=false;
+    const haystack=(el.dataset.search||el.textContent||'').toLowerCase();
+    if(_searchFilter&&!haystack.includes(_searchFilter))show=false;
     el.style.display=show?'':'none';
   });
 }

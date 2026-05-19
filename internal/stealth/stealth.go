@@ -7,17 +7,17 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 )
 
-// ClaudeCodeBetaHeader is the complete beta list for Claude Code CLI 2.1.92.
+// ClaudeCodeBetaHeader is the complete beta list for Claude Code CLI 2.1.138.
 // ALL betas must be present — missing any causes Anthropic to bill against
 // third-party extra-usage instead of the Claude Code subscription quota.
 const ClaudeCodeBetaHeader = "claude-code-20250219,oauth-2025-04-20," +
-	"interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14," +
-	"prompt-caching-scope-2026-01-05,effort-2025-11-24," +
-	"redact-thinking-2026-02-12,context-management-2025-06-27," +
+	"interleaved-thinking-2025-05-14,context-management-2025-06-27," +
+	"prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01," +
 	"extended-cache-ttl-2025-04-11"
 
 var hopByHopHeaders = []string{
@@ -218,26 +218,56 @@ func CodexHeaders(h http.Header, ua, accountID, sessionID, accessToken string) {
 	ScrubProxy(h)
 }
 
-// ClaudeCodeHeaders sets the full Claude Code CLI 2.1.92 header set.
+// ClaudeCodeHeaders sets the full Claude Code CLI 2.1.138 header set.
 func ClaudeCodeHeaders(h http.Header, accessToken string) {
 	h.Set("Authorization", "Bearer "+accessToken)
 	h.Set("Content-Type", "application/json")
-	h.Set("Accept", "text/event-stream")
+	h.Set("Accept", "application/json")
 	h.Set("anthropic-version", "2023-06-01")
 	h.Set("anthropic-beta", ClaudeCodeBetaHeader)
-	h.Set("User-Agent", "claude-cli/2.1.92 (external, cli)")
+	h.Set("User-Agent", "claude-cli/2.1.138 (external, sdk-cli)")
 	h.Set("X-Stainless-Lang", "js")
-	h.Set("X-Stainless-Package-Version", "0.70.0")
-	h.Set("X-Stainless-OS", "Linux")
-	h.Set("X-Stainless-Arch", "arm64")
+	h.Set("X-Stainless-Package-Version", "0.93.0")
+	h.Set("X-Stainless-OS", stealthStainlessOS())
+	h.Set("X-Stainless-Arch", stealthStainlessArch())
 	h.Set("X-Stainless-Runtime", "node")
-	h.Set("X-Stainless-Runtime-Version", "v24.13.0")
+	h.Set("X-Stainless-Runtime-Version", "v24.3.0")
 	h.Set("X-Stainless-Retry-Count", "0")
 	h.Set("X-Stainless-Timeout", "600")
 	h.Set("X-App", "cli")
 	h.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
 	h.Set("Accept-Encoding", "gzip, deflate, br")
 	ScrubProxy(h)
+}
+
+func stealthStainlessOS() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "MacOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	case "freebsd":
+		return "FreeBSD"
+	case "openbsd":
+		return "OpenBSD"
+	default:
+		return "Unknown"
+	}
+}
+
+func stealthStainlessArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "arm64":
+		return "arm64"
+	case "386":
+		return "x32"
+	default:
+		return "unknown"
+	}
 }
 
 // GeminiCLIHeaders sets Gemini CLI 0.1.5 headers for cloudcode-pa.googleapis.com.

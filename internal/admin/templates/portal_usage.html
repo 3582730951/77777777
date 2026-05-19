@@ -4,9 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>用量统计 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
-.usage-chart{width:100%;height:160px}
 .model-breakdown{display:flex;flex-direction:column;gap:6px}
 .model-row{display:flex;align-items:center;gap:8px;font-size:12px}
 .model-bar-track{flex:1;height:6px;background:var(--sep);border-radius:3px;overflow:hidden}
@@ -22,42 +21,56 @@
     <header class="topbar">
       <div class="topbar-title">用量统计</div>
       <div class="topbar-actions">
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Usage analytics</div>
+          <h1 class="hero-title">7 天用量与请求明细</h1>
+          <p class="hero-subtitle">先看总量和今日趋势，再用近期请求记录定位具体模型、分组、延迟和失败状态。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{.RequestsTotal}}</b><span>7 天请求</span></div>
+          <div class="hero-metric"><b>{{fmtTokens .TokensTotal}}</b><span>7 天 Tokens</span></div>
+          <div class="hero-metric"><b>{{.RequestsToday}}</b><span>今日请求</span></div>
+        </div>
+      </section>
 
-      <!-- KPI cards -->
-      <div class="grid g3">
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(0,122,255,0.10);color:var(--accent)">⚡</div>
-          <div class="stat-val">{{.RequestsTotal}}</div>
-          <div class="stat-label">总请求数（7天）</div>
-        </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(191,90,242,0.10);color:var(--purple)">T</div>
-          <div class="stat-val">{{fmtTokens .TokensTotal}}</div>
-          <div class="stat-label">总 Tokens（7天）</div>
-        </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">☀</div>
-          <div class="stat-val">{{.RequestsToday}}</div>
-          <div class="stat-label">今日请求</div>
-        </div>
-      </div>
-
-      <!-- SVG bar chart for 7-day trend -->
-      <div class="card">
-        <div class="card-header"><div class="card-title">近 7 天请求趋势</div></div>
-        <div class="card-body">
-          {{if .DailyStats}}
-          <div class="usage-chart" id="usage-chart"></div>
-          {{else}}
-          <div class="empty" style="padding:24px">
-            <div class="empty-icon">⌚</div>
-            <div class="empty-sub">暂无数据 — 发出几次请求后即可看到趋势</div>
+      {{$okCount := fieldEqCount .Logs "Status" "ok"}}
+      {{$failCount := sub (len .Logs) $okCount}}
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">7 天趋势 <span>Requests</span></div>
+          <div class="viz-value">{{.RequestsTotal}}</div>
+          <div class="viz-spark-bars" aria-hidden="true">
+            {{range .DailyStats}}<i style="--h:{{if $.MaxDailyReqs}}{{percent .Count $.MaxDailyReqs}}{{else}}8{{end}}%;--c:var(--accent)"></i>{{end}}
           </div>
-          {{end}}
+          <div class="viz-caption">柱形先显示节奏，明细表只用于定位具体请求。</div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-ring-row">
+            <div class="viz-ring" style="--p:{{percent .RequestsToday .RequestsTotal}}"><b>{{.RequestsToday}}</b></div>
+            <div>
+              <div class="viz-title">今日占比</div>
+              <div class="viz-value">{{percent .RequestsToday .RequestsTotal}}%</div>
+              <div class="viz-caption">今日请求 / 7 天总请求。</div>
+            </div>
+          </div>
+        </div>
+        <div class="viz-card {{if $failCount}}warn{{else}}ok{{end}}">
+          <div class="viz-title">状态质量 <span>Status</span></div>
+          <div class="viz-value">{{if $failCount}}{{$failCount}} 失败{{else}}全部正常{{end}}</div>
+          <div class="viz-split-bar" aria-label="请求成功失败占比">
+            <i style="--w:{{percent $okCount .RequestsTotal}}%;--c:var(--ok)"></i>
+            <i style="--w:{{percent $failCount .RequestsTotal}}%;--c:var(--warn)"></i>
+          </div>
+          <div class="viz-mini-stack">
+            <div class="viz-mini"><span>OK</span><b>{{$okCount}}</b></div>
+            <div class="viz-mini"><span>Fail</span><b>{{$failCount}}</b></div>
+            <div class="viz-mini"><span>Tokens</span><b>{{fmtTokens .TokensTotal}}</b></div>
+          </div>
         </div>
       </div>
 
@@ -78,7 +91,7 @@
       </div>
 
       <!-- Recent request log -->
-      <div class="card">
+      <div class="card work-surface">
         <div class="card-header">
           <div class="card-title">近期请求记录</div>
           <span class="tiny muted">最近 200 条</span>
@@ -114,79 +127,8 @@
     </div>
   </main>
 </div>
-<script src="/static/charts.js?v=2"></script>
+<script src="/static/charts.js?v=8"></script>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
-
-// Render SVG bar chart from server data
-(function(){
-  const dailyStats = [
-    {{range .DailyStats}}{label:"{{.Label}}",count:{{.Count}}},{{end}}
-  ];
-  const maxReqs = {{.MaxDailyReqs}};
-  const host = document.getElementById('usage-chart');
-  if(!host || !dailyStats.length || maxReqs === 0) return;
-
-  const W = host.clientWidth || 600, H = 160;
-  const pad = {l:40,r:12,t:12,b:24};
-  const innerW = W-pad.l-pad.r, innerH = H-pad.t-pad.b;
-  const barW = Math.min(40, innerW/dailyStats.length * 0.6);
-  const gap = (innerW - barW*dailyStats.length) / (dailyStats.length + 1);
-
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns,'svg');
-  svg.setAttribute('width',W);svg.setAttribute('height',H);
-  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
-
-  // Grid lines
-  for(let i=0;i<=4;i++){
-    const y=pad.t+innerH*i/4;
-    const line=document.createElementNS(ns,'line');
-    line.setAttribute('x1',pad.l);line.setAttribute('x2',W-pad.r);
-    line.setAttribute('y1',y);line.setAttribute('y2',y);
-    line.setAttribute('stroke','rgba(127,127,127,0.12)');line.setAttribute('stroke-width','1');
-    svg.appendChild(line);
-    const label=document.createElementNS(ns,'text');
-    label.setAttribute('x',pad.l-6);label.setAttribute('y',y+4);
-    label.setAttribute('text-anchor','end');label.setAttribute('font-size','10');
-    label.setAttribute('fill','currentColor');label.setAttribute('opacity','0.4');
-    label.textContent=Math.round(maxReqs-maxReqs*i/4);
-    svg.appendChild(label);
-  }
-
-  // Bars
-  dailyStats.forEach((d,i)=>{
-    const x=pad.l+gap+(barW+gap)*i;
-    const h=maxReqs>0?d.count/maxReqs*innerH:0;
-    const y=pad.t+innerH-h;
-
-    // Bar gradient
-    const rect=document.createElementNS(ns,'rect');
-    rect.setAttribute('x',x);rect.setAttribute('y',y);
-    rect.setAttribute('width',barW);rect.setAttribute('height',h);
-    rect.setAttribute('rx','3');rect.setAttribute('fill','var(--accent)');
-    rect.setAttribute('opacity','0.8');
-    svg.appendChild(rect);
-
-    // Value on top
-    if(d.count>0){
-      const vt=document.createElementNS(ns,'text');
-      vt.setAttribute('x',x+barW/2);vt.setAttribute('y',y-4);
-      vt.setAttribute('text-anchor','middle');vt.setAttribute('font-size','10');
-      vt.setAttribute('font-weight','600');vt.setAttribute('fill','currentColor');
-      vt.textContent=d.count;svg.appendChild(vt);
-    }
-
-    // X label
-    const lt=document.createElementNS(ns,'text');
-    lt.setAttribute('x',x+barW/2);lt.setAttribute('y',H-6);
-    lt.setAttribute('text-anchor','middle');lt.setAttribute('font-size','10');
-    lt.setAttribute('fill','currentColor');lt.setAttribute('opacity','0.55');
-    lt.textContent=d.label;svg.appendChild(lt);
-  });
-
-  host.appendChild(svg);
-})();
 
 // Model breakdown from logs
 (function(){

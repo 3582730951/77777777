@@ -4,17 +4,69 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{or .Title "分组"}} · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
-.model-checklist{display:flex;flex-wrap:wrap;gap:6px;padding:10px 0}
-.model-check-item{display:flex;align-items:center;gap:6px;padding:5px 10px;
-  border:1px solid var(--hairline);border-radius:var(--r-sm);cursor:pointer;
-  font-size:12px;font-family:"SF Mono",Menlo,monospace;transition:all .15s}
-.model-check-item:hover{border-color:var(--accent);background:rgba(0,122,255,.05)}
-.model-check-item input{accent-color:var(--accent)}
-.model-check-item.checked{border-color:var(--accent);background:rgba(0,122,255,.08);color:var(--accent)}
-.model-section{display:none}.model-section.active{display:block}
-.select-all-row{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.model-picker{position:relative;max-width:100%}
+.model-picker-trigger{
+  display:flex;width:100%;min-height:40px;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 10px;border:1px solid var(--hairline-2);border-radius:var(--r-sm);
+  background:var(--bg);color:var(--fg);
+  text-align:left;transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease),box-shadow var(--dur) var(--ease)
+}
+.model-picker-trigger:hover,.model-picker.open .model-picker-trigger{
+  border-color:var(--control-edge-hover);background:var(--control-bg-hover);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 7%,transparent)
+}
+.model-picker-trigger>span:first-child{
+  display:block;min-width:0;color:var(--fg-muted);font-size:10.5px;font-weight:760;letter-spacing:.08em;text-transform:uppercase
+}
+.model-picker-trigger>span:first-child>span{display:none}
+.model-picker-trigger strong{
+  display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  margin-top:0;font-size:12.5px;font-weight:680;letter-spacing:0;color:var(--fg-2);text-transform:none
+}
+.model-picker-count{
+  flex-shrink:0;padding:2px 8px;border:1px solid var(--hairline);border-radius:999px;
+  background:rgba(148,163,184,.06);color:var(--fg-muted);font-size:10.5px;font-weight:680
+}
+.model-picker-chevron{flex-shrink:0;color:var(--fg-muted);font-size:11px;transition:transform var(--dur) var(--ease)}
+.model-picker.open .model-picker-chevron{transform:rotate(180deg)}
+.model-picker-panel{
+  position:absolute;z-index:60;top:calc(100% + 6px);left:0;right:0;display:none;overflow:hidden;
+  border:1px solid var(--hairline-2);border-radius:var(--r-lg);
+  background:linear-gradient(180deg,var(--bg-glass),var(--bg-elev));
+  box-shadow:0 18px 54px rgba(0,0,0,.28);backdrop-filter:saturate(160%) blur(18px);
+  -webkit-backdrop-filter:saturate(160%) blur(18px)
+}
+.model-picker.open .model-picker-panel{display:block}
+.model-picker-toolbar{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:8px 10px;border-bottom:1px solid var(--sep)
+}
+.model-picker-actions{display:flex;gap:6px;flex-wrap:wrap}
+.model-option-list{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px;
+  max-height:264px;overflow:auto;padding:8px 10px
+}
+.model-check-item{
+  display:flex;min-width:0;align-items:center;gap:8px;padding:7px 9px;
+  border:1px solid var(--hairline);border-radius:10px;cursor:pointer;
+  background:rgba(148,163,184,.045);font-family:"SF Mono",Menlo,monospace;font-size:11.5px;
+  transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease),color var(--dur) var(--ease)
+}
+.model-check-item:hover{border-color:var(--control-edge-hover);background:rgba(96,165,250,.08)}
+.model-check-item input{width:14px;height:14px;flex-shrink:0;accent-color:var(--accent)}
+.model-check-item .model-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-2)}
+.model-check-item.checked{
+  border-color:color-mix(in srgb,var(--accent) 46%,transparent);
+  background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 15%,transparent),color-mix(in srgb,var(--accent) 8%,transparent));
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 10%,transparent)
+}
+.model-check-item.checked .model-name{color:var(--control-primary-text);font-weight:760}
+.model-selected-preview{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.model-selected-preview .chip{background:var(--control-primary-bg);border-color:var(--control-primary-edge);color:var(--control-primary-text)}
+.model-selected-preview .muted-empty{color:var(--fg-muted);font-size:11px}
+@media(max-width:720px){.model-picker-panel{position:static;margin-top:8px}.model-option-list{grid-template-columns:1fr;max-height:260px}}
 </style>
 </head>
 <body class="theme-auto">
@@ -25,11 +77,18 @@
       <div class="topbar-title">{{or .Title "新建分组"}}</div>
       <div class="topbar-actions">
         <a href="/groups" class="btn ghost">← 分组列表</a>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
-      <div class="grid g2" style="align-items:start">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Routing policy</div>
+          <h1 class="hero-title">{{if .IsEdit}}编辑分组策略{{else}}创建分组策略{{end}}</h1>
+          <p class="hero-subtitle">先确定租户、Provider 和模型边界，再配置账号绑定、推理强度与 System Prompt 注入。</p>
+        </div>
+      </section>
+      <div class="grid g2 form-workbench" style="align-items:start">
         <div class="card">
           <div class="card-header">
             <div class="card-title">{{if .IsEdit}}编辑分组{{else}}新建分组{{end}}</div>
@@ -39,14 +98,14 @@
               <div class="form-section-title">基础信息</div>
               <div class="form-row c2">
                 <div class="field">
-                  <label>分组 ID *</label>
-                  <input name="id"
+                  <label for="group-form-id">分组 ID *</label>
+                  <input id="group-form-id" name="id"
                     value="{{if .Group}}{{.Group.ID}}{{end}}"
                     placeholder="例如：openai-plus"
                     {{if .IsEdit}}readonly style="background:var(--sep);cursor:not-allowed"{{else}}required{{end}}/>
                 </div>
                 <div class="field">
-                  <label>Provider *</label>
+                  <label for="provider-sel">Provider *</label>
                   <select name="provider" id="provider-sel" required onchange="onProviderChange(this.value)">
                     <option value="chatgpt" {{if and .Group (eq .Group.Provider "chatgpt")}}selected{{end}}>🤖 chatgpt (OpenAI Codex)</option>
                     <option value="claude"  {{if and .Group (eq .Group.Provider "claude")}}selected{{end}}>🧠 claude (Anthropic)</option>
@@ -56,8 +115,8 @@
               </div>
               <div class="form-row c2">
                 <div class="field">
-                  <label>租户</label>
-                  <select name="tenant_id">
+                  <label for="group-form-tenant-id">租户</label>
+                  <select id="group-form-tenant-id" name="tenant_id">
                     <option value="default">default</option>
                     {{range .YamlTenants}}
                       <option value="{{.ID}}" {{if and $.Group (eq $.Group.TenantID .ID)}}selected{{end}}>{{.Name}} ({{.ID}})</option>
@@ -68,16 +127,16 @@
                   </select>
                 </div>
                 <div class="field">
-                  <label>System Prompt 注入模式</label>
-                  <select name="system_prompt_mode">
+                  <label for="group-form-system-prompt-mode">System Prompt 注入模式</label>
+                  <select id="group-form-system-prompt-mode" name="system_prompt_mode">
                     <option value="prepend" {{if and .Group (eq .Group.SystemPromptMode "prepend")}}selected{{end}}>prepend（前插）</option>
                     <option value="append"  {{if and .Group (eq .Group.SystemPromptMode "append")}}selected{{end}}>append（后追）</option>
                     <option value="replace" {{if and .Group (eq .Group.SystemPromptMode "replace")}}selected{{end}}>replace（全替换）</option>
                   </select>
                 </div>
                 <div class="field">
-                  <label>ChatGPT 注入频率</label>
-                  <select name="system_prompt_injection">
+                  <label for="group-form-system-prompt-injection">ChatGPT 注入频率</label>
+                  <select id="group-form-system-prompt-injection" name="system_prompt_injection">
                     <option value="" {{if or (not .Group) (eq .Group.SystemPromptInjection "")}}selected{{end}}>always（每轮注入）</option>
                     <option value="thread_once" {{if and .Group (eq .Group.SystemPromptInjection "thread_once")}}selected{{end}}>thread_once（同线程一次）</option>
                   </select>
@@ -88,7 +147,7 @@
               <div class="form-section">
                 <div class="form-section-title">模型配置</div>
                 <div class="field">
-                  <label>允许模型 / 白名单 <span class="tiny muted">（勾选 = 开放给此分组；空=全部允许）</span></label>
+                  <div id="model-checklist-label" class="form-label">允许模型 / 白名单 <span class="tiny muted">（勾选 = 开放给此分组；空=全部允许）</span></div>
 
                   {{/* Build model data for JS */}}
                   <script>
@@ -100,19 +159,39 @@
                   const checkedModels = new Set([{{if .Group}}{{range .Group.ModelWhitelist}}"{{.}}",{{end}}{{end}}]);
                   </script>
 
-                  <div class="select-all-row">
-                    <button type="button" class="btn ghost sm" onclick="selectAll(true)">全选</button>
-                    <button type="button" class="btn ghost sm" onclick="selectAll(false)">清空</button>
-                    <span class="tiny muted" id="sel-count"></span>
+                  <div class="model-picker" id="model-picker">
+                    <button type="button" class="model-picker-trigger" id="model-picker-trigger"
+                      aria-haspopup="listbox" aria-expanded="false" aria-controls="model-picker-panel"
+                      onclick="toggleModelPicker()">
+                      <span>
+                        <span>Model access</span>
+                        <strong id="model-picker-title">全部模型可用</strong>
+                      </span>
+                      <span class="model-picker-count" id="sel-count">空 = 全部允许</span>
+                      <span class="model-picker-chevron">⌄</span>
+                    </button>
+                    <div class="model-picker-panel" id="model-picker-panel">
+                      <div class="model-picker-toolbar">
+                        <div>
+                          <div class="small bold">选择开放模型</div>
+                          <div class="tiny muted">勾选后高亮，表示此分组允许调用该模型。</div>
+                        </div>
+                        <div class="model-picker-actions">
+                          <button type="button" class="btn ghost sm" onclick="selectAll(true)">全选</button>
+                          <button type="button" class="btn ghost sm" onclick="selectAll(false)">清空</button>
+                        </div>
+                      </div>
+                      <div class="model-option-list" id="model-checklist" aria-labelledby="model-checklist-label"></div>
+                    </div>
                   </div>
-                  <div class="model-checklist" id="model-checklist"></div>
+                  <div class="model-selected-preview" id="model-selected-preview"></div>
                   <!-- hidden input carrying comma-separated selected models -->
                   <input type="hidden" name="model_whitelist" id="model-whitelist-val">
                   <input type="hidden" name="models" id="models-val">
                 </div>
                 <div class="field">
-                  <label>模型别名 <span class="tiny muted">格式：原名=目标,原名=目标（下游请求 A 实际调 B）</span></label>
-                  <input name="model_aliases"
+                  <label for="group-form-model-aliases">模型别名 <span class="tiny muted">格式：原名=目标,原名=目标（下游请求 A 实际调 B）</span></label>
+                  <input id="group-form-model-aliases" name="model_aliases"
                     value="{{if .Group}}{{range $k,$v := .Group.ModelAliases}}{{$k}}={{$v}},{{end}}{{end}}"
                     placeholder="gpt-4o=gpt-5.2,gpt-4=gpt-5.2"/>
                 </div>
@@ -122,7 +201,7 @@
                 <div class="form-section-title">推理强度 / 强制模型</div>
                 <div class="form-row c2">
                   <div class="field">
-                    <label>Reasoning Effort <span class="tiny muted">（覆盖客户端设置；空=客户端控制）</span></label>
+                    <label for="reasoning-effort-sel">Reasoning Effort <span class="tiny muted">（覆盖客户端设置；空=客户端控制）</span></label>
                     <select name="reasoning_effort" id="reasoning-effort-sel">
                       <option value="" {{if and .Group (eq .Group.ReasoningEffort "")}}selected{{end}}>— 不覆盖（客户端控制）</option>
                       <option value="none" {{if and .Group (eq .Group.ReasoningEffort "none")}}selected{{end}}>none（关闭思考）</option>
@@ -137,8 +216,8 @@
                     </div>
                   </div>
                   <div class="field">
-                    <label>Forced Model <span class="tiny muted">（强制使用指定模型；空=客户端选择）</span></label>
-                    <input name="forced_model"
+                    <label for="group-form-forced-model">Forced Model <span class="tiny muted">（强制使用指定模型；空=客户端选择）</span></label>
+                    <input id="group-form-forced-model" name="forced_model"
                       value="{{if .Group}}{{.Group.ForcedModel}}{{end}}"
                       placeholder="例如：gpt-5.2 或 claude-sonnet-4-6"/>
                   </div>
@@ -148,7 +227,7 @@
               <div class="form-section">
                 <div class="form-section-title">账号绑定 <span class="tiny muted">（逗号分隔账号 ID，空=不限制）</span></div>
                 <div class="field">
-                  <input name="account_ids"
+                  <input id="group-form-account-ids" aria-label="绑定账号 ID" name="account_ids"
                     value="{{if .Group}}{{join .Group.AccountIDs ","}}{{end}}"
                     placeholder="acc-xxxxxx,acc-yyyyyy"/>
                 </div>
@@ -157,8 +236,8 @@
               <div class="form-section">
                 <div class="form-section-title">System Prompt 注入（可选）</div>
                 <div class="field">
-                  <label>System Prompt <span class="tiny muted">—— 所有通过此分组的请求自动注入；空=不注入</span></label>
-                  <textarea name="system_prompt" rows="8"
+                  <label for="group-form-system-prompt">System Prompt <span class="tiny muted">—— 所有通过此分组的请求自动注入；空=不注入</span></label>
+                  <textarea id="group-form-system-prompt" name="system_prompt" rows="8"
                     style="font-family:'SF Mono',Menlo,monospace;font-size:12px"
                     placeholder="Enter system prompt here. Leave empty to disable injection."
 >{{if .Group}}{{.Group.SystemPrompt}}{{end}}</textarea>
@@ -214,10 +293,26 @@
   </main>
 </div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 
 function getCurrentProvider(){
   return document.getElementById('provider-sel').value;
+}
+
+function currentProviderModels(){
+  return allModels[getCurrentProvider()] || [];
+}
+
+function currentSelectedModels(){
+  const models = currentProviderModels();
+  return [...checkedModels].filter(m => models.includes(m));
+}
+
+function toggleModelPicker(force){
+  const picker = document.getElementById('model-picker');
+  const trigger = document.getElementById('model-picker-trigger');
+  const open = typeof force === 'boolean' ? force : !picker.classList.contains('open');
+  picker.classList.toggle('open', open);
+  trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
 function renderChecklist(provider){
@@ -237,24 +332,49 @@ function renderChecklist(provider){
       syncHidden();
     };
     item.appendChild(cb);
-    item.appendChild(document.createTextNode(m));
+    const name = document.createElement('span');
+    name.className = 'model-name';
+    name.textContent = m;
+    item.appendChild(name);
     list.appendChild(item);
   });
   syncHidden();
 }
 
 function syncHidden(){
-  const vals = [...checkedModels].filter(m => {
-    const models = allModels[getCurrentProvider()] || [];
-    return models.includes(m);
-  });
+  const vals = currentSelectedModels();
   document.getElementById('model-whitelist-val').value = vals.join(',');
   document.getElementById('models-val').value = vals.join(',');
-  document.getElementById('sel-count').textContent = vals.length ? vals.length + ' 个已选' : '（空 = 全部允许）';
+  document.getElementById('sel-count').textContent = vals.length ? vals.length + ' 个已开启' : '空 = 全部允许';
+  document.getElementById('model-picker-title').textContent = vals.length
+    ? vals.slice(0, 2).join('、') + (vals.length > 2 ? ' +' + (vals.length - 2) : '')
+    : '全部模型可用';
+
+  const preview = document.getElementById('model-selected-preview');
+  preview.innerHTML = '';
+  if(!vals.length){
+    const empty = document.createElement('span');
+    empty.className = 'muted-empty';
+    empty.textContent = '未勾选时表示不限制模型；需要精确控制时从下拉框勾选。';
+    preview.appendChild(empty);
+    return;
+  }
+  vals.slice(0, 8).forEach(m => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = m;
+    preview.appendChild(chip);
+  });
+  if(vals.length > 8){
+    const more = document.createElement('span');
+    more.className = 'chip';
+    more.textContent = '+' + (vals.length - 8);
+    preview.appendChild(more);
+  }
 }
 
 function selectAll(v){
-  const models = allModels[getCurrentProvider()] || [];
+  const models = currentProviderModels();
   models.forEach(m => v ? checkedModels.add(m) : checkedModels.delete(m));
   renderChecklist(getCurrentProvider());
 }
@@ -263,5 +383,13 @@ function onProviderChange(provider){ renderChecklist(provider); }
 
 // Init on load
 renderChecklist(getCurrentProvider());
+
+document.addEventListener('click', (ev) => {
+  const picker = document.getElementById('model-picker');
+  if(picker && !picker.contains(ev.target)) toggleModelPicker(false);
+});
+document.addEventListener('keydown', (ev) => {
+  if(ev.key === 'Escape') toggleModelPicker(false);
+});
 </script>
 </body></html>

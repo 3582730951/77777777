@@ -9,46 +9,55 @@
       </div>
     </div>
   </div>
-  <nav class="side-nav">
+  <nav class="side-nav" aria-label="主导航">
     <div class="nav-section">概览</div>
-    <a href="/" class="nav-item {{if eq .Active "dashboard"}}active{{end}}">
+    <a href="/" class="nav-item {{if eq .Active "dashboard"}}active{{end}}" {{if eq .Active "dashboard"}}aria-current="page"{{end}}>
       <span class="nav-ico">◈</span>仪表盘
     </a>
     <div class="nav-section">资源</div>
-    <a href="/accounts" class="nav-item {{if eq .Active "accounts"}}active{{end}}">
+    <a href="/accounts" class="nav-item {{if eq .Active "accounts"}}active{{end}}" {{if eq .Active "accounts"}}aria-current="page"{{end}}>
       <span class="nav-ico">⊙</span>账号池
     </a>
-    <a href="/groups" class="nav-item {{if eq .Active "groups"}}active{{end}}">
+    <a href="/groups" class="nav-item {{if eq .Active "groups"}}active{{end}}" {{if eq .Active "groups"}}aria-current="page"{{end}}>
       <span class="nav-ico">⊞</span>分组路由
     </a>
-    <a href="/keys" class="nav-item {{if eq .Active "keys"}}active{{end}}">
+    <a href="/keys" class="nav-item {{if eq .Active "keys"}}active{{end}}" {{if eq .Active "keys"}}aria-current="page"{{end}}>
       <span class="nav-ico">⚿</span>API Keys
     </a>
-    <a href="/remote-chat" class="nav-item {{if eq .Active "remote-chat"}}active{{end}}">
+    <a href="/remote-chat" class="nav-item {{if eq .Active "remote-chat"}}active{{end}}" {{if eq .Active "remote-chat"}}aria-current="page"{{end}}>
       <span class="nav-ico">◎</span>在线聊天
     </a>
     <div class="nav-section">管理</div>
-    <a href="/tenants" class="nav-item {{if eq .Active "tenants"}}active{{end}}">
+    <a href="/tenants" class="nav-item {{if eq .Active "tenants"}}active{{end}}" {{if eq .Active "tenants"}}aria-current="page"{{end}}>
       <span class="nav-ico">⊡</span>租户
     </a>
-    <a href="/audit" class="nav-item {{if eq .Active "audit"}}active{{end}}">
+    <a href="/audit" class="nav-item {{if eq .Active "audit"}}active{{end}}" {{if eq .Active "audit"}}aria-current="page"{{end}}>
       <span class="nav-ico">☰</span>审计日志
     </a>
-    <a href="/cluster" class="nav-item {{if eq .Active "cluster"}}active{{end}}">
+    <a href="/cluster" class="nav-item {{if eq .Active "cluster"}}active{{end}}" {{if eq .Active "cluster"}}aria-current="page"{{end}}>
       <span class="nav-ico">⎈</span>集群
     </a>
-    <a href="/settings/token-optimizer" class="nav-item {{if eq .Active "settings"}}active{{end}}">
+    <a href="/settings/token-optimizer" class="nav-item {{if eq .Active "settings"}}active{{end}}" {{if eq .Active "settings"}}aria-current="page"{{end}}>
       <span class="nav-ico">⌁</span>系统设置
     </a>
-    <a href="/guide" class="nav-item {{if eq .Active "guide"}}active{{end}}">
+    <a href="/settings/network" class="nav-item {{if eq .Active "settings-network"}}active{{end}}" {{if eq .Active "settings-network"}}aria-current="page"{{end}}>
+      <span class="nav-ico">⇄</span>网络限速
+    </a>
+    <a href="/guide" class="nav-item {{if eq .Active "guide"}}active{{end}}" {{if eq .Active "guide"}}aria-current="page"{{end}}>
       <span class="nav-ico">◉</span>接入指南
     </a>
     <div class="nav-section">自动注册</div>
-    <a href="/autoreg" class="nav-item {{if eq .Active "autoreg"}}active{{end}}">
+    <a href="/autoreg" class="nav-item {{if eq .Active "autoreg"}}active{{end}}" {{if eq .Active "autoreg"}}aria-current="page"{{end}}>
       <span class="nav-ico">⚙</span>AutoReg
     </a>
-    <a href="/kiro-gateway" class="nav-item {{if eq .Active "kiro-gateway"}}active{{end}}">
+    <a href="/kiro-gateway" class="nav-item {{if eq .Active "kiro-gateway"}}active{{end}}" {{if eq .Active "kiro-gateway"}}aria-current="page"{{end}}>
       <span class="nav-ico">🔑</span>Kiro Gateway
+    </a>
+    <a href="/portal/login" target="_blank" class="nav-item mobile-only">
+      <span class="nav-ico">↗</span>门户
+    </a>
+    <a href="/logout" class="nav-item mobile-only nav-danger">
+      <span class="nav-ico">⎋</span>退出
     </a>
   </nav>
   <div class="side-footer">
@@ -72,15 +81,18 @@
       </div>
     </div>
   </div>
-  <nav class="side-nav">
-    <a href="/portal" class="nav-item {{if eq .PActive "dashboard"}}active{{end}}">
+  <nav class="side-nav" aria-label="门户导航">
+    <a href="/portal" class="nav-item {{if eq .PActive "dashboard"}}active{{end}}" {{if eq .PActive "dashboard"}}aria-current="page"{{end}}>
       <span class="nav-ico">◈</span>我的概览
     </a>
-    <a href="/portal/keys" class="nav-item {{if eq .PActive "keys"}}active{{end}}">
+    <a href="/portal/keys" class="nav-item {{if eq .PActive "keys"}}active{{end}}" {{if eq .PActive "keys"}}aria-current="page"{{end}}>
       <span class="nav-ico">⚿</span>我的 Key
     </a>
-    <a href="/portal/usage" class="nav-item {{if eq .PActive "usage"}}active{{end}}">
+    <a href="/portal/usage" class="nav-item {{if eq .PActive "usage"}}active{{end}}" {{if eq .PActive "usage"}}aria-current="page"{{end}}>
       <span class="nav-ico">◔</span>用量统计
+    </a>
+    <a href="/portal/logout" class="nav-item mobile-only nav-danger">
+      <span class="nav-ico">⎋</span>退出
     </a>
   </nav>
   <div class="side-footer">
@@ -95,7 +107,7 @@
 {{define "_topbar_ctrl"}}
 <a href="/set-lang?l=cn&back={{.BackURL}}" class="btn ghost sm {{if eq .Lang langCN}}primary{{end}}">中</a>
 <a href="/set-lang?l=en&back={{.BackURL}}" class="btn ghost sm {{if eq .Lang langEN}}primary{{end}}">EN</a>
-<button class="btn-icon" onclick="toggleTheme()" title="切换主题">◐</button>
+<button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
 {{end}}
 
 {{define "_copy_script"}}

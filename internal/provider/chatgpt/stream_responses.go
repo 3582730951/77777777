@@ -121,8 +121,8 @@ func streamResponsesSSE(ctx context.Context, body io.ReadCloser, out chan<- ir.E
 			}
 			if json.Unmarshal([]byte(data), &d) == nil && d.Delta != "" {
 				fullText += d.Delta
-				if isUsageLimitMessage(fullText) {
-					out <- ir.Event{Kind: ir.EvError, Err: fmt.Errorf("upstream quota: %s", fullText)}
+				if err := switchMessageError(fullText); err != nil {
+					out <- ir.Event{Kind: ir.EvError, Err: err}
 					return
 				}
 				out <- ir.Event{Kind: ir.EvTextDelta, Text: d.Delta}
@@ -134,8 +134,8 @@ func streamResponsesSSE(ctx context.Context, body io.ReadCloser, out chan<- ir.E
 				Text string `json:"text"`
 			}
 			if json.Unmarshal([]byte(data), &d) == nil && len(d.Text) > emittedSoFar {
-				if isUsageLimitMessage(d.Text) {
-					out <- ir.Event{Kind: ir.EvError, Err: fmt.Errorf("upstream quota: %s", d.Text)}
+				if err := switchMessageError(d.Text); err != nil {
+					out <- ir.Event{Kind: ir.EvError, Err: err}
 					return
 				}
 				delta := d.Text[emittedSoFar:]
@@ -243,17 +243,29 @@ func streamResponsesSSE(ctx context.Context, body io.ReadCloser, out chan<- ir.E
 	}
 }
 
-// isUsageLimitMessage detects ChatGPT's quota-exhaustion messages that arrive
-// as normal text in a 200 SSE stream instead of as an error event.
-func isUsageLimitMessage(text string) bool {
+// switchMessageError detects ChatGPT's quota/capacity messages that arrive as
+// normal text in a 200 SSE stream instead of as an error event.
+func switchMessageError(text string) error {
+	if class, ok := classifySwitchMessage(text); ok {
+		return fmt.Errorf("upstream %s: %s", class, text)
+	}
+	return nil
+}
+
+func classifySwitchMessage(text string) (string, bool) {
 	low := strings.ToLower(text)
-	return strings.Contains(low, "you've hit your usage limit") ||
+	if strings.Contains(low, "you've hit your usage limit") ||
 		strings.Contains(low, "you have hit your usage limit") ||
 		strings.Contains(low, "usage limit has been reached") ||
 		strings.Contains(low, "insufficient_quota") ||
 		strings.Contains(low, "quota exceeded") ||
-		strings.Contains(low, "usage exhausted") ||
-		strings.Contains(low, "selected model is at capacity") ||
+		strings.Contains(low, "usage exhausted") {
+		return "quota", true
+	}
+	if strings.Contains(low, "selected model is at capacity") ||
 		strings.Contains(low, "model is at capacity") ||
-		strings.Contains(low, "please try a different model")
+		strings.Contains(low, "please try a different model") {
+		return "capacity", true
+	}
+	return "", false
 }

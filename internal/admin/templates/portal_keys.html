@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>我的 Key · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
 .key-full{font-family:"SF Mono",Menlo,monospace;font-size:12px;word-break:break-all;
   background:var(--sep);padding:8px 12px;border-radius:var(--r-sm);border:1px solid var(--hairline);
@@ -15,6 +15,17 @@
   font-family:"SF Mono",Menlo,monospace;font-size:11px;color:var(--fg-2);line-height:1.8;
   word-break:break-all;white-space:pre-wrap}
 .guide-copy{position:absolute;top:6px;right:6px}
+.portal-key-mobile-grid{display:none}
+.portal-key-card{padding:14px;display:flex;flex-direction:column;gap:10px}
+.portal-key-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.portal-key-secret-row{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.portal-key-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.portal-key-meta{padding:8px 10px;border:1px solid var(--hairline);border-radius:var(--r-sm);background:var(--sep);min-width:0}
+@media(max-width:760px){
+  .portal-key-table-wrap{display:none}
+  .portal-key-mobile-grid{display:grid;grid-template-columns:1fr;gap:12px}
+  .portal-key-meta-grid{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body class="theme-auto">
@@ -24,11 +35,59 @@
     <header class="topbar">
       <div class="topbar-title">我的 Key</div>
       <div class="topbar-actions">
-        <button class="btn primary" onclick="showModal('modal-new-key')">+ 申请 Key</button>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn primary" type="button" onclick="showModal('modal-new-key')">+ 申请 Key</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Tenant credentials</div>
+          <h1 class="hero-title">我的 API Key 与接入命令</h1>
+          <p class="hero-subtitle">Key 表是主工作区；生成、复制、吊销都在同一个页面完成，接入示例作为辅助信息放在下方。</p>
+          <div class="command-hero-actions">
+            <button class="btn primary" type="button" onclick="showModal('modal-new-key')">申请 Key</button>
+            <a href="/portal/usage" class="btn ghost">查看用量</a>
+          </div>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{len .Keys}}</b><span>Keys</span></div>
+          <div class="hero-metric"><b>{{len .Groups}}</b><span>可用分组</span></div>
+          <div class="hero-metric"><b>Pool</b><span>统一网关</span></div>
+        </div>
+      </section>
+
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">权限链路 <span>Credential map</span></div>
+          <div class="viz-flow" aria-label="我的 Key 权限链路">
+            <div class="viz-node"><span>Key</span><b>{{len .Keys}}</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>Group</span><b>{{len .Groups}}</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>Gateway</span><b>/v1</b></div>
+          </div>
+          <div class="viz-caption">复制前先确认 Key 会落到哪个分组，避免客户端拿错权限边界。</div>
+        </div>
+        <div class="viz-card {{if .Keys}}ok{{else}}warn{{end}}">
+          <div class="viz-ring-row">
+            <div class="viz-ring {{if .Keys}}ok{{else}}warn{{end}}" style="--p:{{percent (len .Keys) 6}}"><b>{{len .Keys}}</b></div>
+            <div>
+              <div class="viz-title">Key 库存</div>
+              <div class="viz-value">{{len .Keys}}</div>
+              <div class="viz-caption">{{if .Keys}}优先复用现有 Key；需要隔离时再新建。{{else}}还没有可调用凭据。{{end}}</div>
+            </div>
+          </div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">接入面 <span>SDK lanes</span></div>
+          <div class="viz-meter-list">
+            <div class="viz-meter-row"><span class="viz-meter-label">OpenAI</span><span class="viz-meter"><i style="--w:100%;--c:var(--provider-openai)"></i></span><span class="viz-meter-num">ready</span></div>
+            <div class="viz-meter-row"><span class="viz-meter-label">Claude</span><span class="viz-meter"><i style="--w:100%;--c:var(--provider-claude)"></i></span><span class="viz-meter-num">ready</span></div>
+            <div class="viz-meter-row"><span class="viz-meter-label">Gemini</span><span class="viz-meter"><i style="--w:100%;--c:var(--provider-gemini)"></i></span><span class="viz-meter-num">ready</span></div>
+          </div>
+        </div>
+      </div>
 
       {{if .FlashKey}}
       <div class="alert alert-ok">
@@ -41,12 +100,12 @@
       </div>
       {{end}}
 
-      <div class="card">
+      <div class="card work-surface">
         <div class="card-header">
           <div class="card-title">API Keys ({{len .Keys}})</div>
           <span class="tiny muted">使用 Pool Key 调用网关，等同于 OpenAI / Anthropic API Key</span>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap portal-key-table-wrap">
           <table class="data">
             <thead>
               <tr><th>Key</th><th>分组</th><th>备注</th><th>创建时间</th><th class="right">操作</th></tr>
@@ -82,6 +141,34 @@
             </tbody>
           </table>
         </div>
+        <div class="card-body portal-key-mobile-grid">
+          {{range .Keys}}
+          <div class="card portal-key-card">
+            <div class="portal-key-card-head">
+              <div class="portal-key-secret-row">
+                <code class="mono" style="font-size:12px">{{truncate 16 .Value}}••••</code>
+                <button class="btn ghost sm" onclick="copyText('{{.Value}}','Key')">复制</button>
+              </div>
+              <form method="post" action="/portal/keys/{{.Value}}/revoke" class="form-inline"
+                    onsubmit="return confirm('吊销此 Key?')">
+                <button class="btn ghost sm danger" type="submit">吊销</button>
+              </form>
+            </div>
+            <div class="portal-key-meta-grid">
+              <div class="portal-key-meta"><div class="tiny muted">分组</div><code class="tiny">{{.GroupID}}</code></div>
+              <div class="portal-key-meta"><div class="tiny muted">备注</div><div class="small">{{or .Label "—"}}</div></div>
+              <div class="portal-key-meta"><div class="tiny muted">创建</div><div class="small">{{.CreatedAt.Format "01-02 15:04"}}</div></div>
+            </div>
+          </div>
+          {{end}}
+          {{if empty .Keys}}
+          <div class="empty">
+            <div class="empty-icon">⚿</div>
+            <div class="empty-title">还没有 Key</div>
+            <div class="empty-sub">点击右上角「申请 Key」创建第一个</div>
+          </div>
+          {{end}}
+        </div>
       </div>
 
       <!-- Integration guide with dynamic URLs -->
@@ -110,24 +197,24 @@ export GOOGLE_API_KEY={{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你�
 </div>
 
 <!-- New Key Modal -->
-<div id="modal-new-key" class="modal-overlay" style="display:none">
-  <div class="card" style="width:400px;border-radius:var(--r-xl);box-shadow:var(--s3)">
+<div id="modal-new-key" class="modal-overlay" style="display:none" aria-hidden="true">
+  <div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="portal-modal-new-key-title" tabindex="-1">
     <div class="card-header">
-      <div class="card-title">申请 API Key</div>
-      <button class="btn-icon" onclick="hideModal('modal-new-key')">✕</button>
+      <div class="card-title" id="portal-modal-new-key-title">申请 API Key</div>
+      <button class="btn-icon" type="button" aria-label="关闭申请 API Key 弹窗" onclick="hideModal('modal-new-key')">✕</button>
     </div>
     <div class="card-body">
       <form method="post" action="/portal/keys" class="form">
         <div class="field">
-          <label>分组 *</label>
-          <select name="group_id" required>
+          <label for="portal-key-group-id">分组 *</label>
+          <select id="portal-key-group-id" name="group_id" required data-autofocus>
             <option value="">— 选择分组 —</option>
             {{range .Groups}}<option value="{{.ID}}">[{{.Provider}}] {{.ID}}</option>{{end}}
           </select>
         </div>
         <div class="field">
-          <label>备注（可选）</label>
-          <input name="label" placeholder="例如：Cursor 专用"/>
+          <label for="portal-key-label">备注（可选）</label>
+          <input id="portal-key-label" name="label" placeholder="例如：Cursor 专用"/>
         </div>
         <div class="form-actions">
           <button class="btn primary w-full" type="submit">生成</button>
@@ -139,9 +226,49 @@ export GOOGLE_API_KEY={{if .Keys}}{{(index .Keys 0).Value}}{{else}}sk-pool-你�
 
 <div id="toast-ct"></div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
-function showModal(id){const el=document.getElementById(id);if(el){el.style.display='flex';el.addEventListener('click',e=>{if(e.target===el)hideModal(id)},{ once:true });}}
-function hideModal(id){const el=document.getElementById(id);if(el)el.style.display='none';}
+let activeModal = null;
+let modalRestoreFocus = null;
+const modalFocusableSelector = 'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function modalFocusable(modal){
+  return Array.from(modal.querySelectorAll(modalFocusableSelector))
+    .filter(el => !el.getAttribute('aria-hidden') && (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0));
+}
+function showModal(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  modalRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  activeModal = el;
+  el.style.display='flex';
+  el.classList.add('open');
+  el.setAttribute('aria-hidden','false');
+  requestAnimationFrame(()=>{
+    const target = el.querySelector('[data-autofocus]') || modalFocusable(el)[0] || el.querySelector('[role="dialog"]');
+    if(target && target.focus) target.focus();
+  });
+}
+function hideModal(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.style.display='none';
+  el.classList.remove('open');
+  el.setAttribute('aria-hidden','true');
+  if(activeModal===el) activeModal=null;
+  if(modalRestoreFocus && modalRestoreFocus.focus) modalRestoreFocus.focus();
+  modalRestoreFocus=null;
+}
+document.addEventListener('click',e=>{
+  if(e.target && e.target.classList && e.target.classList.contains('modal-overlay')) hideModal(e.target.id);
+});
+document.addEventListener('keydown',e=>{
+  if(!activeModal)return;
+  if(e.key==='Escape'){e.preventDefault();hideModal(activeModal.id);return;}
+  if(e.key!=='Tab')return;
+  const items=modalFocusable(activeModal);
+  if(items.length===0){e.preventDefault();const dialog=activeModal.querySelector('[role="dialog"]');if(dialog)dialog.focus();return;}
+  const first=items[0], last=items[items.length-1];
+  if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}
+});
 function showToast(m){const c=document.getElementById('toast-ct');const t=document.createElement('div');t.className='toast';t.textContent='✓ '+m;c.appendChild(t);setTimeout(()=>t.remove(),2500)}
 </script>
 {{template "_copy_script" .}}

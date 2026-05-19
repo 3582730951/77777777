@@ -1,5 +1,5 @@
 // Package admin serves the Apple-styled web management UI plus the JSON API
-// powering it. The UI is server-rendered HTML with HTMX for partial refresh.
+// powering it. The UI is server-rendered HTML with self-contained refreshers.
 // All assets are go:embedded so the binary stays self-contained.
 package admin
 
@@ -40,6 +40,40 @@ type oauthManager = oauth.Manager
 //go:embed templates/*.html static/*
 var assets embed.FS
 
+const adminThemeScript = `<script>
+(function(){
+  const key='llm_pool_theme';
+  const legacyKey='theme';
+  function normalizeTheme(value){
+    if(value==='system')return 'auto';
+    if(value==='dark'||value==='light'||value==='auto')return value;
+    return 'auto';
+  }
+  function applyTheme(value){
+    const next=normalizeTheme(value);
+    if(!document.body)return;
+    document.body.classList.toggle('theme-dark',next==='dark');
+    document.body.classList.toggle('theme-light',next==='light');
+    document.body.classList.toggle('theme-auto',next==='auto');
+    document.body.dataset.theme=next;
+    try{
+      localStorage.setItem(key,next);
+      localStorage.setItem(legacyKey,next==='auto'?'system':next);
+    }catch(e){}
+  }
+  let saved=document.body.classList.contains('theme-dark')?'dark':document.body.classList.contains('theme-light')?'light':'auto';
+  try{saved=localStorage.getItem(key)||localStorage.getItem(legacyKey)||saved;}catch(e){}
+  applyTheme(saved);
+  window.__llmPoolApplyTheme=applyTheme;
+  window.__llmPoolToggleTheme=function(){
+    const current=normalizeTheme(document.body.dataset.theme||'auto');
+    const next=current==='auto'?'dark':current==='dark'?'light':'auto';
+    applyTheme(next);
+  };
+  window.toggleTheme=window.__llmPoolToggleTheme;
+})();
+</script>`
+
 type Deps struct {
 	Cfg          *config.Root
 	Store        *store.Store
@@ -47,14 +81,20 @@ type Deps struct {
 	Logger       *slog.Logger
 	ProbeFunc    func(ctx context.Context, accountID string) error
 	DiscoverFunc func(ctx context.Context, accountID string) (*domain.QuotaState, error)
+	NetShaper    NetworkShaper
+}
+
+type NetworkShaper interface {
+	ApplyNetworkShapingConfig(config.Server)
 }
 
 type Server struct {
-	deps   Deps
-	tpl    *template.Template
-	crud   CrudDeps
-	enroll *enrollment.Manager
-	oauth  *oauthManager
+	deps      Deps
+	tpl       *template.Template
+	crud      CrudDeps
+	enroll    *enrollment.Manager
+	oauth     *oauthManager
+	startedAt time.Time
 }
 
 // isEmpty returns true for nil, false bool, zero int, empty string, and empty slices/maps.
@@ -188,6 +228,69 @@ func New(d Deps) *Server {
 			}
 			return m
 		},
+		"fieldEqCount": func(slice any, field string, value any) int {
+			rv := reflect.ValueOf(slice)
+			for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+				if rv.IsNil() {
+					return 0
+				}
+				rv = rv.Elem()
+			}
+			if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+				return 0
+			}
+			want := fmt.Sprint(value)
+			count := 0
+			for i := 0; i < rv.Len(); i++ {
+				item := rv.Index(i)
+				for item.Kind() == reflect.Ptr || item.Kind() == reflect.Interface {
+					if item.IsNil() {
+						item = reflect.Value{}
+						break
+					}
+					item = item.Elem()
+				}
+				if !item.IsValid() || item.Kind() != reflect.Struct {
+					continue
+				}
+				fv := item.FieldByName(field)
+				if fv.IsValid() && fmt.Sprint(fv.Interface()) == want {
+					count++
+				}
+			}
+			return count
+		},
+		"mapValuesLen": func(m any) int {
+			rv := reflect.ValueOf(m)
+			for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+				if rv.IsNil() {
+					return 0
+				}
+				rv = rv.Elem()
+			}
+			if rv.Kind() != reflect.Map {
+				return 0
+			}
+			total := 0
+			for _, key := range rv.MapKeys() {
+				v := rv.MapIndex(key)
+				for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+					if v.IsNil() {
+						v = reflect.Value{}
+						break
+					}
+					v = v.Elem()
+				}
+				if !v.IsValid() {
+					continue
+				}
+				switch v.Kind() {
+				case reflect.Slice, reflect.Array, reflect.Map, reflect.String:
+					total += v.Len()
+				}
+			}
+			return total
+		},
 		// "not" / "empty": check if value is nil, false, 0, "", or empty slice.
 		// We use interface{} to avoid template type errors on slices.
 		"not": func(v any) bool {
@@ -258,7 +361,7 @@ func New(d Deps) *Server {
 			if lat > 800 {
 				return "var(--warn)"
 			}
-			return "var(--ok)"
+			return "var(--ok-quiet,var(--ok))"
 		},
 		"quotaPct": func(used, limit float64) int {
 			if limit <= 0 {
@@ -272,7 +375,7 @@ func New(d Deps) *Server {
 		},
 		"quotaColor": func(used, limit float64) string {
 			if limit <= 0 {
-				return "var(--ok)"
+				return "var(--ok-quiet,var(--ok))"
 			}
 			p := used * 100 / limit
 			if p > 80 {
@@ -281,7 +384,7 @@ func New(d Deps) *Server {
 			if p > 50 {
 				return "var(--warn)"
 			}
-			return "var(--ok)"
+			return "var(--ok-quiet,var(--ok))"
 		},
 		"remainPct": func(used, limit float64) int {
 			if limit <= 0 {
@@ -298,7 +401,7 @@ func New(d Deps) *Server {
 		},
 		"remainColor": func(used, limit float64) string {
 			if limit <= 0 {
-				return "var(--ok)"
+				return "var(--ok-quiet,var(--ok))"
 			}
 			remain := (limit - used) * 100 / limit
 			if remain < 20 {
@@ -307,7 +410,7 @@ func New(d Deps) *Server {
 			if remain < 50 {
 				return "var(--warn)"
 			}
-			return "var(--ok)"
+			return "var(--ok-quiet,var(--ok))"
 		},
 		"providers": func(slots []scheduler.SlotView) []string {
 			seen := map[string]bool{}
@@ -331,7 +434,7 @@ func New(d Deps) *Server {
 		d.Logger.Error("parse admin templates", "err", err)
 	}
 	cryptoRandWrapper = cryptorand.Read
-	return &Server{deps: d, tpl: tpl}
+	return &Server{deps: d, tpl: tpl, startedAt: time.Now()}
 }
 
 func (s *Server) Router() http.Handler {
@@ -417,6 +520,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/cluster", s.handleCluster)
 		r.Get("/settings/token-optimizer", s.handleTokenOptimizerSettings)
 		r.Post("/settings/token-optimizer", s.handleTokenOptimizerSettingsPost)
+		r.Get("/settings/network", s.handleNetworkSettings)
+		r.Post("/settings/network", s.handleNetworkSettingsPost)
 		r.Get("/audit", s.handleAuditPage)
 		r.Get("/guide", s.handleAdminGuide)
 		// AutoReg SPA — serves the React frontend under /autoreg/*
@@ -424,6 +529,8 @@ func (s *Server) Router() http.Handler {
 		r.Handle("/autoreg/*", s.autoregSPAHandler())
 		// AutoReg API proxy: /api/autoreg/X → /api/X on the Python service
 		r.Handle("/api/autoreg/*", s.autoregProxyHandler())
+		// Kiro Gateway management API proxy: /api/kiro-gateway/X → /api/kiro-gateway/X on AutoReg.
+		r.Handle("/api/kiro-gateway/*", s.autoregProxyHandler())
 		// Kiro Gateway management page
 		r.Get("/kiro-gateway", s.handleKiroGateway)
 	})
@@ -485,18 +592,29 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	slots := s.deps.Sched.Snapshot()
 	healthy := 0
+	accountStatusCounts := map[string]int{}
 	for _, sl := range slots {
 		if sl.Healthy {
 			healthy++
 		}
+		accountStatusCounts[sl.StatusCategory]++
 	}
+	needsAttention := accountStatusCounts[scheduler.SlotStatusLowQuota] +
+		accountStatusCounts[scheduler.SlotStatusNoQuota] +
+		accountStatusCounts[scheduler.SlotStatusBanned] +
+		accountStatusCounts[scheduler.SlotStatusAbnormal]
 	s.render(w, r, "dashboard.html", map[string]any{
-		"Active":  "dashboard",
-		"Title":   "概览",
-		"Slots":   slots,
-		"Healthy": healthy,
-		"Total":   len(slots),
-		"Cfg":     s.deps.Cfg,
+		"Active":         "dashboard",
+		"Title":          "概览",
+		"Slots":          slots,
+		"Healthy":        healthy,
+		"Total":          len(slots),
+		"LowQuota":       accountStatusCounts[scheduler.SlotStatusLowQuota],
+		"NoQuota":        accountStatusCounts[scheduler.SlotStatusNoQuota],
+		"Banned":         accountStatusCounts[scheduler.SlotStatusBanned],
+		"Abnormal":       accountStatusCounts[scheduler.SlotStatusAbnormal],
+		"NeedsAttention": needsAttention,
+		"Cfg":            s.deps.Cfg,
 	})
 }
 
@@ -529,10 +647,24 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	scheduler.SortSlotViewsForPick(merged)
+	accountStatusCounts := map[string]int{}
+	for _, sl := range merged {
+		accountStatusCounts[sl.StatusCategory]++
+	}
 	s.render(w, r, "accounts.html", map[string]any{
-		"Active": "accounts",
-		"Title":  "账号池",
-		"Slots":  merged,
+		"Active":   "accounts",
+		"Title":    "账号池",
+		"Slots":    merged,
+		"Total":    len(merged),
+		"Healthy":  accountStatusCounts[scheduler.SlotStatusHealthy],
+		"LowQuota": accountStatusCounts[scheduler.SlotStatusLowQuota],
+		"NoQuota":  accountStatusCounts[scheduler.SlotStatusNoQuota],
+		"Banned":   accountStatusCounts[scheduler.SlotStatusBanned],
+		"Abnormal": accountStatusCounts[scheduler.SlotStatusAbnormal],
+		"NeedsAttention": accountStatusCounts[scheduler.SlotStatusLowQuota] +
+			accountStatusCounts[scheduler.SlotStatusNoQuota] +
+			accountStatusCounts[scheduler.SlotStatusBanned] +
+			accountStatusCounts[scheduler.SlotStatusAbnormal],
 	})
 }
 
@@ -548,17 +680,52 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
 	type peerView struct {
-		Name      string
-		URL       string
-		OK        bool
-		LatencyMS int64
-		Snapshot  map[string]any
+		Name            string
+		URL             string
+		Region          string
+		Status          string
+		OK              bool
+		LatencyMS       int64
+		RPS             float64
+		HealthyAccounts int
+		TotalAccounts   int
+		Snapshot        map[string]any
+	}
+	type selfView struct {
+		Identity        string
+		Region          string
+		Version         string
+		TotalAccounts   int
+		HealthyAccounts int
+		RPS             float64
+		StartedAt       time.Time
+	}
+	intFromAny := func(v any) int {
+		switch x := v.(type) {
+		case int:
+			return x
+		case int64:
+			return int(x)
+		case float64:
+			return int(x)
+		case json.Number:
+			n, _ := x.Int64()
+			return int(n)
+		default:
+			return 0
+		}
+	}
+	strFromAny := func(v any) string {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return ""
 	}
 	views := []peerView{}
 	if s.deps.Cfg.Cluster.Enabled {
 		client := &http.Client{Timeout: s.deps.Cfg.Cluster.PullTimeout}
 		for _, p := range s.deps.Cfg.Cluster.Peers {
-			pv := peerView{Name: p.Name, URL: p.URL}
+			pv := peerView{Name: p.Name, URL: p.URL, Status: "down"}
 			start := time.Now()
 			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, strings.TrimRight(p.URL, "/")+"/api/cluster/snapshot", nil)
 			req.Header.Set("X-Pool-Token", p.Token)
@@ -567,11 +734,22 @@ func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
 			if err == nil && resp != nil {
 				if resp.StatusCode == 200 {
 					pv.OK = true
+					pv.Status = "ok"
 					_ = json.NewDecoder(resp.Body).Decode(&pv.Snapshot)
+					pv.Region = strFromAny(pv.Snapshot["region"])
+					pv.TotalAccounts = intFromAny(pv.Snapshot["accounts_total"])
+					pv.HealthyAccounts = intFromAny(pv.Snapshot["accounts_healthy"])
 				}
 				resp.Body.Close()
 			}
 			views = append(views, pv)
+		}
+	}
+	slots := s.deps.Sched.Snapshot()
+	healthy := 0
+	for _, sl := range slots {
+		if sl.Healthy {
+			healthy++
 		}
 	}
 	s.render(w, r, "cluster.html", map[string]any{
@@ -579,6 +757,15 @@ func (s *Server) handleCluster(w http.ResponseWriter, r *http.Request) {
 		"Title":  "集群",
 		"Peers":  views,
 		"Cfg":    s.deps.Cfg,
+		"Self": selfView{
+			Identity:        s.deps.Cfg.Cluster.Identity,
+			Region:          s.deps.Cfg.Cluster.Region,
+			Version:         "0.1.0-mvp",
+			TotalAccounts:   len(slots),
+			HealthyAccounts: healthy,
+			RPS:             0,
+			StartedAt:       s.startedAt,
+		},
 	})
 }
 
@@ -621,7 +808,20 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(buf.Bytes())
+	out := buf.Bytes()
+	if bodyStart := bytes.Index(out, []byte("<body")); bodyStart >= 0 {
+		if bodyEnd := bytes.Index(out[bodyStart:], []byte(">")); bodyEnd >= 0 {
+			insertAt := bodyStart + bodyEnd + 1
+			next := make([]byte, 0, len(out)+len(adminThemeScript))
+			next = append(next, out[:insertAt]...)
+			next = append(next, adminThemeScript...)
+			next = append(next, out[insertAt:]...)
+			out = next
+		}
+	} else if bytes.Contains(out, []byte("</body>")) {
+		out = bytes.Replace(out, []byte("</body>"), []byte(adminThemeScript+"</body>"), 1)
+	}
+	w.Write(out)
 }
 
 func noCacheWrap(h http.Handler) http.Handler {

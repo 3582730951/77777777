@@ -14,7 +14,8 @@
 ## 当前完成度
 
 这是 **MVP 骨架**（plan 中所有架构决策已落地，可编译可运行可测试）。
-对应 plan 的 [`/root/.claude/plans/lucky-percolating-pebble.md`](../../../root/.claude/plans/lucky-percolating-pebble.md)。
+核心设计草案和阶段记录保留在 `plan/` 目录，发布前检查清单见
+[`docs/GITHUB_PUSH_CHECKLIST.md`](docs/GITHUB_PUSH_CHECKLIST.md)。
 
 ### 已实现
 - ✅ 三家协议入站解析（OpenAI / Anthropic / Gemini），含流式 SSE
@@ -57,7 +58,7 @@
 ### 1. 本地构建运行
 
 ```bash
-cd /home/12/llm-pool
+cd llm-pool
 
 # 编译
 go build -o bin/gateway ./cmd/gateway
@@ -153,8 +154,8 @@ llm-pool/
 
 ## 部署形态约定
 
-- 主开发位置：WSL 原生 `/home/12/llm-pool` （性能）
-- Windows 镜像：`/mnt/d/Code/R3_Code/MI/MI_test_account` （rsync watcher 实时同步）
+- 推荐在 WSL/Linux 原生文件系统中开发（Go/Node 构建性能更稳定）
+- Windows 侧可作为最终 `git add/commit/push` 工作区
 - 默认监听：网关 `:8787`、Web UI `:8788`
 - 卷挂载：`/data`（SQLite + passwd.txt）、`/config`（config.yaml）
 

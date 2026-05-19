@@ -4,11 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>在线聊天 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
-.remote-layout{display:grid;grid-template-columns:minmax(320px,420px) minmax(0,1fr);gap:16px;align-items:start}
-@media(max-width:1100px){.remote-layout{grid-template-columns:1fr}}
-.chat-shell{height:min(720px,calc(100vh - 178px));min-height:520px;display:flex;flex-direction:column}
+.remote-layout{display:block;width:100%;margin:0}
+.chat-shell,.chat-shell.work-surface{height:min(860px,calc(100vh - 126px));min-height:660px;display:flex;flex-direction:column}
 .chat-log{flex:1;overflow:auto;padding:14px;background:var(--bg);border-bottom:1px solid var(--hairline)}
 .msg{max-width:82%;margin:0 0 12px;padding:10px 12px;border-radius:12px;border:1px solid var(--hairline);
   line-height:1.6;font-size:14px;white-space:pre-wrap;word-break:break-word}
@@ -16,11 +15,12 @@
 .msg.assistant{background:var(--bg-elev);color:var(--fg)}
 .msg.error{background:rgba(255,69,58,.12);color:var(--err)}
 .chat-compose{padding:12px;display:flex;flex-direction:column;gap:10px}
-.chat-row{display:grid;grid-template-columns:1fr 170px;gap:10px}
-@media(max-width:760px){.chat-row{grid-template-columns:1fr}.msg{max-width:94%}}
-.selected-account{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--hairline);
-  border-radius:var(--r-md);background:var(--bg)}
-.selected-account .dot{width:10px;height:10px;border-radius:50%;margin-top:5px;flex-shrink:0}
+.chat-row{display:grid;grid-template-columns:1fr 160px;gap:10px}
+.chat-tools{display:grid;grid-template-columns:minmax(260px,1.25fr) minmax(180px,.9fr) minmax(180px,.9fr);gap:10px}
+@media(max-width:760px){.chat-row,.chat-tools{grid-template-columns:1fr}.msg{max-width:94%}}
+.account-inline{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.account-inline .btn{height:34px;white-space:nowrap}
+.field-help{min-height:15px;font-size:11px;color:var(--fg-muted)}
 .endpoint-line{display:flex;gap:8px;align-items:center;min-width:0}
 .endpoint-line code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
@@ -42,63 +42,39 @@
     </header>
 
     <div class="content">
-      {{if .Saved}}
-      <div class="alert alert-ok">在线聊天响应账号已保存。</div>
-      {{end}}
-      {{if .Cleared}}
-      <div class="alert alert-info">在线聊天响应账号已清空。</div>
-      {{end}}
       {{if .Error}}
       <div class="alert alert-err">{{.Error}}</div>
       {{end}}
 
       <div class="remote-layout">
-        <div class="card">
+        <div class="card chat-shell work-surface">
           <div class="card-header">
-            <div class="card-title">响应账号</div>
-            <span class="tiny muted">/v1/remote-chat 固定使用此账号</span>
-          </div>
-          <div class="card-body">
-            {{if .Config.Account}}
-            <div class="selected-account mb-12">
-              <span class="dot" style="background:{{statusColor .Config.Account.StatusCategory}}"></span>
-              <div class="flex-1">
-                <div class="bold mono">{{.Config.Account.ID}}</div>
-                <div class="tiny muted mt-4">
-                  {{.Config.Account.Provider}} · {{or .Config.Account.PlanTier "unknown"}} · {{.Config.Account.StatusLabel}}
-                </div>
-              </div>
-              <a href="/accounts/{{.Config.Account.ID}}" class="btn ghost sm">详情</a>
+            <div>
+              <div class="card-title">网页聊天</div>
+              <div class="tiny muted">直接调用 Gateway 聊天链路</div>
             </div>
-            {{else if .Config.AccountMissing}}
-            <div class="alert alert-err mb-12">已配置的账号不存在：{{.Config.AccountID}}</div>
-            {{else}}
-            <div class="alert alert-info mb-12">还没有配置响应账号。保存后，网页聊天和 remote-chat API 会使用同一个账号。</div>
-            {{end}}
-
-            <form method="post" action="/remote-chat" class="form">
-              <div class="field">
-                <label>选择账号</label>
-                <select name="account_id">
-                  <option value="">— 不配置 —</option>
-                  {{range .Accounts}}
-                  <option value="{{.ID}}" {{if eq .ID $.Config.AccountID}}selected{{end}}>
-                    [{{.Provider}}] {{.ID}} · {{.StatusLabel}}
-                  </option>
-                  {{end}}
-                </select>
+            <button class="btn ghost sm" type="button" onclick="clearChat()">清空</button>
+          </div>
+          <div id="chat-log" class="chat-log">
+            <div class="msg assistant">选择响应账号和 API Key，输入消息即可开始验证。</div>
+          </div>
+          <form id="chat-form" class="chat-compose">
+            <div class="chat-tools">
+              <div class="field account-select-field">
+                <label for="remote-chat-account-id">响应账号</label>
+                <div class="account-inline">
+                  <select id="remote-chat-account-id" name="account_id" aria-label="选择响应账号">
+                    <option value="">选择账号</option>
+                    {{range .Accounts}}
+                    <option value="{{.ID}}" {{if eq .ID $.Config.AccountID}}selected{{end}}>[{{.Provider}}] {{.ID}} · {{.StatusLabel}}</option>
+                    {{end}}
+                  </select>
+                  <button id="remote-chat-account-save" class="btn ghost sm" type="button" onclick="saveRemoteChatAccount()">保存</button>
+                </div>
+                <div class="field-help">第三方测试前先指定本次响应账号。</div>
               </div>
-              <div class="form-actions">
-                <button class="btn primary" type="submit">保存配置</button>
-                <button class="btn ghost" type="submit" formaction="/remote-chat/clear">清空</button>
-                <a href="/accounts" class="btn ghost">账号池</a>
-              </div>
-            </form>
-
-            <div class="form-section">
-              <div class="form-section-title">调用凭据</div>
               <div class="field">
-                <label>API Key</label>
+                <label for="api-key-select">API Key</label>
                 <select id="api-key-select">
                   {{range .APIKeys}}
                   <option value="{{.Value}}">[{{.Source}}] {{.GroupID}} / {{or .Provider "provider"}} {{if .Label}}· {{.Label}}{{end}}</option>
@@ -106,48 +82,20 @@
                 </select>
               </div>
               <div class="field">
-                <label>手动 API Key（可选，优先使用）</label>
-                <input id="api-key-manual" placeholder="sk-pool-..." autocomplete="off">
-              </div>
-              <div class="small muted">
-                API Key 用于鉴权和应用分组 system prompt；实际响应账号以上方保存的账号为准。
+                <label for="api-key-manual">手动 Key</label>
+                <input id="api-key-manual" type="text" placeholder="sk-pool-..." autocomplete="off">
               </div>
             </div>
-
-            <div class="form-section">
-              <div class="form-section-title">公网访问地址</div>
-              <code class="tiny" style="display:block;line-height:1.8;word-break:break-all">
-                POST {{.GatewayURL}}/v1/remote-chat
-              </code>
-              <div class="small muted mt-8">
-                如果管理端是从本机打开的，系统会尽量自动获取公网 IP 来生成地址。也可以用环境变量 PUBLIC_GATEWAY_URL 覆盖。
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card chat-shell">
-          <div class="card-header">
-            <div>
-              <div class="card-title">网页聊天</div>
-              <div class="tiny muted">直接调用 remote-chat 网关接口</div>
-            </div>
-            <button class="btn ghost sm" onclick="clearChat()">清空</button>
-          </div>
-          <div id="chat-log" class="chat-log">
-            <div class="msg assistant">选择响应账号和 API Key 后即可开始聊天。</div>
-          </div>
-          <form id="chat-form" class="chat-compose">
             <div class="chat-row">
               <div class="field">
-                <label>模型</label>
-                <input id="chat-model" list="model-list" value="{{if .SuggestedModels}}{{index .SuggestedModels 0}}{{end}}" placeholder="留空使用账号默认模型">
+                <label for="chat-model">模型</label>
+                <input id="chat-model" type="text" list="model-list" value="{{if .SuggestedModels}}{{index .SuggestedModels 0}}{{end}}" placeholder="留空使用账号默认模型">
                 <datalist id="model-list">
                   {{range .SuggestedModels}}<option value="{{.}}"></option>{{end}}
                 </datalist>
               </div>
               <div class="field">
-                <label>流式输出</label>
+                <label for="chat-stream">流式输出</label>
                 <select id="chat-stream">
                   <option value="true">开启</option>
                   <option value="false">关闭</option>
@@ -155,7 +103,7 @@
               </div>
             </div>
             <div class="field">
-              <label>消息</label>
+              <label for="chat-message">消息</label>
               <textarea id="chat-message" rows="4" placeholder="输入要发送给模型的内容"></textarea>
             </div>
             <div class="form-actions">
@@ -172,12 +120,12 @@
 <div id="toast-ct"></div>
 <script>
 const gatewayURL = '{{.GatewayURL}}';
-const hasConfiguredAccount = {{if .Config.Account}}true{{else}}false{{end}};
+let hasConfiguredAccount = {{if .Config.Account}}true{{else}}false{{end}};
+let configuredAccountID = {{printf "%q" .Config.AccountID}};
 const chatLog = document.getElementById('chat-log');
 const form = document.getElementById('chat-form');
 const sendBtn = document.getElementById('send-btn');
 
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 function showToast(m){
   const c=document.getElementById('toast-ct');
   if(!c)return;
@@ -200,6 +148,48 @@ function selectedAPIKey(){
   const manual=document.getElementById('api-key-manual').value.trim();
   if(manual)return manual;
   return (document.getElementById('api-key-select').value||'').trim();
+}
+function selectedRemoteChatAccountID(){
+  const el=document.getElementById('remote-chat-account-id');
+  return el?(el.value||'').trim():'';
+}
+function setAccountSaveBusy(busy){
+  const btn=document.getElementById('remote-chat-account-save');
+  if(!btn)return;
+  btn.disabled=busy;
+  btn.textContent=busy?'保存中':'保存';
+}
+async function saveRemoteChatAccount(){
+  const accountID=selectedRemoteChatAccountID();
+  setAccountSaveBusy(true);
+  try{
+    const opts={method:accountID?'PUT':'DELETE',headers:{'Content-Type':'application/json'}};
+    if(accountID)opts.body=JSON.stringify({account_id:accountID});
+    const resp=await fetch('/api/admin/remote-chat/config',opts);
+    let data={};
+    try{data=await resp.json();}catch{}
+    if(!resp.ok)throw new Error(data.error||'账号配置保存失败');
+    configuredAccountID=accountID;
+    hasConfiguredAccount=!!accountID;
+    showToast(accountID?'响应账号已保存':'响应账号已清除');
+    return true;
+  }catch(err){
+    addMessage('error',err&&err.message?err.message:String(err));
+    return false;
+  }finally{
+    setAccountSaveBusy(false);
+  }
+}
+async function ensureRemoteChatAccount(){
+  const accountID=selectedRemoteChatAccountID();
+  if(!accountID){
+    addMessage('error','请选择响应账号。');
+    return false;
+  }
+  if(!hasConfiguredAccount||accountID!==configuredAccountID){
+    return await saveRemoteChatAccount();
+  }
+  return true;
 }
 function appendAssistantText(el,text){
   el.textContent += text;
@@ -238,7 +228,7 @@ form.addEventListener('submit',async e=>{
   const key=selectedAPIKey();
   const stream=document.getElementById('chat-stream').value==='true';
   const model=document.getElementById('chat-model').value.trim();
-  if(!hasConfiguredAccount){addMessage('error','请先保存一个响应账号。');return;}
+  if(!(await ensureRemoteChatAccount()))return;
   if(!key){addMessage('error','请选择或填写 API Key。');return;}
   if(!message){return;}
   addMessage('user',message);

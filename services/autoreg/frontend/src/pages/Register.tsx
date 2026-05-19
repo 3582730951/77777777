@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { getConfig, getConfigOptions, getPlatforms } from '@/lib/app-data'
 import type { ConfigOptionsResponse, ProviderOption, ProviderSetting } from '@/lib/config-options'
 import { getCaptchaStrategyLabel, getProviderSelectOptions, listProviderFieldKeys } from '@/lib/config-options'
@@ -142,6 +142,8 @@ export default function Register() {
     hasReusableOAuthBrowser(form),
     currentPlatform?.supported_executor_options || [],
   )
+  const registrationOptionRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const executorOptionRefs = useRef<(HTMLButtonElement | null)[]>([])
   const mailboxProviderOptions = getProviderSelectOptions(configOptions.mailbox_providers || [])
   const currentMailboxProvider = (configOptions.mailbox_providers || []).find(provider => provider.value === form.mail_provider) || null
   const currentMailboxSetting = getProviderSetting(configOptions.mailbox_settings || [], form.mail_provider)
@@ -153,6 +155,54 @@ export default function Register() {
     ...(configOptions.captcha_providers || []),
     ...(configOptions.sms_providers || []),
   ])
+
+  const selectRegistrationOption = (option: any) => {
+    setForm(current => ({
+      ...current,
+      identity_provider: option.identityProvider,
+      oauth_provider: option.oauthProvider,
+    }))
+  }
+
+  const selectExecutorOption = (option: any) => {
+    if (option.disabled) return
+    set('executor_type', option.value)
+  }
+
+  const handleRegistrationRadioKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const last = registrationOptions.length - 1
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? last
+        : (index + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1) + registrationOptions.length) % registrationOptions.length
+    const nextOption = registrationOptions[nextIndex]
+    if (!nextOption) return
+    selectRegistrationOption(nextOption)
+    window.setTimeout(() => registrationOptionRefs.current[nextIndex]?.focus(), 0)
+  }
+
+  const handleExecutorRadioKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const enabledIndexes = executorOptions
+      .map((option, optionIndex) => option.disabled ? -1 : optionIndex)
+      .filter(optionIndex => optionIndex >= 0)
+    if (enabledIndexes.length === 0) return
+    const currentEnabledIndex = enabledIndexes.includes(index) ? enabledIndexes.indexOf(index) : 0
+    const nextEnabledIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? enabledIndexes.length - 1
+        : (currentEnabledIndex + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1) + enabledIndexes.length) % enabledIndexes.length
+    const nextIndex = enabledIndexes[nextEnabledIndex]
+    const nextOption = executorOptions[nextIndex]
+    if (!nextOption) return
+    selectExecutorOption(nextOption)
+    window.setTimeout(() => executorOptionRefs.current[nextIndex]?.focus(), 0)
+  }
 
   useEffect(() => {
     const defaultProviderKey = getDefaultProviderKey(configOptions.mailbox_settings || [])
@@ -317,8 +367,9 @@ export default function Register() {
 
   const Input = ({ label, k, type = 'text', placeholder = '' }: any) => (
     <div>
-      <label className="block text-xs text-[var(--text-muted)] mb-1">{label}</label>
+      <label htmlFor={`register-${k}`} className="block text-xs text-[var(--text-muted)] mb-1">{label}</label>
       <input
+        id={`register-${k}`}
         type={type}
         value={(form as any)[k]}
         onChange={e => set(k, type === 'number' ? Number(e.target.value) : e.target.value)}
@@ -330,8 +381,9 @@ export default function Register() {
 
   const Select = ({ label, k, options }: any) => (
     <div>
-      <label className="block text-xs text-[var(--text-muted)] mb-1">{label}</label>
+      <label htmlFor={`register-${k}`} className="block text-xs text-[var(--text-muted)] mb-1">{label}</label>
       <select
+        id={`register-${k}`}
         value={(form as any)[k]}
         onChange={e => set(k, e.target.value)}
         className="control-surface appearance-none"
@@ -379,17 +431,18 @@ export default function Register() {
           <Card>
             <CardHeader><CardTitle>Step 1 · 注册身份</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <div className="grid gap-3 md:grid-cols-2">
-                {registrationOptions.map((option) => {
+              <div role="radiogroup" aria-label="注册身份" className="grid gap-3 md:grid-cols-2">
+                {registrationOptions.map((option, index) => {
                   const active = form.identity_provider === option.identityProvider && form.oauth_provider === option.oauthProvider
                   return (
-                    <button
+                    <button type="button"
                       key={option.key}
-                      type="button"
-                      onClick={() => {
-                        set('identity_provider', option.identityProvider)
-                        set('oauth_provider', option.oauthProvider)
-                      }}
+                      ref={node => { registrationOptionRefs.current[index] = node }}
+                      role="radio"
+                      aria-checked={active}
+                      tabIndex={active ? 0 : -1}
+                      onKeyDown={event => handleRegistrationRadioKeyDown(event, index)}
+                      onClick={() => selectRegistrationOption(option)}
                       className={`rounded-lg border px-4 py-4 text-left transition-colors ${
                         active
                           ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
@@ -411,15 +464,20 @@ export default function Register() {
           <Card>
             <CardHeader><CardTitle>Step 2 · 执行通道</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <div className="grid gap-3 md:grid-cols-3">
-                {executorOptions.map((option) => {
+              <div role="radiogroup" aria-label="执行通道" className="grid gap-3 md:grid-cols-3">
+                {executorOptions.map((option, index) => {
                   const active = form.executor_type === option.value
                   return (
-                    <button
+                    <button type="button"
                       key={option.value}
-                      type="button"
+                      ref={node => { executorOptionRefs.current[index] = node }}
+                      role="radio"
+                      aria-checked={active}
+                      aria-disabled={option.disabled || undefined}
+                      tabIndex={active && !option.disabled ? 0 : -1}
                       disabled={option.disabled}
-                      onClick={() => !option.disabled && set('executor_type', option.value)}
+                      onKeyDown={event => handleExecutorRadioKeyDown(event, index)}
+                      onClick={() => selectExecutorOption(option)}
                       className={`rounded-lg border px-4 py-4 text-left transition-colors ${
                         option.disabled
                           ? 'cursor-not-allowed border-[var(--border)] bg-[var(--bg-hover)] opacity-50'
@@ -431,7 +489,7 @@ export default function Register() {
                       <div className="text-sm font-medium text-[var(--text-primary)]">{option.label}</div>
                       <div className="mt-2 text-xs leading-5 text-[var(--text-muted)]">{option.description}</div>
                       {option.reason ? (
-                        <div className="mt-2 text-xs text-amber-400">{option.reason}</div>
+                        <div className="mt-2 text-xs text-[var(--state-warning)]">{option.reason}</div>
                       ) : null}
                     </button>
                   )
@@ -455,14 +513,14 @@ export default function Register() {
               <CardHeader><CardTitle>系统邮箱配置</CardTitle></CardHeader>
               <CardContent className="space-y-4">
                 {optionsError && (
-                  <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                  <div className="rounded-2xl border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] px-4 py-3 text-sm text-[var(--state-danger)]">
                     {optionsError}
                   </div>
                 )}
                 {mailboxProviderOptions.length > 0 ? (
                   <Select label="邮箱服务" k="mail_provider" options={mailboxProviderOptions} />
                 ) : (
-                  <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                  <div className="rounded-2xl border border-[var(--badge-warning-border)] bg-[var(--badge-warning-bg)] px-4 py-3 text-sm text-[var(--state-warning)]">
                     当前没有已启用的邮箱 provider，请先到设置页新增并启用一个默认邮箱 provider。
                   </div>
                 )}
@@ -479,7 +537,7 @@ export default function Register() {
               <CardHeader><CardTitle>短信接码配置</CardTitle></CardHeader>
               <CardContent className="space-y-4">
                 {optionsError && (
-                  <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                  <div className="rounded-2xl border border-[var(--badge-danger-border)] bg-[var(--badge-danger-bg)] px-4 py-3 text-sm text-[var(--state-danger)]">
                     {optionsError}
                   </div>
                 )}
@@ -553,7 +611,7 @@ export default function Register() {
                   {task.errors?.length > 0 && (
                     <div className="space-y-1">
                       {task.errors.map((e: string, i: number) => (
-                        <div key={i} className="flex items-center gap-2 text-red-400">
+                        <div key={i} className="flex items-center gap-2 text-[var(--state-danger)]">
                           <XCircle className="h-4 w-4" />
                           <span className="text-xs">{e}</span>
                         </div>
@@ -561,19 +619,19 @@ export default function Register() {
                     </div>
                   )}
                   {task.error && (
-                    <div className="flex items-center gap-2 text-red-400">
+                    <div className="flex items-center gap-2 text-[var(--state-danger)]">
                       <XCircle className="h-4 w-4" />
                       <span className="text-xs">{task.error}</span>
                     </div>
                   )}
                   {task.status === 'interrupted' && !task.error && (
-                    <div className="flex items-center gap-2 text-amber-400">
+                    <div className="flex items-center gap-2 text-[var(--state-warning)]">
                       <XCircle className="h-4 w-4" />
                       <span className="text-xs">任务在服务重启后被中断</span>
                     </div>
                   )}
                   {task.status === 'cancelled' && !task.error && (
-                    <div className="flex items-center gap-2 text-amber-400">
+                    <div className="flex items-center gap-2 text-[var(--state-warning)]">
                       <XCircle className="h-4 w-4" />
                       <span className="text-xs">任务已取消</span>
                     </div>

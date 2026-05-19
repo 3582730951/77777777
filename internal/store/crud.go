@@ -16,6 +16,7 @@ import (
 const (
 	SettingRemoteChatAccountID = "remote_chat.account_id"
 	SettingTokenOptimizer      = "token_optimizer"
+	SettingNetworkShaper       = "network_shaper"
 )
 
 // extendMigrate adds the tables introduced after the MVP store: tenants

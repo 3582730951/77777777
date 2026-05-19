@@ -25,12 +25,23 @@ func Apply(req *ir.Request, provider string) {
 	if req == nil {
 		return
 	}
+	if provider == "claude" && preservesAnthropicShape(req) {
+		return
+	}
 	// 1. Normalise tool schemas (all providers — keeps sticky routing stable).
 	NormaliseTools(req.Tools)
 	// 2. Inject cache breakpoints (Anthropic only).
 	if provider == "claude" {
 		InjectCacheBreakpoints(req)
 	}
+}
+
+func preservesAnthropicShape(req *ir.Request) bool {
+	return req != nil &&
+		req.OriginalProto == "anthropic" &&
+		(len(req.AnthropicSystem) > 0 ||
+			len(req.AnthropicMetadata) > 0 ||
+			len(req.AnthropicContextManagement) > 0)
 }
 
 // NormaliseTools sorts JSON property keys in each tool's schema so that the

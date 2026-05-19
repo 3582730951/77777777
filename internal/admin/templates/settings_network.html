@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网络限速 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=8">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">网络限速</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/settings/network")}}
+      </div>
+    </header>
+    <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Traffic shaping</div>
+          <h1 class="hero-title">Gateway 网络整形</h1>
+          <p class="hero-subtitle">限制入口读取和下游写出速率，保护低资源部署在大请求、SSE 或 WebSocket 场景下保持稳定。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{if eq .Network.NetworkIngressBytesPerSec 0}}Off{{else}}{{.Network.NetworkIngressBytesPerSec}}{{end}}</b><span>入口 bytes/s</span></div>
+          <div class="hero-metric"><b>{{if eq .Network.NetworkEgressBytesPerSec 0}}Off{{else}}{{.Network.NetworkEgressBytesPerSec}}{{end}}</b><span>出口 bytes/s</span></div>
+          <div class="hero-metric"><b>{{.Source}}</b><span>配置来源</span></div>
+        </div>
+      </section>
+
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">限速路径 <span>Flow</span></div>
+          <div class="viz-flow" aria-label="网络整形链路">
+            <div class="viz-node"><span>Client</span><b>Ingress</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>Gateway</span><b>Limiter</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>Upstream</span><b>Egress</b></div>
+          </div>
+          <div class="viz-caption">把配置映射成请求路径，操作时能直接判断影响方向。</div>
+        </div>
+        <div class="viz-card {{if or (ne .Network.NetworkIngressBytesPerSec 0) (ne .Network.NetworkEgressBytesPerSec 0)}}warn{{else}}ok{{end}}">
+          <div class="viz-title">方向状态 <span>Active lanes</span></div>
+          <div class="viz-mini-stack">
+            <div class="viz-mini"><span>入口</span><b>{{if eq .Network.NetworkIngressBytesPerSec 0}}Off{{else}}On{{end}}</b></div>
+            <div class="viz-mini"><span>出口</span><b>{{if eq .Network.NetworkEgressBytesPerSec 0}}Off{{else}}On{{end}}</b></div>
+            <div class="viz-mini"><span>突发</span><b>{{if eq .Network.NetworkBurstBytes 0}}Auto{{else}}{{.Network.NetworkBurstBytes}}{{end}}</b></div>
+          </div>
+          <div class="viz-status-dots" aria-hidden="true">
+            <i class="{{if eq .Network.NetworkIngressBytesPerSec 0}}muted{{end}}"></i>
+            <i class="{{if eq .Network.NetworkIngressBytesPerSec 0}}muted{{end}}"></i>
+            <i class="{{if eq .Network.NetworkIngressBytesPerSec 0}}muted{{end}}"></i>
+            <i class="muted"></i>
+            <i class="{{if eq .Network.NetworkEgressBytesPerSec 0}}muted{{end}}"></i>
+            <i class="{{if eq .Network.NetworkEgressBytesPerSec 0}}muted{{end}}"></i>
+            <i class="{{if eq .Network.NetworkEgressBytesPerSec 0}}muted{{end}}"></i>
+            <i class="muted"></i>
+          </div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">速率刻度 <span>Bytes/s</span></div>
+          <div class="viz-meter-list">
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">Ingress</span>
+              <span class="viz-meter"><i style="--w:{{if eq .Network.NetworkIngressBytesPerSec 0}}0{{else}}100{{end}}%;--c:var(--accent)"></i></span>
+              <span class="viz-meter-num">{{if eq .Network.NetworkIngressBytesPerSec 0}}Off{{else}}{{.Network.NetworkIngressBytesPerSec}}{{end}}</span>
+            </div>
+            <div class="viz-meter-row">
+              <span class="viz-meter-label">Egress</span>
+              <span class="viz-meter"><i style="--w:{{if eq .Network.NetworkEgressBytesPerSec 0}}0{{else}}100{{end}}%;--c:var(--purple)"></i></span>
+              <span class="viz-meter-num">{{if eq .Network.NetworkEgressBytesPerSec 0}}Off{{else}}{{.Network.NetworkEgressBytesPerSec}}{{end}}</span>
+            </div>
+          </div>
+          <div class="viz-caption">关闭状态弱化显示；启用后视觉重点落到被限制的方向。</div>
+        </div>
+      </div>
+      {{if .Saved}}
+      <div class="alert alert-info">
+        <div>
+          <div class="bold small">已保存</div>
+          <div class="tiny mt-4">新限速配置已写入数据库，并已在当前 Gateway 进程即时生效。</div>
+        </div>
+      </div>
+      {{end}}
+      {{if .Error}}
+      <div class="alert alert-err">
+        <div>
+          <div class="bold small">保存失败</div>
+          <div class="tiny mt-4">{{.Error}}</div>
+        </div>
+      </div>
+      {{end}}
+
+      <div class="card flat">
+        <div class="card-body">
+          <div class="quick-actions">
+            <a class="btn ghost sm" href="/settings/token-optimizer">Token Optimizer</a>
+            <a class="btn primary sm" href="/settings/network">网络限速</a>
+          </div>
+        </div>
+      </div>
+
+      <form method="post" action="/settings/network" class="card work-surface">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Gateway 网络整形</div>
+            <div class="tiny muted mt-4">当前来源: {{.Source}}</div>
+          </div>
+          <button class="btn primary" type="submit">保存并启用</button>
+        </div>
+        <div class="card-body">
+          <div class="form">
+            <div class="form-row c3">
+              <div class="field">
+                <label for="settings-network-ingress">上游入口 bytes/s</label>
+                <input id="settings-network-ingress" type="number" name="network_ingress_bytes_per_sec" min="0" step="1" value="{{.Network.NetworkIngressBytesPerSec}}">
+                <div class="tiny muted mt-4">请求体读入限速；填 0 关闭入口 byte-rate 限速。</div>
+              </div>
+              <div class="field">
+                <label for="settings-network-egress">下游出口 bytes/s</label>
+                <input id="settings-network-egress" type="number" name="network_egress_bytes_per_sec" min="0" step="1" value="{{.Network.NetworkEgressBytesPerSec}}">
+                <div class="tiny muted mt-4">响应/SSE/WS 写出限速；填 0 关闭下游出口限速。{{if eq .Network.NetworkEgressBytesPerSec 0}}当前已关闭限速。{{end}}</div>
+              </div>
+              <div class="field">
+                <label for="settings-network-burst">突发窗口 bytes</label>
+                <input id="settings-network-burst" type="number" name="network_burst_bytes" min="0" step="1" value="{{.Network.NetworkBurstBytes}}">
+                <div class="tiny muted mt-4">填 0 时使用对应速率作为突发窗口；关闭方向时忽略。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <div class="inline-empty">
+        <div>
+          <div class="inline-empty-title">生效范围</div>
+          <div class="inline-empty-sub">新请求即时使用新配置；已建立的长连接继续使用建立时的 limiter。</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body></html>

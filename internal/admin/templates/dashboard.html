@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>仪表盘 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=4">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
 .pool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
 .chart-caption{font-size:11px;color:var(--fg-muted);margin-top:6px;text-align:center}
@@ -31,8 +31,8 @@
 .provider-bar-track{flex:1;height:8px;background:var(--sep);border-radius:4px;overflow:hidden}
 .provider-bar-fill{height:100%;border-radius:4px;transition:width 0.5s var(--ease)}
 .provider-bar-val{width:40px;font-size:11px;font-weight:600;text-align:right}
+@media(max-width:720px){.pool-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr))}}
 </style>
-<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -44,137 +44,204 @@
         {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/")}}
       </div>
     </header>
-    <div class="content">
+    <div class="content dashboard-content">
+      <section class="card operator-brief {{if eq .NeedsAttention 0}}is-calm{{else}}is-alert{{end}}">
+        <div class="brief-main">
+          <div class="hero-eyebrow">Operator brief</div>
+          <h1 class="brief-title">{{if eq .NeedsAttention 0}}系统稳定{{else}}{{.NeedsAttention}} 项需要处理{{end}}</h1>
+          <p class="brief-copy">
+            {{if eq .NeedsAttention 0}}当前没有需要立即处理的异常，保持观察即可。{{else}}先处理影响调度的账号，再看流量与缓存分析。{{end}}
+          </p>
+          <div class="brief-actions">
+            <a href="/accounts" class="btn primary">查看账号池</a>
+            <a href="/audit" class="btn ghost">查看审计日志</a>
+          </div>
+        </div>
+        <div class="brief-next">
+          <div class="brief-next-title">建议顺序</div>
+          <div class="next-step {{if eq .NeedsAttention 0}}done{{else}}hot{{end}}">
+            <span>1</span>
+            <div>
+              <b>{{if eq .NeedsAttention 0}}确认稳定态{{else}}处理异常账号{{end}}</b>
+              <small>{{if eq .NeedsAttention 0}}没有低额、无额、封禁或异常账号{{else}}低额 {{.LowQuota}} · 无额 {{.NoQuota}} · 封禁 {{.Banned}} · 异常 {{.Abnormal}}{{end}}</small>
+            </div>
+          </div>
+          <div class="next-step">
+            <span>2</span>
+            <div>
+              <b>观察实时流量</b>
+              <small>吞吐、错误与延迟只在有请求后展开判断</small>
+            </div>
+          </div>
+          <div class="next-step">
+            <span>3</span>
+            <div>
+              <b>补充或轮换账号</b>
+              <small>当可调度率下降时优先添加健康账号</small>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <!-- KPI Row: 5 cards -->
-      <div class="grid g5">
-        <div class="card stat-card">
-          <div class="stat-icon">◯</div>
-          <div class="stat-val">{{.Total}}</div>
-          <div class="stat-label">账号总数</div>
-          <div class="kpi-spark" id="spark-total"></div>
+      <div class="signal-strip">
+        <div class="signal-card visual">
+          <span>可调度</span>
+          <div class="signal-visual-row">
+            <div class="signal-ring ok" style="--p:{{percent .Healthy .Total}}"><b>{{percent .Healthy .Total}}%</b></div>
+            <div class="signal-stack">
+              <b id="health-ratio">{{.Healthy}}/{{.Total}}</b>
+              <small>账号健康率</small>
+              <div class="signal-meter"><i style="--w:{{percent .Healthy .Total}}%;--c:var(--ok)"></i></div>
+            </div>
+          </div>
         </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">✓</div>
-          <div class="stat-val" style="color:var(--ok)">{{.Healthy}}</div>
-          <div class="stat-label">健康账号</div>
-          <div class="stat-delta up" id="health-ratio">{{.Healthy}}/{{.Total}}</div>
+        <div class="signal-card visual {{if gt .NeedsAttention 0}}warn{{end}}">
+          <span>需处理</span>
+          <div class="signal-visual-row">
+            <div class="signal-ring {{if gt .NeedsAttention 0}}warn{{else}}ok{{end}}" style="--p:{{percent .NeedsAttention .Total}}"><b>{{.NeedsAttention}}</b></div>
+            <div class="signal-stack">
+              <b>{{if eq .NeedsAttention 0}}稳定{{else}}{{.NeedsAttention}} 项{{end}}</b>
+              <small>额度 / 封禁 / 异常</small>
+              <div class="signal-meter"><i style="--w:{{percent .NeedsAttention .Total}}%;--c:{{if gt .NeedsAttention 0}}var(--warn){{else}}var(--ok){{end}}"></i></div>
+            </div>
+          </div>
         </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(0,122,255,0.10);color:var(--accent)">⚡</div>
-          <div class="stat-val" id="kpi-rps">—</div>
-          <div class="stat-label">请求/小时</div>
+        <div class="signal-card">
+          <span>请求/小时</span>
+          <b id="kpi-rps">—</b>
+          <small>近 1 小时</small>
           <div class="kpi-spark" id="spark-rps"></div>
         </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">⊕</div>
-          <div class="stat-val" id="kpi-cache">—</div>
-          <div class="stat-label">缓存命中率</div>
+        <div class="signal-card">
+          <span>缓存命中</span>
+          <b id="kpi-cache">—</b>
+          <small>24h 汇总</small>
           <div class="kpi-spark" id="spark-cache"></div>
         </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(191,90,242,0.10);color:var(--purple)">⏱</div>
-          <div class="stat-val" id="kpi-latency">—</div>
-          <div class="stat-label">平均延迟</div>
+        <div class="signal-card">
+          <span>平均延迟</span>
+          <b id="kpi-latency">—</b>
+          <small>有请求后计算</small>
           <div class="kpi-spark" id="spark-latency"></div>
         </div>
       </div>
 
-      <!-- Request trend chart -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">请求量趋势（近 1 小时）</div>
-          <span class="tiny muted">每 10s 刷新</span>
-        </div>
-        <div class="card-body" style="padding-bottom:4px">
-          <div id="chart-requests" class="chart-host" style="height:220px"
-               hx-get="/api/admin/charts/requests?window=1h&buckets=60"
-               hx-trigger="load, every 10s" hx-swap="none"></div>
-        </div>
-      </div>
-
-      <!-- 3-col: Health donut + Cache stats + Provider/Group -->
-      <div class="grid g3">
-        <!-- Account health donut -->
-        <div class="card">
-          <div class="card-header"><div class="card-title">账号健康分布</div></div>
-          <div class="card-body flex-col items-center gap-8">
-            <div id="chart-confidence" class="chart-host" data-chart-height="132" style="min-height:220px;width:100%"
-                 hx-get="/api/admin/charts/accounts"
-                 hx-trigger="load, every 10s" hx-swap="none"></div>
+      <section class="ops-workbench">
+        <div class="card trend-workspace">
+          <div class="card-header">
+            <div>
+              <div class="card-title">请求量趋势</div>
+              <div class="tiny muted">近 1 小时 · 每 10s 刷新</div>
+            </div>
+            <span class="live-pill"><i></i>Live</span>
+          </div>
+          <div class="card-body">
+            <div id="chart-requests" class="chart-host main-chart-host" data-chart-height="128"></div>
           </div>
         </div>
 
-        <!-- Cache statistics -->
-        <div class="card">
-          <div class="card-header"><div class="card-title">缓存统计（24h）</div></div>
-          <div class="card-body flex-col items-center gap-12">
-            <div id="cache-ring" style="width:120px;height:120px"></div>
-            <div id="cache-stats" class="kv w-full"></div>
-            <div id="cache-series" style="height:50px;width:100%"></div>
+        <aside class="card provider-workspace">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Provider 容量</div>
+              <div class="tiny muted">按账号数与健康账号聚合</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="ops-mini-grid">
+              <div class="ops-mini">
+                <span>健康率</span>
+                <b id="health-ratio-side">{{.Healthy}}/{{.Total}}</b>
+              </div>
+              <div class="ops-mini">
+                <span>缓存命中</span>
+                <b id="cache-ratio-side">—</b>
+              </div>
+            </div>
+            <div class="section-hd compact-hd">
+              <span class="section-title tiny muted">Provider 负载</span>
+              <span class="tiny muted">实时</span>
+            </div>
+            <div id="provider-summary" class="provider-bar"></div>
+            <details class="mini-disclosure">
+              <summary>Provider 压力</summary>
+              <div id="group-pressure"></div>
+            </details>
+          </div>
+        </aside>
+      </section>
+
+      <details id="analytics-disclosure" class="card disclosure-card">
+        <summary>
+          <span>容量与缓存分析</span>
+          <small>健康分布、缓存收益、Token 趋势</small>
+        </summary>
+        <div class="disclosure-body">
+          <div class="grid g3">
+            <div class="card flat nested-panel">
+              <div class="card-header"><div class="card-title">账号健康分布</div></div>
+              <div class="card-body flex-col items-center gap-8">
+                <div id="chart-confidence" class="chart-host" data-chart-height="132" style="min-height:168px;width:100%"></div>
+              </div>
+            </div>
+
+            <div class="card flat nested-panel">
+              <div class="card-header"><div class="card-title">缓存统计（24h）</div></div>
+              <div class="card-body cache-compact-body">
+                <div id="cache-ring" style="width:108px;height:108px"></div>
+                <div class="cache-side">
+                  <div id="cache-stats" class="kv w-full"></div>
+                  <div id="cache-series" style="height:44px;width:100%"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card flat nested-panel">
+              <div class="card-header"><div class="card-title">Provider 分布（24h）</div></div>
+              <div class="card-body flex-col items-center">
+                <div id="chart-provider-pie" class="compact-chart-host" data-pie-size="96"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card flat nested-panel token-panel">
+            <div class="card-header"><div class="card-title">Token 消耗趋势（24h）</div></div>
+            <div class="card-body">
+              <div id="chart-token-trend" class="compact-chart-host" data-chart-height="118"></div>
+            </div>
           </div>
         </div>
+      </details>
 
-        <!-- Provider breakdown / Group pressure -->
+      <div class="grid g2 dashboard-lower-grid">
         <div class="card">
           <div class="card-header">
-            <div class="card-title">分组负载</div>
-            <span class="tiny muted">实时</span>
-          </div>
-          <div class="card-body">
-            <div id="provider-summary" class="provider-bar" style="margin-bottom:16px"></div>
-            <div class="divider" style="margin:8px 0"></div>
-            <div class="section-hd" style="margin-top:12px">
-              <span class="section-title tiny muted">分组压力</span>
+            <div>
+              <div class="card-title">账号池详情</div>
+              <div class="tiny muted">额度 · 负载 · 能力，区域内滚动查看更多</div>
             </div>
-            <div id="group-pressure"></div>
+            <a href="/accounts" class="btn ghost sm">管理 →</a>
+          </div>
+          <div class="card-body" style="padding-top:12px">
+            <div id="pool-grid" class="pool-grid compact-pool"></div>
           </div>
         </div>
-      </div>
 
-      <!-- Provider breakdown + Token trend -->
-      <div class="grid g2 compact-chart-row">
-        <div class="card compact-chart-card">
-          <div class="card-header"><div class="card-title">Provider 分布（24h）</div></div>
-          <div class="card-body flex-col items-center">
-            <div id="chart-provider-pie" class="compact-chart-host" data-pie-size="108"></div>
+        <div class="card audit-card">
+          <div class="card-header">
+            <div class="card-title flex items-center gap-8">
+              实时日志流
+              <span class="flex items-center gap-4 tiny muted"><span class="spin"></span>SSE</span>
+            </div>
+            <div class="log-filters">
+              <button type="button" class="filter-chip active" data-level="all" onclick="setLogFilter('all',this)">全部</button>
+              <button type="button" class="filter-chip" data-level="info" onclick="setLogFilter('info',this)">Info</button>
+              <button type="button" class="filter-chip" data-level="warn" onclick="setLogFilter('warn',this)">Warn</button>
+              <button type="button" class="filter-chip" data-level="error" onclick="setLogFilter('error',this)">Error</button>
+            </div>
           </div>
-        </div>
-        <div class="card compact-chart-card">
-          <div class="card-header"><div class="card-title">Token 消耗趋势（24h）</div></div>
-          <div class="card-body">
-            <div id="chart-token-trend" class="compact-chart-host" data-chart-height="126"></div>
+          <div class="card-body" style="padding:0 18px 14px">
+            <div id="audit-log" class="audit-log compact-log"></div>
           </div>
-        </div>
-      </div>
-
-      <!-- Account pool grid -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">账号池详情（额度 · 负载 · 能力）</div>
-          <a href="/accounts" class="btn ghost sm">管理 →</a>
-        </div>
-        <div class="card-body" style="padding-top:12px">
-          <div id="pool-grid" class="pool-grid"></div>
-        </div>
-      </div>
-
-      <!-- Real-time audit log with filters -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title flex items-center gap-8">
-            实时日志流
-            <span class="flex items-center gap-4 tiny muted"><span class="spin"></span>SSE</span>
-          </div>
-          <div class="log-filters">
-            <span class="filter-chip active" data-level="all" onclick="setLogFilter('all',this)">全部</span>
-            <span class="filter-chip" data-level="info" onclick="setLogFilter('info',this)">Info</span>
-            <span class="filter-chip" data-level="warn" onclick="setLogFilter('warn',this)">Warn</span>
-            <span class="filter-chip" data-level="error" onclick="setLogFilter('error',this)">Error</span>
-          </div>
-        </div>
-        <div class="card-body" style="padding:0 20px 16px">
-          <div id="audit-log" class="audit-log"></div>
         </div>
       </div>
 
@@ -182,33 +249,32 @@
   </main>
 </div>
 <div id="toast-ct"></div>
-<script src="/static/charts.js?v=4"></script>
+<script src="/static/charts.js?v=8"></script>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 
-// ── HTMX chart callbacks ──
-document.body.addEventListener('htmx:afterRequest',(e)=>{
-  const t=e.detail.requestConfig.elt;
-  if(!t||!t.id||e.detail.failed)return;
-  let p;try{p=JSON.parse(e.detail.xhr.responseText)}catch{return}
-  if(t.id==='chart-requests'){
-    renderRequestSeries(t,p);
-    // Update KPI: requests/hour & avg latency
-    if(Array.isArray(p)&&p.length){
-      const total=p.reduce((a,b)=>a+(b.Count||0),0);
-      const lats=p.filter(r=>r.AvgLatencyMs>0).map(r=>r.AvgLatencyMs);
+// ── Self-contained chart refreshers (no CDN dependency) ──
+async function refreshCoreCharts(){
+  try{
+    const series=await fetch('/api/admin/charts/requests?window=1h&buckets=60').then(r=>r.json());
+    const reqHost=document.getElementById('chart-requests');
+    if(reqHost)renderRequestSeries(reqHost,series);
+    if(Array.isArray(series)&&series.length){
+      const total=series.reduce((a,b)=>a+(b.Count||0),0);
+      const lats=series.filter(r=>r.AvgLatencyMs>0).map(r=>r.AvgLatencyMs);
       const avgLat=lats.length?Math.round(lats.reduce((a,b)=>a+b,0)/lats.length):0;
       document.getElementById('kpi-rps').textContent=total;
       document.getElementById('kpi-latency').textContent=avgLat+'ms';
-      // mini sparklines
       if(typeof renderSparkline==='function'){
-        renderSparkline(document.getElementById('spark-rps'),p,{key:'Count',h:32,color:'var(--accent)'});
-        renderSparkline(document.getElementById('spark-latency'),p,{key:'AvgLatencyMs',h:32,color:'var(--purple)'});
+        renderSparkline(document.getElementById('spark-rps'),series,{key:'Count',h:32,color:'var(--viz-accent,var(--accent))'});
+        renderSparkline(document.getElementById('spark-latency'),series,{key:'AvgLatencyMs',h:32,color:'var(--viz-purple,var(--purple))'});
       }
     }
-  }
-  else if(t.id==='chart-confidence')renderConfidenceDonut(t,p);
-});
+    const health=await fetch('/api/admin/charts/accounts').then(r=>r.json());
+    const healthHost=document.getElementById('chart-confidence');
+    if(healthHost)renderConfidenceDonut(healthHost,health);
+  }catch(e){console.warn('core chart refresh',e)}
+}
+refreshCoreCharts();setInterval(refreshCoreCharts,10000);
 
 // ── SSE audit with level filtering ──
 let _logFilter='all';
@@ -253,11 +319,13 @@ async function refreshCache(){
     const ratio=total>0?hits/total:0;
     renderCacheRing(document.getElementById('cache-ring'),ratio,'命中率');
     document.getElementById('kpi-cache').textContent=Math.round(ratio*100)+'%';
+    const cacheSide=document.getElementById('cache-ratio-side');
+    if(cacheSide)cacheSide.textContent=Math.round(ratio*100)+'%';
     // sparkline for cache
     if(series&&series.length&&typeof renderSparkline==='function'){
       renderSparkline(document.getElementById('spark-cache'),
         series.map(s=>({EWMAMs:s.total>0?s.hits/s.total*100:0})),
-        {h:32,color:'var(--ok)'});
+        {h:32,color:'var(--viz-ok,var(--ok))'});
     }
     const stats=document.getElementById('cache-stats');
     if(stats)stats.innerHTML=`
@@ -339,19 +407,30 @@ async function refreshPool(){
       }
     }
 
-    // Group pressure
-    const byGroup={};
+    // Provider pressure: the accounts API exposes provider-level runtime data.
+    const byPressureProvider={};
     for(const s of (slots||[])){
-      const g=s.group_id||s.provider||'default';
-      if(!byGroup[g])byGroup[g]={groupID:g,provider:s.provider,accountCount:0,totalPressure:0,totalInflight:0};
-      byGroup[g].accountCount++;
-      byGroup[g].totalPressure+=Math.min(1,(s.inflight||0)/10*0.5+((s.ewma_latency||0)/3000)*0.3+((s.inflight||0)>0?0.1:0));
-      byGroup[g].totalInflight+=(s.inflight||0);
+      const p=s.provider||'unknown';
+      if(!byPressureProvider[p])byPressureProvider[p]={groupID:p,provider:p,accountCount:0,totalPressure:0,totalInflight:0};
+      byPressureProvider[p].accountCount++;
+      byPressureProvider[p].totalPressure+=Math.min(1,(s.inflight||0)/10*0.5+((s.ewma_latency||0)/3000)*0.3+((s.inflight||0)>0?0.1:0));
+      byPressureProvider[p].totalInflight+=(s.inflight||0);
     }
-    const groups=Object.values(byGroup).map(g=>({...g,avgPressure:g.accountCount?g.totalPressure/g.accountCount:0}));
-    renderGroupPressure(document.getElementById('group-pressure'),groups);
+    const pressureGroups=Object.values(byPressureProvider).map(g=>({...g,avgPressure:g.accountCount?g.totalPressure/g.accountCount:0}));
+    renderGroupPressure(document.getElementById('group-pressure'),pressureGroups);
   }catch(e){console.warn('pool refresh',e)}
 }
 refreshPool();setInterval(refreshPool,8000);
+
+const analyticsDisclosure=document.getElementById('analytics-disclosure');
+if(analyticsDisclosure){
+  analyticsDisclosure.addEventListener('toggle',()=>{
+    if(analyticsDisclosure.open){
+      refreshCoreCharts();
+      refreshCache();
+      refreshProviderAndTokens();
+    }
+  });
+}
 </script>
 </body></html>

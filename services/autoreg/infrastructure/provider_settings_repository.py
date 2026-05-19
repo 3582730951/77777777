@@ -122,6 +122,9 @@ class ProviderSettingsRepository:
     ) -> ProviderSettingModel:
         definition = self.definitions.get_by_key(provider_type, provider_key)
         if not definition:
+            self.definitions.ensure_seeded()
+            definition = self.definitions.get_by_key(provider_type, provider_key)
+        if not definition:
             raise ValueError(f"未知 provider: {provider_type}/{provider_key}")
 
         with Session(engine) as session:

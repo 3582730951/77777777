@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{T .Lang "guide.title"}} · {{T .Lang "app.name"}}</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
 .guide-step{background:var(--bg);border:1px solid var(--hairline);border-radius:12px;padding:14px 16px;margin-bottom:12px}
 .guide-step h3{margin:0 0 8px;font-size:15px;letter-spacing:-0.01em}
@@ -20,10 +20,57 @@
       <div class="topbar-actions">
         <a href="/set-lang?l=cn&back={{if .IsAdmin}}/guide{{else}}/portal/guide{{end}}" class="btn ghost sm {{if eq .Lang langCN}}primary{{end}}">中</a>
         <a href="/set-lang?l=en&back={{if .IsAdmin}}/guide{{else}}/portal/guide{{end}}" class="btn ghost sm {{if eq .Lang langEN}}primary{{end}}">EN</a>
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Integration playbook</div>
+          <h1 class="hero-title">{{T .Lang "guide.title"}}</h1>
+          <p class="hero-subtitle">把接入指南拆成可执行路径：先准备账号池，再配置客户端，最后验证 API Key 和网关地址。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{if .IsAdmin}}Admin{{else}}Portal{{end}}</b><span>当前视角</span></div>
+          <div class="hero-metric"><b>{{or .GatewayPort "8788"}}</b><span>Gateway Port</span></div>
+          <div class="hero-metric"><b>3</b><span>接入阶段</span></div>
+        </div>
+      </section>
+
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">接入路径 <span>Playbook</span></div>
+          <div class="viz-flow" aria-label="接入指南三阶段">
+            <div class="viz-node"><span>容量</span><b>Account</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>边界</span><b>API Key</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>客户端</span><b>SDK / CLI</b></div>
+          </div>
+          <div class="viz-caption">顶层只保留路径，细节命令在下方步骤中逐段展开。</div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-ring-row">
+            <div class="viz-ring ok" style="--p:100"><b>3</b></div>
+            <div>
+              <div class="viz-title">阶段进度</div>
+              <div class="viz-value">3 steps</div>
+              <div class="viz-caption">账号池、Key、客户端配置是最短闭环。</div>
+            </div>
+          </div>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">协议映射 <span>Compatible</span></div>
+          <div class="viz-meter-list">
+            <div class="viz-meter-row"><span class="viz-meter-label">OpenAI</span><span class="viz-meter"><i style="--w:100%;--c:var(--provider-openai)"></i></span><span class="viz-meter-num">/v1</span></div>
+            <div class="viz-meter-row"><span class="viz-meter-label">Claude</span><span class="viz-meter"><i style="--w:100%;--c:var(--provider-claude)"></i></span><span class="viz-meter-num">/v1</span></div>
+            <div class="viz-meter-row"><span class="viz-meter-label">Gemini</span><span class="viz-meter"><i style="--w:100%;--c:var(--provider-gemini)"></i></span><span class="viz-meter-num">/v1</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="layout-with-rail layout-wide-rail">
+      <div class="guide-path">
 
       {{if eq .Lang langEN}}
       <div class="card section">
@@ -176,7 +223,7 @@ bash scripts/setup-codex.sh http://你的IP:{{.GatewayPort}} sk-pool-你的key
 # 方法 2: 手动编写 ~/.codex/config.toml
 model_provider = "llmpool"
 model = "gpt-5.2"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.llmpool]
@@ -209,9 +256,42 @@ export GEMINI_API_KEY=sk-pool-你的key
 gemini</pre>
       </div>
 
+      </div>
+      <aside class="assist-rail sticky">
+        <div class="assist-card">
+          <div class="assist-card-head">
+            <div class="assist-card-title">建议接入顺序</div>
+            <div class="assist-card-sub">避免先写客户端配置、后发现账号池不可用</div>
+          </div>
+          <div class="assist-card-body decision-list">
+            <div class="decision-item"><span>1</span><div><b>确认账号池</b><small>至少有一个目标 Provider 的健康账号。</small></div></div>
+            <div class="decision-item"><span>2</span><div><b>生成 API Key</b><small>Key 绑定租户和分组，是客户端访问边界。</small></div></div>
+            <div class="decision-item"><span>3</span><div><b>配置客户端</b><small>复制对应 CLI / SDK 的 base URL 和 API Key。</small></div></div>
+          </div>
+        </div>
+        <div class="assist-card">
+          <div class="assist-card-head">
+            <div class="assist-card-title">快速跳转</div>
+            <div class="assist-card-sub">常用操作入口</div>
+          </div>
+          <div class="assist-card-body">
+            {{if .IsAdmin}}
+            <a href="/accounts" class="btn ghost w-full">账号池</a>
+            <a href="/keys" class="btn ghost w-full">API Keys</a>
+            <a href="/groups" class="btn ghost w-full">分组路由</a>
+            {{else}}
+            <a href="/portal/keys" class="btn ghost w-full">我的 Key</a>
+            <a href="/portal/usage" class="btn ghost w-full">用量统计</a>
+            <a href="/portal" class="btn ghost w-full">门户概览</a>
+            {{end}}
+          </div>
+        </div>
+      </aside>
+      </div>
+
     </div>
   </main>
 </div>
-<script>function toggleTheme(){document.body.classList.toggle('theme-dark')}</script>
+
 </body>
 </html>

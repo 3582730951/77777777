@@ -36,12 +36,27 @@ import (
 // Request applies all normalizations to req in-place.
 // The request content is semantically identical after this call.
 func Request(req *ir.Request) {
+	preserveAnthropic := preservesAnthropicShape(req)
+	oldSystem := req.System
 	req.System = NormalizeSystemPrompt(req.System)
-	for i := range req.Tools {
-		req.Tools[i].Schema = NormalizeJSONSchema(req.Tools[i].Schema)
+	if req.AnthropicSystemText == oldSystem {
+		req.AnthropicSystemText = req.System
 	}
-	SortTools(req.Tools)
-	NormalizeMessages(req.Messages)
+	if !preserveAnthropic {
+		for i := range req.Tools {
+			req.Tools[i].Schema = NormalizeJSONSchema(req.Tools[i].Schema)
+		}
+		SortTools(req.Tools)
+		NormalizeMessages(req.Messages)
+	}
+}
+
+func preservesAnthropicShape(req *ir.Request) bool {
+	return req != nil &&
+		req.OriginalProto == "anthropic" &&
+		(len(req.AnthropicSystem) > 0 ||
+			len(req.AnthropicMetadata) > 0 ||
+			len(req.AnthropicContextManagement) > 0)
 }
 
 // NormalizeMessages applies content normalization to message parts to maximize
@@ -348,10 +363,10 @@ func xxHash64(data []byte) uint64 {
 	var h uint64
 	n := len(data)
 	if n >= 32 {
-		v1 := uint64(6983438078262162902)  // (prime1 + prime2) mod 2^64
+		v1 := uint64(6983438078262162902) // (prime1 + prime2) mod 2^64
 		v2 := prime2
 		v3 := uint64(0)
-		v4 := uint64(7046029288634856825)  // (0 - prime1) mod 2^64
+		v4 := uint64(7046029288634856825) // (0 - prime1) mod 2^64
 		for len(data) >= 32 {
 			v1 = bits64(v1, data[0:8])
 			v2 = bits64(v2, data[8:16])

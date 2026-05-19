@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>注册任务 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
 /* ── Register form layout ── */
 .reg-layout{display:grid;gap:20px;grid-template-columns:minmax(0,1.45fr) 340px}
@@ -80,15 +80,15 @@
 /* ── Tabs ── */
 .ar-tabs{display:flex;gap:2px;border-bottom:1px solid var(--hairline);margin-bottom:16px}
 .ar-tab{padding:8px 16px;font-size:13px;font-weight:500;color:var(--fg-muted);
-  border-bottom:2px solid transparent;cursor:pointer;transition:all var(--dur) var(--ease)}
+  border:0;border-bottom:2px solid transparent;background:transparent;cursor:pointer;transition:all var(--dur) var(--ease)}
 .ar-tab:hover{color:var(--fg)}.ar-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.ar-tab:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:var(--r-xs)}
 
 /* ── Service offline banner ── */
 .offline-banner{padding:16px 20px;border-radius:var(--r-md);background:rgba(255,159,10,0.08);
   border:1px solid rgba(255,159,10,0.20);color:var(--orange);font-size:13px;text-align:center;
   display:flex;flex-direction:column;align-items:center;gap:8px}
 </style>
-<script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
 </head>
 <body class="theme-auto">
 <div class="app">
@@ -103,13 +103,13 @@
     <div class="content">
 
       <!-- Tabs: Register / History -->
-      <div class="ar-tabs">
-        <div class="ar-tab active" data-tab="register" onclick="switchTab('register',this)">注册</div>
-        <div class="ar-tab" data-tab="history" onclick="switchTab('history',this)">任务记录</div>
+      <div class="ar-tabs" role="tablist" aria-label="注册任务页面">
+        <button type="button" class="ar-tab active" id="tab-btn-register" role="tab" aria-selected="true" aria-controls="tab-register" data-tab="register" onclick="switchTab('register',this)">注册</button>
+        <button type="button" class="ar-tab" id="tab-btn-history" role="tab" aria-selected="false" aria-controls="tab-history" data-tab="history" onclick="switchTab('history',this)">任务记录</button>
       </div>
 
       <!-- ============ TAB: REGISTER ============ -->
-      <div id="tab-register">
+      <div id="tab-register" role="tabpanel" aria-labelledby="tab-btn-register">
         <div id="offline-msg" style="display:none">
           <div class="offline-banner">
             <div style="font-size:24px;opacity:0.5">⚠</div>
@@ -127,18 +127,18 @@
               <div class="card-body">
                 <div class="form">
                   <div class="field">
-                    <label>平台</label>
+                    <label for="f-platform">平台</label>
                     <select id="f-platform">
                       {{range .Platforms}}<option value="{{.}}">{{.}}</option>{{end}}
                     </select>
                   </div>
                   <div class="form-row c2">
                     <div class="field">
-                      <label>批量数量</label>
+                      <label for="f-count">批量数量</label>
                       <input type="number" id="f-count" value="1" min="1" max="100">
                     </div>
                     <div class="field">
-                      <label>代理 (可选)</label>
+                      <label for="f-proxy">代理 (可选)</label>
                       <input type="text" id="f-proxy" placeholder="http://user:pass@host:port">
                     </div>
                   </div>
@@ -151,19 +151,19 @@
               <div class="card-header"><div class="card-title">Step 1 · 注册身份</div></div>
               <div class="card-body">
                 <div class="opt-grid" id="identity-grid">
-                  <button class="opt-btn active" data-identity="mailbox" data-oauth="" onclick="pickIdentity(this)">
+                  <button class="opt-btn active" type="button" data-identity="mailbox" data-oauth="" onclick="pickIdentity(this)">
                     <div class="opt-title">✉ 邮箱注册</div>
                     <div class="opt-desc">系统自动生成邮箱或使用配置的邮箱服务完成注册</div>
                   </button>
-                  <button class="opt-btn" data-identity="oauth_browser" data-oauth="google" onclick="pickIdentity(this)">
+                  <button class="opt-btn" type="button" data-identity="oauth_browser" data-oauth="google" onclick="pickIdentity(this)">
                     <div class="opt-title">🛡 Google OAuth</div>
                     <div class="opt-desc">使用 Google 账号 OAuth 授权注册，需要浏览器环境</div>
                   </button>
-                  <button class="opt-btn" data-identity="oauth_browser" data-oauth="github" onclick="pickIdentity(this)">
+                  <button class="opt-btn" type="button" data-identity="oauth_browser" data-oauth="github" onclick="pickIdentity(this)">
                     <div class="opt-title">🛡 GitHub OAuth</div>
                     <div class="opt-desc">使用 GitHub 账号 OAuth 授权注册</div>
                   </button>
-                  <button class="opt-btn" data-identity="oauth_browser" data-oauth="microsoft" onclick="pickIdentity(this)">
+                  <button class="opt-btn" type="button" data-identity="oauth_browser" data-oauth="microsoft" onclick="pickIdentity(this)">
                     <div class="opt-title">🛡 Microsoft OAuth</div>
                     <div class="opt-desc">使用 Microsoft 账号 OAuth 授权注册</div>
                   </button>
@@ -176,15 +176,15 @@
               <div class="card-header"><div class="card-title">Step 2 · 执行通道</div></div>
               <div class="card-body">
                 <div class="opt-grid cols-3" id="executor-grid">
-                  <button class="opt-btn active" data-executor="protocol" onclick="pickExecutor(this)">
+                  <button class="opt-btn active" type="button" data-executor="protocol" onclick="pickExecutor(this)">
                     <div class="opt-title">协议注册</div>
                     <div class="opt-desc">纯 HTTP 协议模拟注册流程，速度快资源消耗低</div>
                   </button>
-                  <button class="opt-btn" data-executor="browser" onclick="pickExecutor(this)">
+                  <button class="opt-btn" type="button" data-executor="browser" onclick="pickExecutor(this)">
                     <div class="opt-title">浏览器注册</div>
                     <div class="opt-desc">使用无头浏览器模拟真实用户操作，兼容性最好</div>
                   </button>
-                  <button class="opt-btn" data-executor="hybrid" onclick="pickExecutor(this)">
+                  <button class="opt-btn" type="button" data-executor="hybrid" onclick="pickExecutor(this)">
                     <div class="opt-title">混合模式</div>
                     <div class="opt-desc">协议为主，遇到风控时自动切换浏览器完成</div>
                   </button>
@@ -198,17 +198,17 @@
               <div class="card-body">
                 <div class="form">
                   <div class="field">
-                    <label>邮箱服务</label>
+                    <label for="f-mail-provider">邮箱服务</label>
                     <select id="f-mail-provider">
                       <option value="">自动</option>
                     </select>
                   </div>
                   <div class="field">
-                    <label>指定邮箱 (可选)</label>
+                    <label for="f-email">指定邮箱 (可选)</label>
                     <input type="email" id="f-email" placeholder="留空则自动生成">
                   </div>
                   <div class="field">
-                    <label>指定密码 (可选)</label>
+                    <label for="f-password">指定密码 (可选)</label>
                     <input type="password" id="f-password" placeholder="留空则自动生成">
                   </div>
                 </div>
@@ -296,7 +296,7 @@
       </div>
 
       <!-- ============ TAB: HISTORY ============ -->
-      <div id="tab-history" style="display:none">
+      <div id="tab-history" role="tabpanel" aria-labelledby="tab-btn-history" style="display:none">
         <!-- Metrics -->
         <div class="task-metrics" id="hist-metrics">
           <div class="task-metric">
@@ -388,8 +388,12 @@ function showOffline() {
 
 /* ── Tabs ── */
 function switchTab(tab, el) {
-  document.querySelectorAll('.ar-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.ar-tab').forEach(t => {
+    t.classList.remove('active');
+    t.setAttribute('aria-selected', 'false');
+  });
   el.classList.add('active');
+  el.setAttribute('aria-selected', 'true');
   document.getElementById('tab-register').style.display = tab === 'register' ? '' : 'none';
   document.getElementById('tab-history').style.display = tab === 'history' ? '' : 'none';
   if (tab === 'history') loadHistory();

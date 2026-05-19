@@ -450,7 +450,7 @@ class TestDoCodexOAuth:
         page = FakePage()
         phone_calls = {"count": 0}
 
-        monkeypatch.setattr("platforms.chatgpt.oauth.generate_oauth_url", lambda: FakeOAuthStart())
+        monkeypatch.setattr("platforms.chatgpt.oauth.generate_oauth_url", lambda *args, **kwargs: FakeOAuthStart())
         monkeypatch.setattr(
             mod,
             "_derive_oauth_state_from_page",
@@ -504,7 +504,7 @@ class TestDoCodexOAuth:
             def goto(self, url, **kwargs):
                 self.url = url
 
-        monkeypatch.setattr("platforms.chatgpt.oauth.generate_oauth_url", lambda: FakeOAuthStart())
+        monkeypatch.setattr("platforms.chatgpt.oauth.generate_oauth_url", lambda *args, **kwargs: FakeOAuthStart())
         monkeypatch.setattr(mod, "_derive_oauth_state_from_page", lambda page_obj: {"page_type": "add_phone", "current_url": page_obj.url, "continue_url": "", "method": "GET"})
         monkeypatch.setattr(mod, "_get_page_oauth_url", lambda page_obj: "")
         monkeypatch.setattr(mod, "_extract_code_from_url", lambda url: "")

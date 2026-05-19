@@ -32,7 +32,7 @@ cat > "$CODEX_DIR/config.toml" << EOF
 # LLM Pool Gateway 配置（由 setup-codex.sh 生成）
 model_provider = "llmpool"
 model = "gpt-5.2"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
 disable_response_storage = true
 
 [model_providers.llmpool]

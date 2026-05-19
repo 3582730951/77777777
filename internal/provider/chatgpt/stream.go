@@ -3,14 +3,14 @@
 //
 // The stream uses a JSON Patch protocol. Two event shapes:
 //
-//   data: {"v": {"message": {"content": {"parts": ["initial text"]}, ...}}}
-//        — full or partial message snapshot. We use this to seed the buffer.
+//	data: {"v": {"message": {"content": {"parts": ["initial text"]}, ...}}}
+//	     — full or partial message snapshot. We use this to seed the buffer.
 //
-//   data: {"p":"/message/content/parts/0", "o":"append", "v":" more text"}
-//        — incremental patch. We track the accumulated text per message.
+//	data: {"p":"/message/content/parts/0", "o":"append", "v":" more text"}
+//	     — incremental patch. We track the accumulated text per message.
 //
-//   data: [DONE]
-//        — stream terminator.
+//	data: [DONE]
+//	     — stream terminator.
 //
 // We only care about content-text deltas for now; tool calls and image blocks
 // are decoded best-effort. Anything we don't understand is silently ignored,
@@ -22,7 +22,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 
@@ -36,7 +35,7 @@ func streamSSE(ctx context.Context, body io.ReadCloser, out chan<- ir.Event, _ s
 	br := bufio.NewReaderSize(body, 16*1024)
 	var (
 		acc           strings.Builder // accumulated text for parts[0]
-		emittedSoFar  int            // bytes already emitted as TextDelta
+		emittedSoFar  int             // bytes already emitted as TextDelta
 		usageInput    int
 		usageOutput   int
 		finishReason  string
@@ -199,9 +198,9 @@ func applySnapshot(vRaw json.RawMessage, acc *strings.Builder, emitted *int, fin
 			Content struct {
 				Parts []json.RawMessage `json:"parts"`
 			} `json:"content"`
-			Status      string                 `json:"status"`
-			EndTurn     *bool                  `json:"end_turn"`
-			Metadata    map[string]interface{} `json:"metadata"`
+			Status   string                 `json:"status"`
+			EndTurn  *bool                  `json:"end_turn"`
+			Metadata map[string]interface{} `json:"metadata"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(vRaw, &msg); err != nil {
@@ -226,8 +225,8 @@ func emit(acc *strings.Builder, emittedSoFar *int, out chan<- ir.Event) {
 	if len(s) <= *emittedSoFar {
 		return
 	}
-	if isUsageLimitMessage(s) {
-		out <- ir.Event{Kind: ir.EvError, Err: fmt.Errorf("upstream quota: %s", s)}
+	if err := switchMessageError(s); err != nil {
+		out <- ir.Event{Kind: ir.EvError, Err: err}
 		return
 	}
 	delta := s[*emittedSoFar:]

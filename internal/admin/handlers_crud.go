@@ -232,6 +232,8 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt          string            `json:"system_prompt"`
 		SystemPromptMode      string            `json:"system_prompt_mode"`
 		SystemPromptInjection string            `json:"system_prompt_injection"`
+		ReasoningEffort       string            `json:"reasoning_effort"`
+		ForcedModel           string            `json:"forced_model"`
 		Source                string            `json:"source"`
 	}
 	res := []out{}
@@ -243,7 +245,10 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 			Models: g.Models, ModelAliases: g.ModelAliases,
 			ModelWhitelist: g.ModelWhitelist, AccountIDs: g.AccountIDs,
 			SystemPrompt: g.SystemPrompt, SystemPromptMode: g.SystemPromptMode,
-			SystemPromptInjection: g.SystemPromptInjection, Source: "db",
+			SystemPromptInjection: g.SystemPromptInjection,
+			ReasoningEffort:       g.ReasoningEffort,
+			ForcedModel:           g.ForcedModel,
+			Source:                "db",
 		})
 	}
 	for _, g := range s.deps.Cfg.Groups {
@@ -258,7 +263,10 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 			Models: g.Models, ModelAliases: g.ModelAliases,
 			ModelWhitelist: g.ModelWhitelist, AccountIDs: g.AccountIDs,
 			SystemPrompt: g.SystemPrompt, SystemPromptMode: g.SystemPromptMode,
-			SystemPromptInjection: g.SystemPromptInjection, Source: "yaml",
+			SystemPromptInjection: g.SystemPromptInjection,
+			ReasoningEffort:       g.ReasoningEffort,
+			ForcedModel:           g.ForcedModel,
+			Source:                "yaml",
 		})
 	}
 	writeJSONStatus(w, 200, res)
@@ -275,6 +283,8 @@ type upsertGroupReq struct {
 	SystemPrompt          string            `json:"system_prompt"`
 	SystemPromptMode      string            `json:"system_prompt_mode"`
 	SystemPromptInjection string            `json:"system_prompt_injection"`
+	ReasoningEffort       string            `json:"reasoning_effort"`
+	ForcedModel           string            `json:"forced_model"`
 }
 
 func (s *Server) handleUpsertGroup(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +303,8 @@ func (s *Server) handleUpsertGroup(w http.ResponseWriter, r *http.Request) {
 		ModelWhitelist: req.ModelWhitelist, AccountIDs: req.AccountIDs,
 		SystemPrompt: req.SystemPrompt, SystemPromptMode: req.SystemPromptMode,
 		SystemPromptInjection: req.SystemPromptInjection,
+		ReasoningEffort:       req.ReasoningEffort,
+		ForcedModel:           req.ForcedModel,
 		CreatedAt:             time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {
@@ -322,6 +334,8 @@ func (s *Server) handleUpsertGroupID(w http.ResponseWriter, r *http.Request) {
 		ModelWhitelist: req.ModelWhitelist, AccountIDs: req.AccountIDs,
 		SystemPrompt: req.SystemPrompt, SystemPromptMode: req.SystemPromptMode,
 		SystemPromptInjection: req.SystemPromptInjection,
+		ReasoningEffort:       req.ReasoningEffort,
+		ForcedModel:           req.ForcedModel,
 		UpdatedAt:             time.Now(),
 	}
 	if err := s.deps.Store.UpsertDynGroup(r.Context(), g); err != nil {

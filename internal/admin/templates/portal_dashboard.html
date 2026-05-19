@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>我的概览 · LLM Pool</title>
-<link rel="stylesheet" href="/static/app.css?v=2">
+<link rel="stylesheet" href="/static/app.css?v=8">
 <style>
 .quickstart{display:grid;grid-template-columns:1fr;gap:14px}
 .qs-block{background:var(--bg);border:1px solid var(--hairline);border-radius:var(--r-md);padding:14px 16px}
@@ -26,37 +26,66 @@
     <header class="topbar">
       <div class="topbar-title">我的概览</div>
       <div class="topbar-actions">
-        <button class="btn-icon" onclick="toggleTheme()">◐</button>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
       </div>
     </header>
     <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Tenant portal</div>
+          <h1 class="hero-title">接入状态与下一步</h1>
+          <p class="hero-subtitle">先拿到 API 端点和 Key，再复制最常用客户端命令；其他信息默认下沉。</p>
+          <div class="command-hero-actions">
+            <a href="/portal/keys" class="btn primary">{{if .Keys}}管理我的 Key{{else}}申请第一个 Key{{end}}</a>
+            <a href="/portal/usage" class="btn ghost">查看用量</a>
+          </div>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{.KeyCount}}</b><span>我的 Key</span></div>
+          <div class="hero-metric"><b>{{.RequestsToday}}</b><span>今日请求</span></div>
+          <div class="hero-metric"><b>{{fmtTokens .TokensToday}}</b><span>今日 Tokens</span></div>
+        </div>
+      </section>
 
-      <!-- KPI cards -->
-      <div class="grid g4">
-        <div class="card stat-card">
-          <div class="stat-icon">⚿</div>
-          <div class="stat-val">{{.KeyCount}}</div>
-          <div class="stat-label">我的 Key</div>
+      <div class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">调用路径 <span>Access flow</span></div>
+          <div class="viz-flow" aria-label="租户门户调用路径">
+            <div class="viz-node"><span>Key</span><b>{{.KeyCount}}</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>Gateway</span><b>/v1</b></div>
+            <span class="viz-arrow">→</span>
+            <div class="viz-node"><span>Provider</span><b>Pool</b></div>
+          </div>
+          <div class="viz-caption">先完成 Key 到网关的闭环，再看用量和分组细节。</div>
         </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(0,122,255,0.10);color:var(--accent)">⚡</div>
-          <div class="stat-val">{{.RequestsToday}}</div>
-          <div class="stat-label">今日请求</div>
+        <div class="viz-card {{if .Keys}}ok{{else}}warn{{end}}">
+          <div class="viz-ring-row">
+            <div class="viz-ring {{if .Keys}}ok{{else}}warn{{end}}" style="--p:{{percent .KeyCount 5}}"><b>{{.KeyCount}}</b></div>
+            <div>
+              <div class="viz-title">Key 准备度</div>
+              <div class="viz-value">{{if .Keys}}可调用{{else}}未开始{{end}}</div>
+              <div class="viz-caption">{{if .Keys}}快速命令会自动带入首个 Key。{{else}}先申请一个 Key，页面会自动生成命令。{{end}}</div>
+            </div>
+          </div>
         </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(191,90,242,0.10);color:var(--purple)">T</div>
-          <div class="stat-val">{{fmtTokens .TokensToday}}</div>
-          <div class="stat-label">今日 Tokens</div>
-        </div>
-        <div class="card stat-card">
-          <div class="stat-icon" style="background:rgba(52,199,89,0.12);color:var(--ok)">▦</div>
-          <div class="stat-val">{{.GroupCount}}</div>
-          <div class="stat-label">可用分组</div>
+        <div class="viz-card">
+          <div class="viz-title">今日活跃 <span>Today</span></div>
+          <div class="viz-mini-stack">
+            <div class="viz-mini"><span>Requests</span><b>{{.RequestsToday}}</b></div>
+            <div class="viz-mini"><span>Tokens</span><b>{{fmtTokens .TokensToday}}</b></div>
+            <div class="viz-mini"><span>Groups</span><b>{{.GroupCount}}</b></div>
+          </div>
+          <div class="viz-meter-list" aria-label="今日门户活跃度">
+            <div class="viz-meter-row"><span class="viz-meter-label">Req</span><span class="viz-meter"><i style="--w:{{percent .RequestsToday 100}}%;--c:var(--accent)"></i></span><span class="viz-meter-num">{{.RequestsToday}}</span></div>
+            <div class="viz-meter-row"><span class="viz-meter-label">Tokens</span><span class="viz-meter"><i style="--w:{{percent .TokensToday 100000}}%;--c:var(--purple)"></i></span><span class="viz-meter-num">{{fmtTokens .TokensToday}}</span></div>
+            <div class="viz-meter-row"><span class="viz-meter-label">Groups</span><span class="viz-meter"><i style="--w:{{percent .GroupCount 6}}%;--c:var(--ok)"></i></span><span class="viz-meter-num">{{.GroupCount}}</span></div>
+          </div>
         </div>
       </div>
 
       <!-- API Endpoint -->
-      <div class="card">
+      <div class="card work-surface">
         <div class="card-header"><div class="card-title">API 端点</div></div>
         <div class="card-body flex-col gap-12">
           <div class="ep-box">
@@ -68,10 +97,10 @@
       </div>
 
       <!-- Quick start guide -->
-      <div class="card">
+      <div class="card work-surface">
         <div class="card-header"><div class="card-title">快速接入</div></div>
         <div class="card-body">
-          <div class="quickstart">
+          <div class="quickstart primary-only">
 
             <div class="qs-block">
               <div class="qs-title"><span style="color:var(--provider-openai)">●</span> Cursor / Codex / OpenAI SDK</div>
@@ -121,15 +150,12 @@ export GOOGLE_API_KEY=<span class="qs-key-placeholder">{{if .Keys}}{{(index .Key
         </div>
       </div>
       {{else}}
-      <div class="card flat">
-        <div class="card-body">
-          <div class="empty" style="padding:32px">
-            <div class="empty-icon">⚿</div>
-            <div class="empty-title">还没有 API Key</div>
-            <div class="empty-sub">前往「<a href="/portal/keys">我的 Key</a>」页面生成第一个 Key</div>
-            <a href="/portal/keys" class="btn primary mt-8">申请 Key</a>
-          </div>
+      <div class="inline-empty">
+        <div>
+          <div class="inline-empty-title">还没有 API Key</div>
+          <div class="inline-empty-sub">生成第一个 Key 后，快速接入命令会自动带入凭据。</div>
         </div>
+        <a href="/portal/keys" class="btn primary">申请 Key</a>
       </div>
       {{end}}
     </div>
@@ -137,7 +163,6 @@ export GOOGLE_API_KEY=<span class="qs-key-placeholder">{{if .Keys}}{{(index .Key
 </div>
 <div id="toast-ct"></div>
 <script>
-function toggleTheme(){document.body.classList.toggle('theme-dark')}
 function showToast(m){const c=document.getElementById('toast-ct');const t=document.createElement('div');t.className='toast';t.textContent='✓ '+m;c.appendChild(t);setTimeout(()=>t.remove(),2500)}
 </script>
 {{template "_copy_script" .}}

@@ -8,12 +8,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -31,19 +35,15 @@ const (
 	ModeMock = "mock"
 	ModeReal = "real"
 
-	// betaHeader is the COMPLETE list sent by Claude Code CLI 2.1.92 (2026-04
-	// traffic capture). ALL betas must be present — Anthropic uses this set to
-	// decide whether to charge subscription quota vs. third-party extra usage.
-	// Missing any beta → downgrade to extra-usage → `Third-party apps now draw
-	// from your extra usage, not your plan limits.`
 	betaHeader = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14," +
-		"fine-grained-tool-streaming-2025-05-14,prompt-caching-scope-2026-01-05," +
-		"effort-2025-11-24,redact-thinking-2026-02-12,context-management-2025-06-27," +
-		"extended-cache-ttl-2025-04-11"
+		"context-management-2025-06-27,prompt-caching-scope-2026-01-05," +
+		"advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11"
 
-	// cliVersion and cliUserAgent mimic Claude Code CLI 2.1.92.
-	cliVersion   = "2.1.92"
-	cliUserAgent = "claude-cli/" + cliVersion + " (external, cli)"
+	cliVersion          = "2.1.138"
+	cliEntrypoint       = "sdk-cli"
+	cliUserAgent        = "claude-cli/" + cliVersion + " (external, " + cliEntrypoint + ")"
+	stainlessPkgVersion = "0.93.0"
+	stainlessRuntimeVer = "v24.3.0"
 
 	claudeAPIBase = "https://api.anthropic.com"
 )
@@ -413,7 +413,8 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	}
 
 	model := mapModel(req.Model)
-	body, err := buildMessagesBody(req, model)
+	sessionID := claudeCodeSessionIDForRequest(req, acc.ID)
+	body, err := buildMessagesBody(req, model, info, sessionID, acc.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -428,22 +429,7 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 		return nil, err
 	}
 
-	httpReq.Header.Set("Authorization", "Bearer "+info.AccessToken)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("anthropic-beta", betaHeader)
-	httpReq.Header.Set("User-Agent", cliUserAgent)
-	httpReq.Header.Set("X-Stainless-Lang", "js")
-	httpReq.Header.Set("X-Stainless-Package-Version", "0.70.0")
-	httpReq.Header.Set("X-Stainless-OS", "Linux")
-	httpReq.Header.Set("X-Stainless-Arch", "arm64")
-	httpReq.Header.Set("X-Stainless-Runtime", "node")
-	httpReq.Header.Set("X-Stainless-Runtime-Version", "v24.13.0")
-	httpReq.Header.Set("X-Stainless-Retry-Count", "0")
-	httpReq.Header.Set("X-Stainless-Timeout", "600")
-	httpReq.Header.Set("X-App", "cli")
-	httpReq.Header.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
+	setClaudeCodeMessagesHeaders(httpReq.Header, info.AccessToken, sessionID)
 
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -493,7 +479,7 @@ func parseHeaderInt(h http.Header, key string) int64 {
 }
 
 // buildMessagesBody converts an IR request to the Anthropic messages API JSON.
-func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
+func buildMessagesBody(req *ir.Request, model string, info sessionInfo, sessionID, accountID string) ([]byte, error) {
 	var msgs []any
 	msgIdx := 0
 	for _, m := range req.Messages {
@@ -513,26 +499,32 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 			switch p.Kind {
 			case ir.PartText:
 				if p.Text != "" {
-					blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
+					blk := map[string]any{"type": "text", "text": p.Text}
+					applyClaudeCacheControl(blk, p.CacheControl, p.CacheBreakpoint)
+					blocks = append(blocks, blk)
 				}
 			case ir.PartImage:
 				if len(p.ImageBytes) > 0 {
-					blocks = append(blocks, map[string]any{
+					blk := map[string]any{
 						"type": "image",
 						"source": map[string]any{
 							"type":       "base64",
 							"media_type": p.ImageMedia,
 							"data":       string(p.ImageBytes),
 						},
-					})
+					}
+					applyClaudeCacheControl(blk, p.CacheControl, p.CacheBreakpoint)
+					blocks = append(blocks, blk)
 				} else if p.ImageURL != "" {
-					blocks = append(blocks, map[string]any{
+					blk := map[string]any{
 						"type": "image",
 						"source": map[string]any{
 							"type": "url",
 							"url":  p.ImageURL,
 						},
-					})
+					}
+					applyClaudeCacheControl(blk, p.CacheControl, p.CacheBreakpoint)
+					blocks = append(blocks, blk)
 				}
 			case ir.PartToolUse:
 				var input any
@@ -542,19 +534,26 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 				if input == nil {
 					input = map[string]any{}
 				}
-				blocks = append(blocks, map[string]any{
+				blk := map[string]any{
 					"type": "tool_use", "id": p.ToolUseID,
 					"name": normalizeToolName(p.ToolUseName), "input": input,
-				})
+				}
+				applyClaudeCacheControl(blk, p.CacheControl, p.CacheBreakpoint)
+				blocks = append(blocks, blk)
 			case ir.PartToolResult:
 				var content any
 				if len(p.ToolResultBytes) > 0 {
 					_ = json.Unmarshal(p.ToolResultBytes, &content)
 				}
-				blocks = append(blocks, map[string]any{
+				blk := map[string]any{
 					"type": "tool_result", "tool_use_id": p.ToolResultID,
 					"content": content,
-				})
+				}
+				if p.ToolResultErr {
+					blk["is_error"] = true
+				}
+				applyClaudeCacheControl(blk, p.CacheControl, p.CacheBreakpoint)
+				blocks = append(blocks, blk)
 			}
 		}
 		if len(blocks) == 0 {
@@ -564,7 +563,7 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 		// (typically the second-to-last user message, per CPA strategy).
 		if req.MessageCacheIdx > 0 && msgIdx == req.MessageCacheIdx && len(blocks) > 0 {
 			if blk, ok := blocks[len(blocks)-1].(map[string]any); ok {
-				blk["cache_control"] = map[string]string{"type": "ephemeral"}
+				applyClaudeCacheControl(blk, nil, true)
 			}
 		}
 		msgs = append(msgs, map[string]any{"role": role, "content": blocks})
@@ -573,12 +572,14 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 
 	// System prompt — wrap in array with cache_control if flagged.
 	var systemField any
-	if req.System != "" {
+	if len(req.AnthropicSystem) > 0 && req.System == req.AnthropicSystemText {
+		systemField = json.RawMessage(req.AnthropicSystem)
+	} else if req.System != "" {
 		if req.SystemCached {
 			systemField = []map[string]any{{
 				"type":          "text",
 				"text":          req.System,
-				"cache_control": map[string]any{"type": "ephemeral", "ttl": 3600},
+				"cache_control": claudeCodeCacheControl(),
 			}}
 		} else {
 			systemField = req.System
@@ -593,9 +594,7 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 			"description":  t.Description,
 			"input_schema": json.RawMessage(t.Schema),
 		}
-		if t.CacheBreakpoint || i == len(req.Tools)-1 && req.Tools[i].CacheBreakpoint {
-			tool["cache_control"] = map[string]any{"type": "ephemeral", "ttl": 3600}
-		}
+		applyClaudeCacheControl(tool, t.CacheControl, t.CacheBreakpoint || i == len(req.Tools)-1 && req.Tools[i].CacheBreakpoint)
 		toolsField = append(toolsField, tool)
 	}
 
@@ -603,13 +602,26 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 		"model":      model,
 		"messages":   msgs,
 		"stream":     true,
-		"max_tokens": 16384,
+		"max_tokens": 32000,
+	}
+	if len(req.AnthropicContextManagement) > 0 {
+		body["context_management"] = json.RawMessage(req.AnthropicContextManagement)
+	} else {
+		body["context_management"] = claudeCodeContextManagement()
+	}
+	if len(req.AnthropicMetadata) > 0 {
+		body["metadata"] = json.RawMessage(req.AnthropicMetadata)
+	} else if metadata := claudeCodeMetadata(info, sessionID, accountID); metadata != nil {
+		body["metadata"] = metadata
 	}
 	if systemField != nil {
 		body["system"] = systemField
 	}
 	if len(toolsField) > 0 {
 		body["tools"] = toolsField
+	}
+	if toolChoice := claudeToolChoice(req); toolChoice != nil {
+		body["tool_choice"] = toolChoice
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
@@ -620,8 +632,12 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 	// Inject thinking / extended thinking when budget > 0.
 	// Requires the extended-thinking beta header (already in betaHeader).
 	if req.ThinkingTokens > 0 {
+		thinkingType := req.ThinkingType
+		if thinkingType == "" {
+			thinkingType = "adaptive"
+		}
 		body["thinking"] = map[string]any{
-			"type":          "enabled",
+			"type":          thinkingType,
 			"budget_tokens": req.ThinkingTokens,
 		}
 		// Claude requires max_tokens > budget_tokens.
@@ -634,6 +650,217 @@ func buildMessagesBody(req *ir.Request, model string) ([]byte, error) {
 		delete(body, "temperature")
 	}
 	return json.Marshal(body)
+}
+
+func applyClaudeCacheControl(dst map[string]any, raw []byte, fallback bool) {
+	if len(raw) > 0 {
+		dst["cache_control"] = json.RawMessage(raw)
+		return
+	}
+	if fallback {
+		dst["cache_control"] = claudeCodeCacheControl()
+	}
+}
+
+func claudeToolChoice(req *ir.Request) any {
+	if req == nil {
+		return nil
+	}
+	if req.ToolChoice.Mode != "" || req.ToolChoice.Name != "" {
+		mode := req.ToolChoice.Mode
+		if mode == "" {
+			mode = "tool"
+		}
+		if req.ToolChoice.Name != "" {
+			return map[string]any{"type": mode, "name": normalizeToolName(req.ToolChoice.Name)}
+		}
+		return map[string]any{"type": mode}
+	}
+	if len(req.AnthropicToolChoice) > 0 {
+		return json.RawMessage(req.AnthropicToolChoice)
+	}
+	return nil
+}
+
+func setClaudeCodeMessagesHeaders(h http.Header, accessToken, sessionID string) {
+	h.Set("Authorization", "Bearer "+accessToken)
+	h.Set("Content-Type", "application/json")
+	h.Set("Accept", "application/json")
+	h.Set("anthropic-version", "2023-06-01")
+	h.Set("anthropic-beta", betaHeader)
+	h.Set("User-Agent", cliUserAgent)
+	h.Set("X-Claude-Code-Session-Id", sessionID)
+	h.Set("X-Stainless-Lang", "js")
+	h.Set("X-Stainless-Package-Version", stainlessPkgVersion)
+	h.Set("X-Stainless-OS", stainlessOS())
+	h.Set("X-Stainless-Arch", stainlessArch())
+	h.Set("X-Stainless-Runtime", "node")
+	h.Set("X-Stainless-Runtime-Version", stainlessRuntimeVer)
+	h.Set("X-Stainless-Retry-Count", "0")
+	h.Set("X-Stainless-Timeout", "600")
+	h.Set("X-App", "cli")
+	h.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
+}
+
+func stainlessOS() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "MacOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		return "Linux"
+	case "freebsd":
+		return "FreeBSD"
+	case "openbsd":
+		return "OpenBSD"
+	default:
+		return "Unknown"
+	}
+}
+
+func stainlessArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "arm64":
+		return "arm64"
+	case "386":
+		return "x32"
+	default:
+		return "unknown"
+	}
+}
+
+func claudeCodeCacheControl() map[string]any {
+	return map[string]any{"type": "ephemeral", "ttl": "1h"}
+}
+
+func claudeCodeContextManagement() map[string]any {
+	return map[string]any{
+		"edits": []map[string]string{{
+			"type": "clear_thinking_20251015",
+			"keep": "all",
+		}},
+	}
+}
+
+func claudeCodeMetadata(info sessionInfo, sessionID, accountID string) map[string]any {
+	if sessionID == "" {
+		return nil
+	}
+	payload := map[string]string{
+		"device_id":    claudeCodeDeviceID(accountID, info),
+		"account_uuid": info.AccountUUID,
+		"session_id":   sessionID,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return map[string]any{"user_id": string(b)}
+}
+
+func claudeCodeSessionIDForRequest(req *ir.Request, accountID string) string {
+	if req != nil {
+		if sid := claudeMetadataSessionID(req.AnthropicMetadata); sid != "" {
+			return sid
+		}
+		if req.UpstreamSessionKey != "" {
+			return deterministicClaudeCodeSessionID(accountID + ":" + req.UpstreamSessionKey)
+		}
+		if seed := requestSessionSeed(req); seed != "" {
+			return deterministicClaudeCodeSessionID(accountID + ":" + seed)
+		}
+	}
+	if accountID != "" {
+		return deterministicClaudeCodeSessionID(accountID)
+	}
+	return newClaudeCodeSessionID()
+}
+
+func claudeMetadataSessionID(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	userID := strings.TrimSpace(gjson.GetBytes(raw, "user_id").String())
+	if userID == "" {
+		return strings.TrimSpace(gjson.GetBytes(raw, "session_id").String())
+	}
+	if strings.HasPrefix(userID, "{") {
+		if sid := strings.TrimSpace(gjson.Get(userID, "session_id").String()); sid != "" {
+			return sid
+		}
+	}
+	const legacyMarker = "_session_"
+	if idx := strings.LastIndex(userID, legacyMarker); idx >= 0 {
+		return strings.TrimSpace(userID[idx+len(legacyMarker):])
+	}
+	return ""
+}
+
+func requestSessionSeed(req *ir.Request) string {
+	if req == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(req.OriginalProto)
+	b.WriteByte(0)
+	b.WriteString(req.OriginalModel)
+	b.WriteByte(0)
+	b.WriteString(req.System)
+	for _, msg := range req.Messages {
+		if msg.Role != ir.RoleUser {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if part.Kind == ir.PartText && strings.TrimSpace(part.Text) != "" {
+				b.WriteByte(0)
+				b.WriteString(part.Text)
+				return b.String()
+			}
+		}
+	}
+	if b.Len() == 2 {
+		return ""
+	}
+	return b.String()
+}
+
+func deterministicClaudeCodeSessionID(seed string) string {
+	if seed == "" {
+		return newClaudeCodeSessionID()
+	}
+	sum := sha256.Sum256([]byte(seed))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func claudeCodeDeviceID(accountID string, info sessionInfo) string {
+	seed := accountID
+	if info.AccountUUID != "" {
+		seed += ":" + info.AccountUUID
+	}
+	if seed == "" {
+		seed = "claude-code"
+	}
+	sum := sha256.Sum256([]byte("claude-code-device:" + seed))
+	return hex.EncodeToString(sum[:])
+}
+
+func newClaudeCodeSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+		copy(b[:], sum[:16])
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // streamClaudeSSE parses Anthropic SSE events and emits IR events.
@@ -779,6 +1006,9 @@ func mapModel(m string) string {
 		return "claude-sonnet-4-6"
 	}
 	overrides := map[string]string{
+		"sonnet":            "claude-sonnet-4-6",
+		"opus":              "claude-opus-4-7",
+		"haiku":             "claude-haiku-4-5-20251001",
 		"claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
 		"claude-opus-4-5":   "claude-opus-4-5-20251101",
 		"claude-haiku-4-5":  "claude-haiku-4-5-20251001",
