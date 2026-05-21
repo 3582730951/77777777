@@ -50,3 +50,42 @@ func TestAutoRemoverRemoveNowDeletesBannedAccount(t *testing.T) {
 		t.Fatalf("banned account should be deleted from store, got %d accounts", len(accounts))
 	}
 }
+
+func TestAutoRemoverDoesNotDeleteAuthFailedAccount(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	acc := &domain.Account{
+		ID:        "a1",
+		TenantID:  "t1",
+		Provider:  "chatgpt",
+		State:     domain.StateActive,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: "tok"}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	sched := scheduler.New(config.Scheduler{})
+	sched.Register(acc)
+	remover := NewAutoRemover(sched, st, nil)
+
+	sched.MarkFailure("a1", domain.ErrAuthFailed)
+	remover.RemoveNow("a1")
+
+	if _, ok := sched.AccountByID("a1"); !ok {
+		t.Fatal("auth failed account should remain in scheduler")
+	}
+	accounts, err := st.ListAccounts(ctx, "")
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("auth failed account should remain in store, got %d accounts", len(accounts))
+	}
+}

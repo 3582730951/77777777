@@ -1134,6 +1134,10 @@ func (s *Scheduler) MarkFailure(accountID string, class domain.ErrorClass) {
 		sl.Account.State = domain.StateCFChallenged
 		sl.BreakerState = domain.BreakerOpen
 		sl.OpenUntil = time.Now().Add(s.openDuration(sl))
+	case domain.ErrAuthFailed:
+		sl.Confidence = domain.ConfSuspectedIssue
+		sl.BreakerState = domain.BreakerOpen
+		sl.OpenUntil = time.Now().Add(s.openDuration(sl))
 	default:
 		if sl.FailCount >= s.cfg.Breaker.FailThreshold {
 			sl.Confidence = domain.ConfSuspectedIssue

@@ -424,6 +424,35 @@ func TestBannedAccountIsExcludedAndHooked(t *testing.T) {
 	}
 }
 
+func TestAuthFailedDoesNotBanOrTriggerRemovalHook(t *testing.T) {
+	cfg := defaultCfg()
+	cfg.Failover.NeverFail.Enabled = false
+	s := New(cfg)
+	s.Register(makeAcc("a1", "chatgpt", "t1"))
+	hooked := make(chan string, 1)
+	s.SetBannedHook(func(accountID string) {
+		hooked <- accountID
+	})
+
+	s.MarkFailure("a1", domain.ErrAuthFailed)
+
+	acc, ok := s.AccountByID("a1")
+	if !ok {
+		t.Fatal("auth failed account should remain registered")
+	}
+	if acc.State == domain.StateBanned {
+		t.Fatal("auth failed account must not be marked banned")
+	}
+	select {
+	case got := <-hooked:
+		t.Fatalf("auth failed must not trigger banned hook, got %s", got)
+	default:
+	}
+	if ids := s.BannedAccountIDs(); len(ids) != 0 {
+		t.Fatalf("auth failed account should not be in banned list: %#v", ids)
+	}
+}
+
 func TestBannedAccountExcludedFromModelViews(t *testing.T) {
 	s := New(defaultCfg())
 	banned := makeAcc("banned", "chatgpt", "t1")

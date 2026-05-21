@@ -87,7 +87,11 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 				log.Printf("[chatgpt-session] account=%s skip stale cached refresh token; stored token rotated", accountID)
 				r.cache.Delete(accountID)
 			} else {
-				updated, err := r.refresh(ctx, info)
+				updated, err := r.refreshAny(ctx, info, refreshTokenCandidates(
+					chatGPTRefreshTokenFromSession(secret),
+					strings.TrimSpace(refreshToken),
+					info.RefreshToken,
+				)...)
 				if err == nil {
 					r.cache.Store(accountID, updated)
 					return updated, nil
@@ -107,7 +111,10 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 	info, err := r.fetchFresh(ctx, secret, ua)
 	if err != nil {
 		if refreshToken != "" && r.refreshFn != nil {
-			updated, refreshErr := r.refresh(ctx, sessionInfo{RefreshToken: refreshToken})
+			updated, refreshErr := r.refreshAny(ctx, sessionInfo{}, refreshTokenCandidates(
+				chatGPTRefreshTokenFromSession(secret),
+				strings.TrimSpace(refreshToken),
+			)...)
 			if refreshErr == nil {
 				r.cache.Store(accountID, updated)
 				return updated, nil
@@ -130,7 +137,11 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 			}
 			return sessionInfo{}, errors.New("chatgpt: access token expired and no refresh_token available")
 		}
-		updated, err := r.refresh(ctx, info)
+		updated, err := r.refreshAny(ctx, info, refreshTokenCandidates(
+			chatGPTRefreshTokenFromSession(secret),
+			strings.TrimSpace(refreshToken),
+			info.RefreshToken,
+		)...)
 		if err != nil {
 			if time.Until(info.Expires) > 0 {
 				r.cache.Store(accountID, info)
@@ -150,32 +161,74 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 // the Codex backend returns token_invalidated before the JWT exp claim.
 func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, refreshToken string) (sessionInfo, error) {
 	info, _ := parseStoredSessionSecret(secret, refreshToken)
-	currentRefreshToken := chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(secret), strings.TrimSpace(refreshToken))
-	if currentRefreshToken == "" {
-		currentRefreshToken = strings.TrimSpace(info.RefreshToken)
-	}
-	if currentRefreshToken == "" {
-		if cached, ok := r.cache.Load(accountID); ok {
-			if cachedInfo, ok := cached.(sessionInfo); ok {
-				currentRefreshToken = strings.TrimSpace(cachedInfo.RefreshToken)
-				if info.AccessToken == "" {
-					info = cachedInfo
-				}
+	var cachedInfo sessionInfo
+	if cached, ok := r.cache.Load(accountID); ok {
+		if ci, ok := cached.(sessionInfo); ok {
+			cachedInfo = ci
+			if info.AccessToken == "" {
+				info = cachedInfo
 			}
 		}
 	}
-	if currentRefreshToken == "" {
+	candidates := refreshTokenCandidates(
+		chatGPTRefreshTokenFromSession(secret),
+		strings.TrimSpace(refreshToken),
+		info.RefreshToken,
+		cachedInfo.RefreshToken,
+	)
+	if len(candidates) == 0 {
 		r.cache.Delete(accountID)
 		return sessionInfo{}, errors.New("chatgpt: token invalidated and no refresh_token available")
 	}
-	info.RefreshToken = currentRefreshToken
-	updated, err := r.refresh(ctx, info)
+	updated, err := r.refreshAny(ctx, info, candidates...)
 	if err != nil {
 		r.cache.Delete(accountID)
 		return sessionInfo{}, err
 	}
 	r.cache.Store(accountID, updated)
 	return updated, nil
+}
+
+func (r *sessionResolver) refreshAny(ctx context.Context, info sessionInfo, candidates ...string) (sessionInfo, error) {
+	candidates = refreshTokenCandidates(append([]string{info.RefreshToken}, candidates...)...)
+	if len(candidates) == 0 {
+		return sessionInfo{}, errors.New("empty refresh_token")
+	}
+	var lastErr error
+	for i, token := range candidates {
+		next := info
+		next.RefreshToken = token
+		updated, err := r.refresh(ctx, next)
+		if err == nil {
+			return updated, nil
+		}
+		lastErr = err
+		if i+1 >= len(candidates) || !isChatGPTRefreshReuseError(err) {
+			break
+		}
+		log.Printf("[chatgpt-session] refresh token rejected as reused; trying alternate stored token")
+	}
+	if lastErr == nil {
+		lastErr = errors.New("empty refresh_token")
+	}
+	return sessionInfo{}, lastErr
+}
+
+func refreshTokenCandidates(values ...string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func parseStoredSessionSecret(secret, fallbackRefreshToken string) (sessionInfo, bool) {
