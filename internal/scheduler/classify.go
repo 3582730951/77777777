@@ -17,6 +17,9 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 		if strings.Contains(sLower, "account banned") || isBanSignal(sLower) {
 			return domain.ErrBanned
 		}
+		if isAuthFailureSignal(sLower) {
+			return domain.ErrAuthFailed
+		}
 		if isCapacitySignal(sLower) {
 			return domain.ErrRateLimited
 		}
@@ -43,6 +46,9 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 	}
 	if isCapacitySignal(bodyLower) {
 		return domain.ErrRateLimited
+	}
+	if isAuthFailureSignal(bodyLower) {
+		return domain.ErrAuthFailed
 	}
 
 	switch httpStatus {
@@ -71,6 +77,16 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 		return domain.ErrUpstreamError
 	}
 	return domain.ErrUnknown
+}
+
+func isAuthFailureSignal(s string) bool {
+	return strings.Contains(s, "token_invalidated") ||
+		strings.Contains(s, "authentication token has been invalidated") ||
+		strings.Contains(s, "access token has been invalidated") ||
+		strings.Contains(s, "invalid_grant") ||
+		strings.Contains(s, "refresh_token_reused") ||
+		strings.Contains(s, "refresh token has already been used") ||
+		strings.Contains(s, "already been used to generate")
 }
 
 func isUsageLimitSignal(s string) bool {

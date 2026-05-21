@@ -145,6 +145,39 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 	return info, nil
 }
 
+// ForceRefresh bypasses any still-valid cached access token and refreshes with
+// the newest refresh token currently stored for the account. This is used after
+// the Codex backend returns token_invalidated before the JWT exp claim.
+func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, refreshToken string) (sessionInfo, error) {
+	info, _ := parseStoredSessionSecret(secret, refreshToken)
+	currentRefreshToken := chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(secret), strings.TrimSpace(refreshToken))
+	if currentRefreshToken == "" {
+		currentRefreshToken = strings.TrimSpace(info.RefreshToken)
+	}
+	if currentRefreshToken == "" {
+		if cached, ok := r.cache.Load(accountID); ok {
+			if cachedInfo, ok := cached.(sessionInfo); ok {
+				currentRefreshToken = strings.TrimSpace(cachedInfo.RefreshToken)
+				if info.AccessToken == "" {
+					info = cachedInfo
+				}
+			}
+		}
+	}
+	if currentRefreshToken == "" {
+		r.cache.Delete(accountID)
+		return sessionInfo{}, errors.New("chatgpt: token invalidated and no refresh_token available")
+	}
+	info.RefreshToken = currentRefreshToken
+	updated, err := r.refresh(ctx, info)
+	if err != nil {
+		r.cache.Delete(accountID)
+		return sessionInfo{}, err
+	}
+	r.cache.Store(accountID, updated)
+	return updated, nil
+}
+
 func parseStoredSessionSecret(secret, fallbackRefreshToken string) (sessionInfo, bool) {
 	trimmed := strings.TrimSpace(secret)
 	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {

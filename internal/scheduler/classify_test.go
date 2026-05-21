@@ -36,6 +36,17 @@ func TestClassifyUsageLimitTryAgainSignal(t *testing.T) {
 	}
 }
 
+func TestClassifyTokenInvalidatedAsAuthFailed(t *testing.T) {
+	body := `{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated"}}`
+	if got := ClassifyError(401, body, nil); got != domain.ErrAuthFailed {
+		t.Fatalf("token invalidated classified as %s", got)
+	}
+	err := errors.New("refresh after token_invalidated: invalid_grant")
+	if got := ClassifyError(0, "", err); got != domain.ErrAuthFailed {
+		t.Fatalf("refresh invalid_grant classified as %s", got)
+	}
+}
+
 func TestClassifyCapacitySignalOverridesLegacyQuotaPrefix(t *testing.T) {
 	err := errors.New("upstream quota: Selected model is at capacity. Please try a different model.")
 	if got := ClassifyError(0, "", err); got != domain.ErrRateLimited {

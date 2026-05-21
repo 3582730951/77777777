@@ -96,11 +96,26 @@ func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec 
 	if acc == nil {
 		return sessionInfo{}, errors.New("nil account")
 	}
+	return p.runSessionCall(ctx, acc.ID, func() (sessionInfo, error) {
+		return p.resolveSessionOnce(ctx, acc, sec)
+	})
+}
+
+func (p *Provider) forceRefreshSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	if acc == nil {
+		return sessionInfo{}, errors.New("nil account")
+	}
+	return p.runSessionCall(ctx, acc.ID+"\x00force-refresh", func() (sessionInfo, error) {
+		return p.forceRefreshSessionOnce(ctx, acc, sec)
+	})
+}
+
+func (p *Provider) runSessionCall(ctx context.Context, key string, fn func() (sessionInfo, error)) (sessionInfo, error) {
 	p.mu.Lock()
 	if p.resolves == nil {
 		p.resolves = make(map[string]*sessionResolveCall)
 	}
-	if call, ok := p.resolves[acc.ID]; ok {
+	if call, ok := p.resolves[key]; ok {
 		done := call.done
 		p.mu.Unlock()
 		select {
@@ -111,13 +126,13 @@ func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec 
 		}
 	}
 	call := &sessionResolveCall{done: make(chan struct{})}
-	p.resolves[acc.ID] = call
+	p.resolves[key] = call
 	p.mu.Unlock()
 
-	call.info, call.err = p.resolveSessionOnce(ctx, acc, sec)
+	call.info, call.err = fn()
 
 	p.mu.Lock()
-	delete(p.resolves, acc.ID)
+	delete(p.resolves, key)
 	close(call.done)
 	p.mu.Unlock()
 
@@ -131,6 +146,25 @@ func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, 
 		}
 	}
 	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA)
+	if err != nil {
+		if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
+			return recovered, nil
+		}
+		return sessionInfo{}, err
+	}
+	if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
+		return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
+	}
+	return info, nil
+}
+
+func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	if p.store != nil {
+		if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
+			sec = fresh
+		}
+	}
+	info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
 	if err != nil {
 		if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
 			return recovered, nil
@@ -173,6 +207,27 @@ func isChatGPTRefreshReuseError(err error) bool {
 		strings.Contains(s, "already been used to generate") ||
 		strings.Contains(s, "refresh_token_reused") ||
 		strings.Contains(s, "invalid_grant")
+}
+
+func isChatGPTTokenInvalidatedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isChatGPTTokenInvalidatedText(err.Error())
+}
+
+func isChatGPTTokenInvalidatedResponse(status int, body []byte) bool {
+	if status != http.StatusUnauthorized && status != http.StatusForbidden {
+		return false
+	}
+	return isChatGPTTokenInvalidatedText(string(body))
+}
+
+func isChatGPTTokenInvalidatedText(s string) bool {
+	low := strings.ToLower(s)
+	return strings.Contains(low, "token_invalidated") ||
+		strings.Contains(low, "authentication token has been invalidated") ||
+		strings.Contains(low, "access token has been invalidated")
 }
 
 func chatGPTRefreshTokenChanged(oldSec, newSec store.AccountSecret) bool {
@@ -328,6 +383,13 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 		return err
 	}
 	_, err = p.fetchWhamUsage(ctx, acc, info.AccessToken, info.AccountID)
+	if isChatGPTTokenInvalidatedError(err) {
+		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+		if refreshErr != nil {
+			return fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+		}
+		_, err = p.fetchWhamUsage(ctx, acc, refreshed.AccessToken, refreshed.AccountID)
+	}
 	return err
 }
 
@@ -382,6 +444,15 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 		acc.ID, len(info.AccessToken), info.AccountID, info.PlanType, info.Expires)
 
 	quotaState, err := p.fetchConversationLimit(ctx, acc, info.AccessToken, info.AccountID)
+	if isChatGPTTokenInvalidatedError(err) {
+		log.Printf("[chatgpt-discover] account=%s token invalidated, refreshing session and retrying quota fetch", acc.ID)
+		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+		if refreshErr != nil {
+			return nil, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+		}
+		info = refreshed
+		quotaState, err = p.fetchConversationLimit(ctx, acc, info.AccessToken, info.AccountID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +499,9 @@ func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Accou
 			state.ShortWindow.Used, state.ShortWindow.Limit,
 			state.LongWindow.Used, state.LongWindow.Limit)
 		return state, nil
+	}
+	if isChatGPTTokenInvalidatedError(err) {
+		return nil, err
 	}
 	if isBannedError(err) {
 		return nil, err
@@ -852,6 +926,39 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 		return nil, err
 	}
 
+	resp, err := p.doCodexResponses(ctx, acc, info, body)
+	if err != nil {
+		return nil, fmt.Errorf("post codex/responses: %w", err)
+	}
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if isChatGPTTokenInvalidatedResponse(resp.StatusCode, b) {
+			refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+			if refreshErr != nil {
+				return nil, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+			}
+			resp, err = p.doCodexResponses(ctx, acc, refreshed, body)
+			if err != nil {
+				return nil, fmt.Errorf("post codex/responses after refresh: %w", err)
+			}
+			if resp.StatusCode == 200 {
+				out := make(chan ir.Event, 32)
+				go streamResponsesSSE(ctx, resp.Body, out)
+				return out, nil
+			}
+			b, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+		}
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
+	}
+
+	out := make(chan ir.Event, 32)
+	go streamResponsesSSE(ctx, resp.Body, out)
+	return out, nil
+}
+
+func (p *Provider) doCodexResponses(ctx context.Context, acc *domain.Account, info sessionInfo, body []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		"https://chatgpt.com/backend-api/codex/responses",
 		bytes.NewReader(body))
@@ -870,20 +977,7 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	httpReq.Header["originator"] = []string{"codex_cli_rs"}
 	httpReq.Header["ChatGPT-Account-ID"] = []string{info.AccountID}
 	setCodexSessionHeaders(httpReq.Header, body)
-
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("post codex/responses: %w", err)
-	}
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
-	}
-
-	out := make(chan ir.Event, 32)
-	go streamResponsesSSE(ctx, resp.Body, out)
-	return out, nil
+	return p.httpClient.Do(httpReq)
 }
 
 // InvokeRaw sends a raw Responses API JSON body to the upstream Codex endpoint
@@ -915,24 +1009,26 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	}
 	body = normalizeCodexRawResponsesBody(body)
 
-	httpReq, err := http.NewRequestWithContext(rctx, "POST",
-		"https://chatgpt.com/backend-api/codex/responses",
-		bytes.NewReader(body))
-	if err != nil {
-		return nil, 0, err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+info.AccessToken)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("User-Agent", ua)
-	httpReq.Header["OpenAI-Beta"] = []string{"responses=experimental"}
-	httpReq.Header["originator"] = []string{"codex_cli_rs"}
-	httpReq.Header["ChatGPT-Account-ID"] = []string{info.AccountID}
-	setCodexSessionHeaders(httpReq.Header, body)
-
-	resp, err := p.httpClient.Do(httpReq)
+	acc.UA = ua
+	resp, err := p.doCodexResponses(rctx, acc, info, body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("post codex/responses: %w", err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+		resp.Body.Close()
+		if isChatGPTTokenInvalidatedResponse(resp.StatusCode, respBody) {
+			refreshed, refreshErr := p.forceRefreshSession(rctx, acc, sec)
+			if refreshErr != nil {
+				return nil, 0, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+			}
+			resp, err = p.doCodexResponses(rctx, acc, refreshed, body)
+			if err != nil {
+				return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
+			}
+			return resp.Body, resp.StatusCode, nil
+		}
+		return io.NopCloser(bytes.NewReader(respBody)), resp.StatusCode, nil
 	}
 	return resp.Body, resp.StatusCode, nil
 }

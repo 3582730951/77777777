@@ -235,6 +235,93 @@ func TestDiscoverPrefersLivePlanTierAndPersistsIt(t *testing.T) {
 	}
 }
 
+func TestDiscoverRefreshesTokenInvalidatedWhamUsage(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	p.SetStore(st)
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-discover",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var calls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		calls++
+		auths = append(auths, r.Header.Get("Authorization"))
+		if calls == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","code":"token_invalidated"}}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("retry authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{
+			"rate_limit": {
+				"primary_window": {"used_percent": 3, "limit_window_seconds": 18000, "reset_at": 1777722657},
+				"secondary_window": {"used_percent": 4, "limit_window_seconds": 604800, "reset_at": 1778123456}
+			},
+			"plan_type": "plus"
+		}`))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	state, err := p.Discover(ctx, acc)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer "+oldAccess || auths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", auths)
+	}
+	if state.ShortWindow.Used != 3 || state.LongWindow.Used != 4 || state.PlanTier != "plus" {
+		t.Fatalf("unexpected quota state: %+v", state)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
 func TestInvokeRawUsesPromptCacheKeyForCodexSessionHeaders(t *testing.T) {
 	p, cleanup := newRawInvokeTestProvider(t)
 	defer cleanup()
@@ -326,6 +413,184 @@ func TestInvokeRawNormalizesFastServiceTierAlias(t *testing.T) {
 	}
 	if got := gjson.GetBytes(gotBody, "service_tier").String(); got != "priority" {
 		t.Fatalf("service_tier = %q, want priority; body=%s", got, gotBody)
+	}
+}
+
+func TestInvokeRawRefreshesAndRetriesTokenInvalidated(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-raw",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	secret := store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}
+	if err := st.UpsertAccount(ctx, acc, secret); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var calls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		auths = append(auths, r.Header.Get("Authorization"))
+		if calls == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated","param":null}}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("retry authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	body, _ := io.ReadAll(rc)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer "+oldAccess || auths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", auths)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccessToken != newAccess {
+		t.Fatal("stored access token was not refreshed")
+	}
+}
+
+func TestInvokeRealRefreshesAndRetriesTokenInvalidated(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-ir",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated","param":null}}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("retry authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	ch, err := p.Invoke(ctx, acc, &ir.Request{
+		Model: "gpt-5.5",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello"}},
+		}},
+		Stream: true,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		switch ev.Kind {
+		case ir.EvTextDelta:
+			text += ev.Text
+		case ir.EvError:
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+	}
+	if text != "ok" {
+		t.Fatalf("stream text = %q, want ok", text)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
 }
 
