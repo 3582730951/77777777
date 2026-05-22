@@ -19,6 +19,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -166,6 +168,11 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 	}
 	info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
 	if err != nil {
+		if isChatGPTRefreshReuseError(err) {
+			if recovered, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
+				return recovered, nil
+			}
+		}
 		if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
 			return recovered, nil
 		}
@@ -175,6 +182,27 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 		return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
 	}
 	return info, nil
+}
+
+func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *domain.Account, sec store.AccountSecret, refreshErr error) (sessionInfo, bool) {
+	cookie := chatGPTNextAuthSessionCookie(sec)
+	if cookie == "" {
+		return sessionInfo{}, false
+	}
+	info, err := p.resolver.FetchFresh(ctx, acc.ID, cookie, "", acc.UA)
+	if err != nil {
+		log.Printf("[chatgpt-session] account=%s cookie recovery after refresh reuse failed: refresh_err=%v cookie_err=%v", acc.ID, refreshErr, err)
+		return sessionInfo{}, false
+	}
+	clean := sec
+	if isChatGPTRefreshReuseError(refreshErr) {
+		clean.RefreshToken = ""
+	}
+	if err := p.persistResolvedSession(ctx, acc, clean, info); err != nil {
+		log.Printf("[chatgpt-session] account=%s persist cookie-recovered session: %v", acc.ID, err)
+	}
+	log.Printf("[chatgpt-session] account=%s recovered session via stored next-auth cookie after refresh reuse", acc.ID)
+	return info, true
 }
 
 func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.Account, used store.AccountSecret, refreshErr error) (sessionInfo, bool) {
@@ -275,6 +303,117 @@ func chatGPTPreferredRefreshToken(sessionToken, topLevelToken string) string {
 		return sessionToken
 	}
 	return topLevelToken
+}
+
+func chatGPTNextAuthSessionCookie(sec store.AccountSecret) string {
+	if st := strings.TrimSpace(sec.SessionToken); st != "" && !strings.HasPrefix(st, "{") {
+		return st
+	}
+	return chatGPTNextAuthCookieFromBytes(sec.Cookies)
+}
+
+type chatGPTCookiePair struct {
+	Name  string
+	Value string
+}
+
+func chatGPTNextAuthCookieFromBytes(raw []byte) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var obj map[string]any
+		if json.Unmarshal([]byte(trimmed), &obj) == nil {
+			pairs := make([]chatGPTCookiePair, 0, len(obj))
+			for k, v := range obj {
+				if s, ok := v.(string); ok {
+					pairs = append(pairs, chatGPTCookiePair{Name: k, Value: s})
+				}
+			}
+			if cookie := chatGPTNextAuthCookieFromPairs(pairs); cookie != "" {
+				return cookie
+			}
+		}
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		var arr []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if json.Unmarshal([]byte(trimmed), &arr) == nil {
+			pairs := make([]chatGPTCookiePair, 0, len(arr))
+			for _, c := range arr {
+				pairs = append(pairs, chatGPTCookiePair{Name: c.Name, Value: c.Value})
+			}
+			if cookie := chatGPTNextAuthCookieFromPairs(pairs); cookie != "" {
+				return cookie
+			}
+		}
+	}
+
+	var pairs []chatGPTCookiePair
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.Contains(line, "\t") {
+			fs := strings.Split(line, "\t")
+			if len(fs) >= 7 {
+				pairs = append(pairs, chatGPTCookiePair{Name: fs[5], Value: fs[6]})
+				continue
+			}
+		}
+		for _, part := range strings.Split(line, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			name, value, ok := strings.Cut(part, "=")
+			if ok {
+				pairs = append(pairs, chatGPTCookiePair{Name: strings.TrimSpace(name), Value: strings.TrimSpace(value)})
+			}
+		}
+	}
+	return chatGPTNextAuthCookieFromPairs(pairs)
+}
+
+func chatGPTNextAuthCookieFromPairs(pairs []chatGPTCookiePair) string {
+	baseNames := []string{"__Secure-next-auth.session-token", "next-auth.session-token"}
+	for _, base := range baseNames {
+		for _, pair := range pairs {
+			if pair.Name == base && strings.TrimSpace(pair.Value) != "" {
+				return strings.TrimSpace(pair.Value)
+			}
+		}
+		chunks := make(map[int]string)
+		for _, pair := range pairs {
+			if !strings.HasPrefix(pair.Name, base+".") {
+				continue
+			}
+			idx, err := strconv.Atoi(strings.TrimPrefix(pair.Name, base+"."))
+			if err != nil || strings.TrimSpace(pair.Value) == "" {
+				continue
+			}
+			chunks[idx] = strings.TrimSpace(pair.Value)
+		}
+		if len(chunks) > 0 {
+			indexes := make([]int, 0, len(chunks))
+			for idx := range chunks {
+				indexes = append(indexes, idx)
+			}
+			sort.Ints(indexes)
+			var b strings.Builder
+			for _, idx := range indexes {
+				b.WriteString(chunks[idx])
+			}
+			if b.Len() > 0 {
+				return b.String()
+			}
+		}
+	}
+	return ""
 }
 
 func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret, info sessionInfo) error {

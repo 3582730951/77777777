@@ -100,7 +100,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 		}
 	}
 	if strings.TrimSpace(secret) == "" && refreshToken != "" && r.refreshFn != nil {
-		updated, err := r.refresh(ctx, sessionInfo{RefreshToken: refreshToken})
+		updated, err := r.refreshAny(ctx, sessionInfo{}, refreshToken)
 		if err != nil {
 			return sessionInfo{}, fmt.Errorf("refresh token: %w", err)
 		}
@@ -187,6 +187,22 @@ func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, r
 	}
 	r.cache.Store(accountID, updated)
 	return updated, nil
+}
+
+// FetchFresh bypasses the resolver cache and reads a fresh /api/auth/session
+// document from a raw next-auth cookie. This is the recovery path when the
+// Codex access token is invalidated and every stored OAuth refresh token has
+// already been consumed by another process.
+func (r *sessionResolver) FetchFresh(ctx context.Context, accountID, secret, refreshToken, ua string) (sessionInfo, error) {
+	info, err := r.fetchFresh(ctx, secret, ua)
+	if err != nil {
+		return sessionInfo{}, err
+	}
+	if info.RefreshToken == "" {
+		info.RefreshToken = strings.TrimSpace(refreshToken)
+	}
+	r.cache.Store(accountID, info)
+	return info, nil
 }
 
 func (r *sessionResolver) refreshAny(ctx context.Context, info sessionInfo, candidates ...string) (sessionInfo, error) {

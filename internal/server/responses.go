@@ -264,6 +264,16 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 	if committed {
 		return
 	}
+	if scheduler.ClassifyError(lastStatus, string(lastBody), lastErr) == domain.ErrAuthFailed {
+		msg := "upstream authentication failed"
+		if lastErr != nil {
+			msg = lastErr.Error()
+		} else if len(lastBody) > 0 {
+			msg = string(lastBody[:minInt(len(lastBody), 300)])
+		}
+		writeJSON(w, http.StatusUnauthorized, errResp("auth_failed", msg))
+		return
+	}
 	if lastStatus != 0 && len(lastBody) > 0 {
 		w.WriteHeader(lastStatus)
 		_, _ = w.Write(lastBody)
@@ -1227,7 +1237,11 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 		if lastAccountID != "" {
 			g.recordPassthrough(res, model, lastAccountID, wsStart, "error")
 		}
-		wsError(conn, "upstream_error", lastErr.Error())
+		if scheduler.ClassifyError(0, "", lastErr) == domain.ErrAuthFailed {
+			wsError(conn, "auth_failed", lastErr.Error())
+		} else {
+			wsError(conn, "upstream_error", lastErr.Error())
+		}
 		releaseMsg()
 	}
 }

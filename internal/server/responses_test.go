@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -791,6 +792,58 @@ func TestResponsesPassthroughReplaysThreadTranscriptWhenPinnedAccountDraining(t 
 	}
 }
 
+func TestResponsesPassthroughAuthFailureReturns401Not502AndDoesNotBan(t *testing.T) {
+	cfg := &config.Root{}
+	cfg.Scheduler.Retry.MaxAttempts = 1
+	cfg.Scheduler.Failover.HeadBuffer.MaxBytes = 4096
+	cfg.Scheduler.Failover.HeadBuffer.MaxEvents = 2
+	sched := scheduler.New(cfg.Scheduler)
+	sched.Register(&domain.Account{
+		ID:       "acc-1",
+		TenantID: "default",
+		Provider: "raw",
+		State:    domain.StateActive,
+	})
+	raw := &captureRawProvider{err: errors.New(`refresh after token_invalidated: refresh 401: {"error":{"message":"Your refresh token has already been used to generate a new access token. Please try signing in again.","code":"refresh_token_reused"}}`)}
+	reg := provider.NewRegistry()
+	reg.Register(raw)
+	gw := NewGateway(Deps{
+		Cfg:       cfg,
+		Sched:     sched,
+		Providers: reg,
+	})
+
+	group := &domain.Group{
+		ID:         "g",
+		TenantID:   "default",
+		Provider:   "raw",
+		AccountIDs: []string{"acc-1"},
+	}
+	body := `{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), ctxResolved, auth.Resolved{Group: group, APIKey: "sk-test"}))
+	rec := httptest.NewRecorder()
+
+	gw.handleResponses(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "error.type").String(); got != "auth_failed" {
+		t.Fatalf("error type = %q, want auth_failed body=%s", got, rec.Body.String())
+	}
+	acc, ok := sched.AccountByID("acc-1")
+	if !ok {
+		t.Fatal("auth failed account should remain in scheduler")
+	}
+	if acc.State == domain.StateBanned {
+		t.Fatal("auth failed account should not be marked banned")
+	}
+	if ids := sched.BannedAccountIDs(); len(ids) != 0 {
+		t.Fatalf("auth failed account should not be in banned list: %#v", ids)
+	}
+}
+
 func TestResponsesThreadKeyRejectsUnsafePromptCacheKey(t *testing.T) {
 	group := &domain.Group{ID: "g", TenantID: "default", Provider: "raw"}
 	if got := responsesThreadKey([]byte(`{"prompt_cache_key":"bad\nkey"}`), group); got != "" {
@@ -811,6 +864,7 @@ type captureRawProvider struct {
 	body        []byte
 	calls       []captureRawCall
 	responseIDs []string
+	err         error
 }
 
 func (p *captureRawProvider) Name() string {
@@ -835,6 +889,9 @@ func (p *captureRawProvider) Discover(context.Context, *domain.Account) (*domain
 func (p *captureRawProvider) InvokeRaw(_ interface{}, accountID string, body []byte) (io.ReadCloser, int, error) {
 	p.body = append([]byte(nil), body...)
 	p.calls = append(p.calls, captureRawCall{accountID: accountID, body: append([]byte(nil), body...)})
+	if p.err != nil {
+		return nil, 0, p.err
+	}
 	responseID := "resp-1"
 	if len(p.responseIDs) > 0 {
 		responseID = p.responseIDs[0]

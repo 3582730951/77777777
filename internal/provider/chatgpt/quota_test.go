@@ -3,6 +3,7 @@ package chatgpt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -504,6 +505,112 @@ func TestInvokeRawRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 	if parsed.AccessToken != newAccess {
 		t.Fatal("stored access token was not refreshed")
+	}
+}
+
+func TestInvokeRawRecoversTokenInvalidatedViaStoredCookieWhenRefreshTokenReused(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-cookie",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-used",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-used",
+		Cookies:      []byte(`__Secure-next-auth.session-token=fresh-cookie`),
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	var refreshCalls int
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		refreshCalls++
+		if refreshToken != "rt-used" {
+			t.Fatalf("refresh token = %q, want rt-used", refreshToken)
+		}
+		return "", "", "", 0, errors.New("refresh 401: refresh_token_reused")
+	})
+
+	var codexCalls, sessionCalls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/session":
+			sessionCalls++
+			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=fresh-cookie" {
+				t.Fatalf("session cookie = %q, want next-auth cookie", got)
+			}
+			_, _ = w.Write([]byte(`{"accessToken":"` + newAccess + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"user@example.com"}}`))
+		case "/backend-api/codex/responses":
+			codexCalls++
+			auths = append(auths, r.Header.Get("Authorization"))
+			if codexCalls == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated","param":null}}`))
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer "+newAccess {
+				t.Fatalf("retry authorization = %q, want cookie-recovered token", r.Header.Get("Authorization"))
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		body, _ := io.ReadAll(rc)
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if refreshCalls != 1 || sessionCalls != 1 || codexCalls != 2 {
+		t.Fatalf("calls refresh=%d session=%d codex=%d, want 1/1/2", refreshCalls, sessionCalls, codexCalls)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer "+oldAccess || auths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", auths)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccessToken != newAccess {
+		t.Fatalf("stored access token = %q, want cookie-recovered token", parsed.AccessToken)
+	}
+	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
+		t.Fatalf("reused refresh token should be cleared from persisted credentials: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
 	}
 }
 
