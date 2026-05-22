@@ -240,7 +240,8 @@ func (s *Server) handleOAuthStartPost(w http.ResponseWriter, r *http.Request) {
 		tenantID = "default"
 	}
 	note := r.FormValue("note")
-	p, authURL, err := s.oauth.StartWithRelayBase(provider, tenantID, note, adminPublicBaseURL(r))
+	workspaceID := strings.TrimSpace(r.FormValue("workspace_id"))
+	p, authURL, err := s.oauth.StartWithOptions(provider, tenantID, note, adminPublicBaseURL(r), workspaceID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

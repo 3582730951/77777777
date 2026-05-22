@@ -134,6 +134,13 @@
                     <input id="oauth-note" name="note" placeholder="例如：工作账号 A"/>
                   </div>
                 </div>
+                <div class="form-row">
+                  <div class="field">
+                    <label for="oauth-workspace-id">Codex Workspace ID（可选）</label>
+                    <input id="oauth-workspace-id" name="workspace_id" placeholder="例如：org_abc；留空则由 OpenAI 自动选择"/>
+                    <div class="tiny muted">仅 Codex OAuth 使用，会生成 allowed_workspace_id 参数。</div>
+                  </div>
+                </div>
               </div>
 
               <button class="btn primary lg w-full" type="submit">

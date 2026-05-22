@@ -40,8 +40,18 @@ type ProviderConfig struct {
 	ExtraParams  map[string]string
 }
 
-// Codex / OpenAI — exact constants from sub2api/internal/pkg/openai/oauth.go
-// and CLIProxyAPI/internal/auth/codex/openai_auth.go.
+const (
+	// CodexDefaultOriginator is the wire identity used by Codex CLI-compatible
+	// OAuth and upstream requests.
+	CodexDefaultOriginator = "codex_cli_rs"
+
+	// CodexLoginScope follows current Codex Manager login URLs. Refresh keeps
+	// sub2api's narrower "openid profile email" scope in RefreshCodex below.
+	CodexLoginScope = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+)
+
+// Codex / OpenAI — constants from sub2api plus current Codex Manager OAuth
+// authorize parameters.
 var CodexConfig = ProviderConfig{
 	ID:           ProviderCodex,
 	DisplayName:  "OpenAI Codex",
@@ -51,15 +61,14 @@ var CodexConfig = ProviderConfig{
 	RedirectURI:  "http://localhost:1455/auth/callback",
 	CallbackPort: 1455,
 	CallbackPath: "/auth/callback",
-	// Scope order follows CPA's Codex login URL; refresh keeps sub2api's
-	// "openid profile email" order in RefreshCodex below.
-	Scope: "openid email profile offline_access",
+	Scope:        CodexLoginScope,
 	ExtraParams: map[string]string{
 		// CPA's Codex OAuth flow sends prompt=login. Keeping it here prevents
 		// stale browser sessions from silently authorizing the wrong account.
 		"prompt":                     "login",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
+		"originator":                 CodexDefaultOriginator,
 	},
 }
 

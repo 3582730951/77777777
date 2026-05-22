@@ -70,21 +70,75 @@ func TestCodexStartBuildsCPACompatibleAuthorizeURL(t *testing.T) {
 		"client_id":                  CodexConfig.ClientID,
 		"response_type":              "code",
 		"redirect_uri":               CodexConfig.RedirectURI,
-		"scope":                      "openid email profile offline_access",
+		"scope":                      CodexLoginScope,
 		"code_challenge_method":      "S256",
 		"prompt":                     "login",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
+		"originator":                 CodexDefaultOriginator,
 	} {
 		if got := q.Get(key); got != want {
 			t.Fatalf("%s = %q, want %q; url=%s", key, got, want, authURL)
 		}
+	}
+	if got := q.Get("allowed_workspace_id"); got != "" {
+		t.Fatalf("allowed_workspace_id should be omitted by default, got %q; url=%s", got, authURL)
 	}
 	if q.Get("code_challenge") == "" {
 		t.Fatalf("missing code_challenge: %s", authURL)
 	}
 	if _, ok := RelayBaseFromState(ProviderCodex, q.Get("state")); !ok {
 		t.Fatalf("codex state should carry relay base as hex: %q", q.Get("state"))
+	}
+}
+
+func TestCodexStartWithOptionsAddsWorkspaceID(t *testing.T) {
+	m := New()
+	p, authURL, err := m.StartWithOptions(ProviderCodex, "default", "", "https://admin.example.com", " org_abc ")
+	if err != nil {
+		t.Fatalf("start codex oauth: %v", err)
+	}
+	if p.WorkspaceID != "org_abc" {
+		t.Fatalf("workspace id = %q", p.WorkspaceID)
+	}
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parse auth url: %v", err)
+	}
+	q := u.Query()
+	if got := q.Get("allowed_workspace_id"); got != "org_abc" {
+		t.Fatalf("allowed_workspace_id = %q, want org_abc; url=%s", got, authURL)
+	}
+	if got := q.Get("originator"); got != CodexDefaultOriginator {
+		t.Fatalf("originator = %q, want %q; url=%s", got, CodexDefaultOriginator, authURL)
+	}
+	if got := q.Get("scope"); got != CodexLoginScope {
+		t.Fatalf("scope = %q, want %q; url=%s", got, CodexLoginScope, authURL)
+	}
+}
+
+func TestCodexPendingAuthReloadPreservesWorkspaceID(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "oauth.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	creator := New()
+	creator.SetStore(st)
+	p, _, err := creator.StartWithOptions(ProviderCodex, "default", "note", "https://admin.example.com", "org_abc")
+	if err != nil {
+		t.Fatalf("start codex oauth: %v", err)
+	}
+
+	reloaded := New()
+	reloaded.SetStore(st)
+	got, ok := reloaded.FindByState(p.State)
+	if !ok {
+		t.Fatal("pending auth was not reloaded from store")
+	}
+	if got.WorkspaceID != "org_abc" {
+		t.Fatalf("workspace id was not restored: %+v", got)
 	}
 }
 

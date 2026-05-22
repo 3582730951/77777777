@@ -43,6 +43,7 @@ type PendingAuth struct {
 	OAuthClientID     string
 	OAuthClientSecret string
 	OAuthRegion       string
+	WorkspaceID       string
 	ExpiresAt2        time.Time
 	ErrorMessage      string
 }
@@ -51,6 +52,7 @@ type pendingAuthData struct {
 	OAuthClientID     string `json:"oauth_client_id,omitempty"`
 	OAuthClientSecret string `json:"oauth_client_secret,omitempty"`
 	OAuthRegion       string `json:"oauth_region,omitempty"`
+	WorkspaceID       string `json:"workspace_id,omitempty"`
 }
 
 // PendingStore is implemented by store.Store to persist pending OAuth flows.
@@ -87,9 +89,19 @@ func (m *Manager) Start(provider Provider, tenantID, note string) (*PendingAuth,
 // state so a localhost callback handled by another process can relay the code
 // back to the server that created the enrollment.
 func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBase string) (*PendingAuth, string, error) {
+	return m.StartWithOptions(provider, tenantID, note, relayBase, "")
+}
+
+// StartWithOptions creates a new OAuth flow with provider-specific optional
+// inputs. workspaceID is currently used by Codex as allowed_workspace_id.
+func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase, workspaceID string) (*PendingAuth, string, error) {
 	cfg := ConfigFor(provider)
 	if cfg == nil {
 		return nil, "", fmt.Errorf("unknown provider: %s", provider)
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	if provider != ProviderCodex {
+		workspaceID = ""
 	}
 
 	// PKCE: Codex uses hex-encoded verifier (sub2api style: 64 random bytes → 128 hex chars).
@@ -138,6 +150,7 @@ func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBas
 		CreatedAt:    time.Now(),
 		ExpiresAt:    time.Now().Add(30 * time.Minute),
 		Status:       "pending",
+		WorkspaceID:  workspaceID,
 	}
 
 	var authorize string
@@ -191,6 +204,9 @@ func (m *Manager) StartWithRelayBase(provider Provider, tenantID, note, relayBas
 		for k, v := range cfg.ExtraParams {
 			q.Set(k, v)
 		}
+		if provider == ProviderCodex && workspaceID != "" {
+			q.Set("allowed_workspace_id", workspaceID)
+		}
 		authorize = cfg.AuthorizeURL + "?" + q.Encode()
 	}
 
@@ -215,8 +231,9 @@ func (p *PendingAuth) dataJSON() string {
 		OAuthClientID:     p.OAuthClientID,
 		OAuthClientSecret: p.OAuthClientSecret,
 		OAuthRegion:       p.OAuthRegion,
+		WorkspaceID:       p.WorkspaceID,
 	}
-	if data.OAuthClientID == "" && data.OAuthClientSecret == "" && data.OAuthRegion == "" {
+	if data.OAuthClientID == "" && data.OAuthClientSecret == "" && data.OAuthRegion == "" && data.WorkspaceID == "" {
 		return ""
 	}
 	b, _ := json.Marshal(data)
@@ -234,6 +251,7 @@ func (p *PendingAuth) applyData(data string) {
 	p.OAuthClientID = d.OAuthClientID
 	p.OAuthClientSecret = d.OAuthClientSecret
 	p.OAuthRegion = d.OAuthRegion
+	p.WorkspaceID = d.WorkspaceID
 }
 
 var registerKiroOIDCClient = registerKiroOIDCClientDefault
