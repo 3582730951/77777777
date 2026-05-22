@@ -923,7 +923,7 @@ func (m *Manager) RefreshCodex(ctx context.Context, refreshToken string) (newAcc
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return "", "", "", 0, fmt.Errorf("refresh %d: %s", resp.StatusCode, string(body))
+		return "", "", "", 0, fmt.Errorf("refresh %d: %s", resp.StatusCode, formatCodexRefreshError(resp.StatusCode, body))
 	}
 	var tok struct {
 		AccessToken  string `json:"access_token"`
@@ -939,4 +939,85 @@ func (m *Manager) RefreshCodex(ctx context.Context, refreshToken string) (newAcc
 		tok.RefreshToken = refreshToken
 	}
 	return tok.AccessToken, tok.RefreshToken, tok.IDToken, tok.ExpiresIn, nil
+}
+
+func formatCodexRefreshError(status int, body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err == nil {
+		code := nestedString(raw, "code")
+		msg := nestedString(raw, "message")
+		if code == "" {
+			if errCode := stringValue(raw["error"]); isCodexRefreshErrorCode(errCode) {
+				code = errCode
+			}
+		}
+		if errObj, ok := raw["error"].(map[string]any); ok {
+			if code == "" {
+				code = nestedString(errObj, "code")
+			}
+			if msg == "" {
+				msg = nestedString(errObj, "message")
+			}
+			if code == "" {
+				code = stringValue(errObj["error"])
+			}
+			if msg == "" {
+				msg = stringValue(errObj["error_description"])
+			}
+		}
+		if msg == "" {
+			msg = stringValue(raw["error_description"])
+		}
+		if msg == "" {
+			msg = stringValue(raw["error"])
+		}
+		switch strings.ToLower(code) {
+		case "refresh_token_reused":
+			if msg == "" {
+				msg = "refresh_token has already been used; sign in again"
+			}
+			return strings.TrimSpace(code + ": " + msg)
+		case "refresh_token_expired", "refresh_token_invalidated", "invalid_grant":
+			if msg == "" {
+				return code
+			}
+			return strings.TrimSpace(code + ": " + msg)
+		}
+		if code != "" && msg != "" {
+			return strings.TrimSpace(code + ": " + msg)
+		}
+		if code != "" {
+			return code
+		}
+		if msg != "" {
+			return msg
+		}
+	}
+	if trimmed == "" {
+		return http.StatusText(status)
+	}
+	return trimmed
+}
+
+func isCodexRefreshErrorCode(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated", "invalid_grant":
+		return true
+	default:
+		return false
+	}
+}
+
+func nestedString(m map[string]any, key string) string {
+	return strings.TrimSpace(stringValue(m[key]))
+}
+
+func stringValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return ""
+	}
 }

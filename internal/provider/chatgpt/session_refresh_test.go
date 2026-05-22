@@ -289,6 +289,89 @@ func TestRefreshCredentialSerializesConcurrentRefresh(t *testing.T) {
 	}
 }
 
+func TestForceRefreshSharesCredentialRefreshLock(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	oldSession := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-old",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-old",
+	})
+	acc := &domain.Account{
+		ID:       "acc-force-refresh-lock",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: oldSession,
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	originalSecret, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get original secret: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	var calls atomic.Int32
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		calls.Add(1)
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		time.Sleep(50 * time.Millisecond)
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		errs <- p.RefreshCredential(ctx, acc)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err := p.forceRefreshSession(ctx, acc, originalSecret)
+		errs <- err
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("refresh path returned error: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
 func TestRefreshCredentialUsesStoredRotatedSessionOverStaleCache(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")

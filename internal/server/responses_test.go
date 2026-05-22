@@ -844,6 +844,51 @@ func TestResponsesPassthroughAuthFailureReturns401Not502AndDoesNotBan(t *testing
 	}
 }
 
+func TestResponsesPassthroughAuthFailureReturns401AfterRetryExhaustsAccounts(t *testing.T) {
+	cfg := &config.Root{}
+	cfg.Scheduler.Retry.MaxAttempts = 3
+	cfg.Scheduler.Failover.HeadBuffer.MaxBytes = 4096
+	cfg.Scheduler.Failover.HeadBuffer.MaxEvents = 2
+	sched := scheduler.New(cfg.Scheduler)
+	sched.Register(&domain.Account{
+		ID:       "acc-1",
+		TenantID: "default",
+		Provider: "raw",
+		State:    domain.StateActive,
+	})
+	raw := &captureRawProvider{err: errors.New(`refresh after token_invalidated: refresh 401: {"error":{"message":"Your refresh token has already been used to generate a new access token. Please try signing in again.","code":"refresh_token_reused"}}`)}
+	reg := provider.NewRegistry()
+	reg.Register(raw)
+	gw := NewGateway(Deps{
+		Cfg:       cfg,
+		Sched:     sched,
+		Providers: reg,
+	})
+
+	group := &domain.Group{
+		ID:         "g",
+		TenantID:   "default",
+		Provider:   "raw",
+		AccountIDs: []string{"acc-1"},
+	}
+	body := `{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), ctxResolved, auth.Resolved{Group: group, APIKey: "sk-test"}))
+	rec := httptest.NewRecorder()
+
+	gw.handleResponses(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "error.type").String(); got != "auth_failed" {
+		t.Fatalf("error type = %q, want auth_failed body=%s", got, rec.Body.String())
+	}
+	if got := len(raw.calls); got != 1 {
+		t.Fatalf("raw calls = %d, want 1", got)
+	}
+}
+
 func TestResponsesThreadKeyRejectsUnsafePromptCacheKey(t *testing.T) {
 	group := &domain.Group{ID: "g", TenantID: "default", Provider: "raw"}
 	if got := responsesThreadKey([]byte(`{"prompt_cache_key":"bad\nkey"}`), group); got != "" {

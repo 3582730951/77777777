@@ -88,6 +88,28 @@ func TestCodexStartBuildsCPACompatibleAuthorizeURL(t *testing.T) {
 	}
 }
 
+func TestFormatCodexRefreshErrorExtractsNestedReuseCode(t *testing.T) {
+	body := []byte(`{"error":{"message":"Your refresh token has already been used to generate a new access token. Please try signing in again.","type":"invalid_request_error","param":null,"code":"refresh_token_reused"}}`)
+	got := formatCodexRefreshError(401, body)
+	if !strings.Contains(got, "refresh_token_reused") {
+		t.Fatalf("formatted error missing code: %q", got)
+	}
+	if !strings.Contains(got, "already been used") {
+		t.Fatalf("formatted error missing message: %q", got)
+	}
+}
+
+func TestFormatCodexRefreshErrorExtractsTopLevelInvalidGrant(t *testing.T) {
+	body := []byte(`{"error":"invalid_grant","error_description":"refresh token expired"}`)
+	got := formatCodexRefreshError(400, body)
+	if !strings.Contains(got, "invalid_grant") {
+		t.Fatalf("formatted error missing code: %q", got)
+	}
+	if !strings.Contains(got, "refresh token expired") {
+		t.Fatalf("formatted error missing description: %q", got)
+	}
+}
+
 func TestKiroStartBuildsOIDCAuthorizeURL(t *testing.T) {
 	oldRegister := registerKiroOIDCClient
 	registerKiroOIDCClient = func(ctx context.Context, region, redirectURI string) (string, string, error) {

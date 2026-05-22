@@ -47,6 +47,11 @@ type Provider struct {
 	httpClient *http.Client
 	mu         sync.Mutex
 	resolves   map[string]*sessionResolveCall
+	// sessionLocks serializes every session mutation path for one account. This
+	// mirrors Codex-Manager/sub2api's "lock -> reread persisted token -> refresh"
+	// flow and prevents Resolve and ForceRefresh from consuming the same
+	// one-time refresh_token concurrently.
+	sessionLocks sync.Map // accountID -> *sync.Mutex
 }
 
 type sessionResolveCall struct {
@@ -141,47 +146,80 @@ func (p *Provider) runSessionCall(ctx context.Context, key string, fn func() (se
 	return call.info, call.err
 }
 
+func (p *Provider) sessionMutationLock(accountID string) *sync.Mutex {
+	actual, _ := p.sessionLocks.LoadOrStore(accountID, &sync.Mutex{})
+	if mu, ok := actual.(*sync.Mutex); ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	p.sessionLocks.Store(accountID, mu)
+	return mu
+}
+
+func (p *Provider) withSessionMutationLock(accountID string, fn func() (sessionInfo, error)) (sessionInfo, error) {
+	mu := p.sessionMutationLock(accountID)
+	mu.Lock()
+	defer mu.Unlock()
+	return fn()
+}
+
 func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
-	if p.store != nil {
-		if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
-			sec = fresh
+	return p.withSessionMutationLock(acc.ID, func() (sessionInfo, error) {
+		if p.store != nil {
+			if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
+				sec = fresh
+			}
 		}
-	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA)
-	if err != nil {
-		if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
-			return recovered, nil
+		info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA)
+		if err != nil {
+			if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
+				return recovered, nil
+			}
+			return sessionInfo{}, err
 		}
-		return sessionInfo{}, err
-	}
-	if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
-		return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
-	}
-	return info, nil
+		if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
+			return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
+		}
+		return info, nil
+	})
 }
 
 func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
-	if p.store != nil {
-		if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
-			sec = fresh
-		}
-	}
-	info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
-	if err != nil {
-		if isChatGPTRefreshReuseError(err) {
-			if recovered, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
-				return recovered, nil
+	used := sec
+	return p.withSessionMutationLock(acc.ID, func() (sessionInfo, error) {
+		if p.store != nil {
+			if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
+				sec = fresh
+				if chatGPTSessionMaterialChanged(used, fresh) {
+					info, resolveErr := p.resolver.Resolve(ctx, acc.ID, fresh.SessionToken, fresh.RefreshToken, acc.UA)
+					if resolveErr == nil {
+						if err := p.persistResolvedSession(ctx, acc, fresh, info); err != nil {
+							return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
+						}
+						log.Printf("[chatgpt-session] account=%s force refresh skipped; persisted session already rotated", acc.ID)
+						return info, nil
+					}
+					log.Printf("[chatgpt-session] account=%s rotated session resolve failed; forcing refresh: %v", acc.ID, resolveErr)
+				}
 			}
 		}
-		if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
-			return recovered, nil
+		info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
+		if err != nil {
+			if isChatGPTRefreshReuseError(err) {
+				if recovered, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
+					return recovered, nil
+				}
+			}
+			if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
+				return recovered, nil
+			}
+			return sessionInfo{}, err
 		}
-		return sessionInfo{}, err
-	}
-	if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
-		return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
-	}
-	return info, nil
+		if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
+			return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
+		}
+		return info, nil
+	})
 }
 
 func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *domain.Account, sec store.AccountSecret, refreshErr error) (sessionInfo, bool) {
@@ -274,8 +312,37 @@ func chatGPTRefreshTokenChanged(oldSec, newSec store.AccountSecret) bool {
 	return oldToken != "" && newToken != "" && oldToken != newToken
 }
 
+func chatGPTSessionMaterialChanged(oldSec, newSec store.AccountSecret) bool {
+	if chatGPTRefreshTokenChanged(oldSec, newSec) {
+		return true
+	}
+	oldAccess := chatGPTAccessTokenFromSession(oldSec.SessionToken)
+	newAccess := chatGPTAccessTokenFromSession(newSec.SessionToken)
+	return oldAccess != "" && newAccess != "" && oldAccess != newAccess
+}
+
 func chatGPTRefreshTokenFromSecret(sec store.AccountSecret) string {
 	return chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(sec.SessionToken), strings.TrimSpace(sec.RefreshToken))
+}
+
+func chatGPTAccessTokenFromSession(sessionToken string) string {
+	trimmed := strings.TrimSpace(sessionToken)
+	if info, err := parseSessionJSON([]byte(trimmed)); err == nil {
+		return strings.TrimSpace(info.AccessToken)
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var raw struct {
+			AccessToken string `json:"accessToken"`
+			SnakeAccess string `json:"access_token"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+			if raw.AccessToken != "" {
+				return strings.TrimSpace(raw.AccessToken)
+			}
+			return strings.TrimSpace(raw.SnakeAccess)
+		}
+	}
+	return ""
 }
 
 func chatGPTRefreshTokenFromSession(sessionToken string) string {

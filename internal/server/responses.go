@@ -139,12 +139,15 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 	}
 
 	var (
-		lastErr       error
-		lastStatus    int
-		lastBody      []byte
-		lastAccountID string
-		excluded      []string
-		committed     bool
+		lastErr        error
+		lastStatus     int
+		lastBody       []byte
+		lastAuthErr    error
+		lastAuthStatus int
+		lastAuthBody   []byte
+		lastAccountID  string
+		excluded       []string
+		committed      bool
 	)
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -190,6 +193,11 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 			class := scheduler.ClassifyError(0, "", err)
 			g.sched.MarkFailure(slot.Account.ID, class)
 			g.recordPassthrough(res, model, slot.Account.ID, start, "error")
+			if class == domain.ErrAuthFailed {
+				lastAuthErr = err
+				lastAuthStatus = 0
+				lastAuthBody = nil
+			}
 			excluded = append(excluded, slot.Account.ID)
 			lastErr = err
 			continue
@@ -202,6 +210,11 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 			class := scheduler.ClassifyError(status, string(respBody), nil)
 			g.sched.MarkFailure(slot.Account.ID, class)
 			g.recordPassthrough(res, model, slot.Account.ID, start, "error")
+			if class == domain.ErrAuthFailed {
+				lastAuthErr = fmt.Errorf("upstream %d: %s", status, string(respBody[:minInt(len(respBody), 300)]))
+				lastAuthStatus = status
+				lastAuthBody = append([]byte(nil), respBody...)
+			}
 			excluded = append(excluded, slot.Account.ID)
 			lastStatus = status
 			lastBody = respBody
@@ -264,13 +277,7 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 	if committed {
 		return
 	}
-	if scheduler.ClassifyError(lastStatus, string(lastBody), lastErr) == domain.ErrAuthFailed {
-		msg := "upstream authentication failed"
-		if lastErr != nil {
-			msg = lastErr.Error()
-		} else if len(lastBody) > 0 {
-			msg = string(lastBody[:minInt(len(lastBody), 300)])
-		}
+	if msg, ok := passthroughAuthFailureMessage(lastStatus, lastBody, lastErr, lastAuthStatus, lastAuthBody, lastAuthErr); ok {
 		writeJSON(w, http.StatusUnauthorized, errResp("auth_failed", msg))
 		return
 	}
@@ -286,6 +293,28 @@ func (g *Gateway) handleResponsesPassthrough(w http.ResponseWriter, r *http.Requ
 		g.recordPassthrough(res, model, lastAccountID, start, "error")
 	}
 	writeJSON(w, http.StatusBadGateway, errResp("upstream_error", lastErr.Error()))
+}
+
+func passthroughAuthFailureMessage(lastStatus int, lastBody []byte, lastErr error, authStatus int, authBody []byte, authErr error) (string, bool) {
+	if scheduler.ClassifyError(lastStatus, string(lastBody), lastErr) == domain.ErrAuthFailed {
+		return authFailureMessage(lastBody, lastErr), true
+	}
+	if authErr != nil || authStatus != 0 || len(authBody) > 0 {
+		if scheduler.ClassifyError(authStatus, string(authBody), authErr) == domain.ErrAuthFailed {
+			return authFailureMessage(authBody, authErr), true
+		}
+	}
+	return "", false
+}
+
+func authFailureMessage(body []byte, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if len(body) > 0 {
+		return string(body[:minInt(len(body), 300)])
+	}
+	return "upstream authentication failed"
 }
 
 // passthroughUsage holds token counts extracted from SSE during passthrough.
@@ -1123,10 +1152,15 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var (
-			lastErr       error
-			lastAccountID string
-			excluded      []string
-			committed     bool
+			lastErr        error
+			lastStatus     int
+			lastBody       []byte
+			lastAuthErr    error
+			lastAuthStatus int
+			lastAuthBody   []byte
+			lastAccountID  string
+			excluded       []string
+			committed      bool
 		)
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			pickReq.ExcludeAccountIDs = excluded
@@ -1163,6 +1197,11 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 				class := scheduler.ClassifyError(0, "", err)
 				g.sched.MarkFailure(slot.Account.ID, class)
 				g.recordPassthrough(res, model, slot.Account.ID, wsStart, "error")
+				if class == domain.ErrAuthFailed {
+					lastAuthErr = err
+					lastAuthStatus = 0
+					lastAuthBody = nil
+				}
 				excluded = append(excluded, slot.Account.ID)
 				lastErr = err
 				continue
@@ -1174,7 +1213,14 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 				class := scheduler.ClassifyError(status, string(respBody), nil)
 				g.sched.MarkFailure(slot.Account.ID, class)
 				g.recordPassthrough(res, model, slot.Account.ID, wsStart, "error")
+				if class == domain.ErrAuthFailed {
+					lastAuthErr = fmt.Errorf("upstream %d: %s", status, string(respBody[:minInt(len(respBody), 300)]))
+					lastAuthStatus = status
+					lastAuthBody = append([]byte(nil), respBody...)
+				}
 				excluded = append(excluded, slot.Account.ID)
+				lastStatus = status
+				lastBody = respBody
 				lastErr = fmt.Errorf("upstream %d: %s", status, string(respBody[:minInt(len(respBody), 300)]))
 				continue
 			}
@@ -1237,8 +1283,8 @@ func (g *Gateway) handleResponsesWS(w http.ResponseWriter, r *http.Request) {
 		if lastAccountID != "" {
 			g.recordPassthrough(res, model, lastAccountID, wsStart, "error")
 		}
-		if scheduler.ClassifyError(0, "", lastErr) == domain.ErrAuthFailed {
-			wsError(conn, "auth_failed", lastErr.Error())
+		if msg, ok := passthroughAuthFailureMessage(lastStatus, lastBody, lastErr, lastAuthStatus, lastAuthBody, lastAuthErr); ok {
+			wsError(conn, "auth_failed", msg)
 		} else {
 			wsError(conn, "upstream_error", lastErr.Error())
 		}

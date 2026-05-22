@@ -131,6 +131,10 @@ func (g *Gateway) handleRemoteChat(w http.ResponseWriter, r *http.Request) {
 	ch, err := prov.Invoke(r.Context(), acc, req)
 	if err != nil {
 		g.finishRemoteChatRequest(start, res, acc, req, remoteChatStats{}, "error", err)
+		if scheduler.ClassifyError(0, "", err) == domain.ErrAuthFailed {
+			writeJSON(w, http.StatusUnauthorized, errResp("auth_failed", err.Error()))
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, errResp("upstream_error", err.Error()))
 		return
 	}
@@ -161,6 +165,10 @@ func (g *Gateway) handleRemoteChat(w http.ResponseWriter, r *http.Request) {
 	}
 	g.finishRemoteChatRequest(start, res, acc, req, stats, status, err)
 	if err != nil && !responseStarted {
+		if scheduler.ClassifyError(0, "", err) == domain.ErrAuthFailed {
+			writeJSON(w, http.StatusUnauthorized, errResp("auth_failed", err.Error()))
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, errResp("upstream_error", err.Error()))
 	}
 }
