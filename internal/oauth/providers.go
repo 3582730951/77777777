@@ -63,9 +63,6 @@ var CodexConfig = ProviderConfig{
 	CallbackPath: "/auth/callback",
 	Scope:        CodexLoginScope,
 	ExtraParams: map[string]string{
-		// CPA's Codex OAuth flow sends prompt=login. Keeping it here prevents
-		// stale browser sessions from silently authorizing the wrong account.
-		"prompt":                     "login",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
 		"originator":                 CodexDefaultOriginator,

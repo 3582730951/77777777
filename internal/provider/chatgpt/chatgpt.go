@@ -291,9 +291,28 @@ func isChatGPTTokenInvalidatedResponse(status int, body []byte) bool {
 
 func isChatGPTTokenInvalidatedText(s string) bool {
 	low := strings.ToLower(s)
+	if isChatGPTTransientUpstreamText(low) {
+		return false
+	}
 	return strings.Contains(low, "token_invalidated") ||
 		strings.Contains(low, "authentication token has been invalidated") ||
 		strings.Contains(low, "access token has been invalidated")
+}
+
+func isChatGPTTransientUpstreamText(low string) bool {
+	return strings.Contains(low, "upstream_challenge_blocked") ||
+		strings.Contains(low, "cloudflare") ||
+		strings.Contains(low, "cf-mitigated") ||
+		strings.Contains(low, "cf_chl") ||
+		strings.Contains(low, "turnstile") ||
+		strings.Contains(low, "captcha") ||
+		strings.Contains(low, "arkose") ||
+		strings.Contains(low, "verify you are human") ||
+		strings.Contains(low, "checking your browser") ||
+		strings.Contains(low, "just a moment") ||
+		strings.Contains(low, "chatgpt is under heavy load") ||
+		strings.Contains(low, "chatgpt is at capacity") ||
+		strings.Contains(low, "temporarily unavailable")
 }
 
 func chatGPTRefreshTokenChanged(oldSec, newSec store.AccountSecret) bool {

@@ -17,6 +17,9 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 		if strings.Contains(sLower, "account banned") || isBanSignal(sLower) {
 			return domain.ErrBanned
 		}
+		if isChallengeSignal(sLower) {
+			return domain.ErrCFChallenge
+		}
 		if isAuthFailureSignal(sLower) {
 			return domain.ErrAuthFailed
 		}
@@ -44,6 +47,9 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 	if isUsageLimitSignal(bodyLower) {
 		return domain.ErrQuotaExhausted
 	}
+	if isChallengeSignal(bodyLower) {
+		return domain.ErrCFChallenge
+	}
 	if isCapacitySignal(bodyLower) {
 		return domain.ErrRateLimited
 	}
@@ -53,8 +59,7 @@ func ClassifyError(httpStatus int, body string, err error) domain.ErrorClass {
 
 	switch httpStatus {
 	case 401, 403:
-		if strings.Contains(bodyLower, "cloudflare") || strings.Contains(bodyLower, "cf-mitigated") ||
-			strings.Contains(bodyLower, "challenge") || strings.Contains(bodyLower, "turnstile") {
+		if isChallengeSignal(bodyLower) {
 			return domain.ErrCFChallenge
 		}
 		return domain.ErrAuthFailed
@@ -89,6 +94,19 @@ func isAuthFailureSignal(s string) bool {
 		strings.Contains(s, "already been used to generate")
 }
 
+func isChallengeSignal(s string) bool {
+	return strings.Contains(s, "upstream_challenge_blocked") ||
+		strings.Contains(s, "cloudflare") ||
+		strings.Contains(s, "cf-mitigated") ||
+		strings.Contains(s, "cf_chl") ||
+		strings.Contains(s, "turnstile") ||
+		strings.Contains(s, "captcha") ||
+		strings.Contains(s, "arkose") ||
+		strings.Contains(s, "verify you are human") ||
+		strings.Contains(s, "checking your browser") ||
+		strings.Contains(s, "just a moment")
+}
+
 func isUsageLimitSignal(s string) bool {
 	return strings.Contains(s, "you've hit your usage limit") ||
 		strings.Contains(s, "you have hit your usage limit") ||
@@ -102,8 +120,11 @@ func isUsageLimitSignal(s string) bool {
 func isCapacitySignal(s string) bool {
 	return strings.Contains(s, "selected model is at capacity") ||
 		strings.Contains(s, "model is at capacity") ||
+		strings.Contains(s, "chatgpt is at capacity") ||
+		strings.Contains(s, "chatgpt is under heavy load") ||
 		strings.Contains(s, "please try a different model") ||
-		strings.Contains(s, "rate_limit_error")
+		strings.Contains(s, "rate_limit_error") ||
+		strings.Contains(s, "temporarily unavailable")
 }
 
 // isBanSignal detects account deactivation/ban signals in response bodies.

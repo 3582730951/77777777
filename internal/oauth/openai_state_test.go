@@ -49,7 +49,7 @@ func TestRelayCallbackURLCopiesCallbackQuery(t *testing.T) {
 	}
 }
 
-func TestCodexStartBuildsCPACompatibleAuthorizeURL(t *testing.T) {
+func TestCodexStartBuildsCodexCLICompatibleAuthorizeURL(t *testing.T) {
 	m := New()
 	p, authURL, err := m.StartWithRelayBase(ProviderCodex, "default", "", "https://admin.example.com")
 	if err != nil {
@@ -72,7 +72,6 @@ func TestCodexStartBuildsCPACompatibleAuthorizeURL(t *testing.T) {
 		"redirect_uri":               CodexConfig.RedirectURI,
 		"scope":                      CodexLoginScope,
 		"code_challenge_method":      "S256",
-		"prompt":                     "login",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
 		"originator":                 CodexDefaultOriginator,
@@ -83,6 +82,15 @@ func TestCodexStartBuildsCPACompatibleAuthorizeURL(t *testing.T) {
 	}
 	if got := q.Get("allowed_workspace_id"); got != "" {
 		t.Fatalf("allowed_workspace_id should be omitted by default, got %q; url=%s", got, authURL)
+	}
+	if got := q.Get("prompt"); got != "" {
+		t.Fatalf("prompt should be omitted for Codex CLI login, got %q; url=%s", got, authURL)
+	}
+	if strings.Contains(u.RawQuery, "+") {
+		t.Fatalf("codex authorize query should encode spaces as %%20, got raw query: %s", u.RawQuery)
+	}
+	if !strings.Contains(u.RawQuery, "scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke") {
+		t.Fatalf("codex authorize query should preserve official scope encoding, got raw query: %s", u.RawQuery)
 	}
 	if q.Get("code_challenge") == "" {
 		t.Fatalf("missing code_challenge: %s", authURL)

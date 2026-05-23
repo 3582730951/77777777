@@ -47,9 +47,27 @@ func TestClassifyTokenInvalidatedAsAuthFailed(t *testing.T) {
 	}
 }
 
+func TestClassifyChallengeOverridesTokenInvalidatedText(t *testing.T) {
+	body := `<html><title>Just a moment...</title>Cloudflare challenge upstream_challenge_blocked token_invalidated</html>`
+	if got := ClassifyError(401, body, nil); got != domain.ErrCFChallenge {
+		t.Fatalf("challenge body classified as %s", got)
+	}
+	err := errors.New("refresh after token_invalidated: upstream_challenge_blocked by Cloudflare Turnstile")
+	if got := ClassifyError(0, "", err); got != domain.ErrCFChallenge {
+		t.Fatalf("challenge error classified as %s", got)
+	}
+}
+
 func TestClassifyCapacitySignalOverridesLegacyQuotaPrefix(t *testing.T) {
 	err := errors.New("upstream quota: Selected model is at capacity. Please try a different model.")
 	if got := ClassifyError(0, "", err); got != domain.ErrRateLimited {
 		t.Fatalf("capacity signal classified as %s", got)
+	}
+}
+
+func TestClassifyChatGPTHeavyLoadAsRateLimited(t *testing.T) {
+	body := `ChatGPT is under heavy load. Please try again later.`
+	if got := ClassifyError(503, body, nil); got != domain.ErrRateLimited {
+		t.Fatalf("heavy load classified as %s", got)
 	}
 }

@@ -143,6 +143,21 @@ func TestRefreshCredentialPrefersSessionRefreshTokenOverStaleSecret(t *testing.T
 	}
 }
 
+func TestTokenInvalidatedDetectionIgnoresTransientChallenge(t *testing.T) {
+	challengeBody := []byte(`<html><title>Just a moment...</title>Cloudflare upstream_challenge_blocked token_invalidated</html>`)
+	if isChatGPTTokenInvalidatedResponse(401, challengeBody) {
+		t.Fatal("challenge response must not trigger refresh_token rotation")
+	}
+	heavyLoadBody := []byte(`ChatGPT is under heavy load; token_invalidated`)
+	if isChatGPTTokenInvalidatedResponse(401, heavyLoadBody) {
+		t.Fatal("heavy-load response must not trigger refresh_token rotation")
+	}
+	authBody := []byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","code":"token_invalidated"}}`)
+	if !isChatGPTTokenInvalidatedResponse(401, authBody) {
+		t.Fatal("real token invalidation should still trigger refresh")
+	}
+}
+
 func TestRefreshCredentialFallsBackToTopLevelRefreshTokenWhenSessionTokenWasReused(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")

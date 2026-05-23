@@ -155,6 +155,8 @@ func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase,
 
 	var authorize string
 	switch provider {
+	case ProviderCodex:
+		authorize = buildCodexAuthorizeURL(cfg, challenge, state, workspaceID)
 	case ProviderClaude:
 		// sub2api builds Claude URL manually with fixed parameter order.
 		// redirect_uri and scope must be percent-encoded in a specific way.
@@ -192,7 +194,7 @@ func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase,
 		q.Set("code_challenge_method", "S256")
 		authorize = cfg.AuthorizeURL + "?" + q.Encode()
 	default:
-		// Codex and Gemini use standard url.Values encoding.
+		// Gemini uses standard url.Values encoding.
 		q := url.Values{}
 		q.Set("response_type", "code")
 		q.Set("client_id", cfg.ClientID)
@@ -203,9 +205,6 @@ func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase,
 		q.Set("code_challenge_method", "S256")
 		for k, v := range cfg.ExtraParams {
 			q.Set(k, v)
-		}
-		if provider == ProviderCodex && workspaceID != "" {
-			q.Set("allowed_workspace_id", workspaceID)
 		}
 		authorize = cfg.AuthorizeURL + "?" + q.Encode()
 	}
@@ -224,6 +223,46 @@ func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase,
 	}
 
 	return p, authorize, nil
+}
+
+type codexQueryParam struct {
+	key   string
+	value string
+}
+
+func buildCodexAuthorizeURL(cfg *ProviderConfig, challenge, state, workspaceID string) string {
+	params := []codexQueryParam{
+		{"response_type", "code"},
+		{"client_id", cfg.ClientID},
+		{"redirect_uri", cfg.RedirectURI},
+		{"scope", cfg.Scope},
+		{"code_challenge", challenge},
+		{"code_challenge_method", "S256"},
+		{"id_token_add_organizations", cfg.ExtraParams["id_token_add_organizations"]},
+		{"codex_cli_simplified_flow", cfg.ExtraParams["codex_cli_simplified_flow"]},
+		{"state", state},
+		{"originator", cfg.ExtraParams["originator"]},
+	}
+	if workspaceID != "" {
+		params = append(params, codexQueryParam{"allowed_workspace_id", workspaceID})
+	}
+	var b strings.Builder
+	for i, param := range params {
+		if param.key == "" || param.value == "" {
+			continue
+		}
+		if i > 0 && b.Len() > 0 {
+			b.WriteByte('&')
+		}
+		b.WriteString(codexQueryEscape(param.key))
+		b.WriteByte('=')
+		b.WriteString(codexQueryEscape(param.value))
+	}
+	return cfg.AuthorizeURL + "?" + b.String()
+}
+
+func codexQueryEscape(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }
 
 func (p *PendingAuth) dataJSON() string {
