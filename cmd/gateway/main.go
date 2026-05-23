@@ -48,6 +48,7 @@ import (
 	"github.com/llm-pool/gateway/internal/provider/tavily"
 	"github.com/llm-pool/gateway/internal/provider/trae"
 	"github.com/llm-pool/gateway/internal/provider/windsurf"
+	"github.com/llm-pool/gateway/internal/proxypool"
 	"github.com/llm-pool/gateway/internal/scheduler"
 	"github.com/llm-pool/gateway/internal/server"
 	"github.com/llm-pool/gateway/internal/store"
@@ -86,6 +87,8 @@ func main() {
 	}
 	applyStoredTokenOptimizer(context.Background(), st, cfg, logger)
 	applyStoredNetworkShaper(context.Background(), st, cfg, logger)
+	applyStoredProxyPool(context.Background(), st, cfg, logger)
+	proxyPool := proxypool.New(cfg.ProxyPool, st)
 
 	// Seed built-in cyber groups before the resolver loads DB-backed dynamic
 	// groups, otherwise the current process can miss freshly seeded prompts.
@@ -111,7 +114,8 @@ func main() {
 	}
 	chatgptProv := chatgpt.New(mode)
 	chatgptProv.SetStore(st)
-	chatgptProv.SetRefreshFunc(oauthMgr.RefreshCodex)
+	chatgptProv.SetRefreshFuncWithClient(oauthMgr.RefreshCodexWithClient)
+	chatgptProv.SetProxyPool(proxyPool)
 	providers.Register(chatgptProv)
 
 	claudeProv := claude.New(mode)
@@ -314,6 +318,7 @@ func main() {
 		ProbeFunc:    probeFn,
 		DiscoverFunc: discoverFn,
 		NetShaper:    gw,
+		ProxyPool:    proxyPool,
 	}).WithCrud(admin.CrudDeps{
 		Resolver: resolver,
 		Audit:    auditLog,
@@ -404,6 +409,30 @@ func applyStoredNetworkShaper(ctx context.Context, st *store.Store, cfg *config.
 		"ingress_bytes_per_sec", cfg.Server.NetworkIngressBytesPerSec,
 		"egress_bytes_per_sec", cfg.Server.NetworkEgressBytesPerSec,
 		"burst_bytes", cfg.Server.NetworkBurstBytes)
+}
+
+func applyStoredProxyPool(ctx context.Context, st *store.Store, cfg *config.Root, logger *slog.Logger) {
+	if st == nil || cfg == nil {
+		return
+	}
+	cfg.ProxyPool = config.NormalizeProxyPool(cfg.ProxyPool)
+	value, ok, err := st.GetSetting(ctx, store.SettingProxyPool)
+	if err != nil {
+		logger.Warn("proxy pool setting read", "err", err)
+		return
+	}
+	if !ok || strings.TrimSpace(value) == "" {
+		return
+	}
+	var pool config.ProxyPool
+	if err := json.Unmarshal([]byte(value), &pool); err != nil {
+		logger.Warn("proxy pool setting parse", "err", err)
+		return
+	}
+	cfg.ProxyPool = config.NormalizeProxyPool(pool)
+	logger.Info("proxy pool setting loaded",
+		"proxies", len(cfg.ProxyPool.Proxies),
+		"sticky_window", cfg.ProxyPool.StickyWindow.String())
 }
 
 func loadAccounts(ctx context.Context, st *store.Store, sched *scheduler.Scheduler, log *slog.Logger) error {

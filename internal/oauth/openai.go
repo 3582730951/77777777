@@ -104,12 +104,12 @@ func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase,
 		workspaceID = ""
 	}
 
-	// PKCE: Codex uses hex-encoded verifier (sub2api style: 64 random bytes → 128 hex chars).
-	// Claude/Gemini use base64url-no-pad verifier (32 random bytes → 43 chars, RFC 7636).
+	// PKCE: Codex follows the official CLI: 64 random bytes → base64url verifier.
+	// Claude/Gemini use the shared RFC 7636 helper.
 	var verifier, challenge string
 	var err error
 	if provider == ProviderCodex {
-		verifier, challenge, err = generatePKCEHex()
+		verifier, challenge, err = generatePKCEBytes(64)
 	} else {
 		verifier, challenge, err = generatePKCE()
 	}
@@ -117,26 +117,13 @@ func (m *Manager) StartWithOptions(provider Provider, tenantID, note, relayBase,
 		return nil, "", err
 	}
 
-	// State generation:
-	// - Codex: hex-encoded 32 bytes (matches sub2api GenerateState → hex.EncodeToString)
-	// - Claude/Gemini: base64url-no-pad 32 bytes
-	var state string
-	stateBytes := make([]byte, 32)
-	if _, err := rand.Read(stateBytes); err != nil {
+	state, err := generateOAuthState()
+	if err != nil {
 		return nil, "", err
 	}
-	if provider == ProviderCodex {
-		const hexDigits = "0123456789abcdef"
-		hexState := make([]byte, 64)
-		for i, v := range stateBytes {
-			hexState[i*2] = hexDigits[v>>4]
-			hexState[i*2+1] = hexDigits[v&0xF]
-		}
-		state = string(hexState)
-	} else {
-		state = base64.RawURLEncoding.EncodeToString(stateBytes)
+	if provider != ProviderCodex {
+		state = encodeRelayState(provider, state, relayBase)
 	}
-	state = encodeRelayState(provider, state, relayBase)
 
 	id := randHex(12)
 	p := &PendingAuth{
@@ -844,7 +831,11 @@ func (m *Manager) gcLocked() {
 // generatePKCE generates verifier (96 random bytes → base64url-nopad ~128 chars)
 // and S256 challenge. Used for Claude and Gemini (RFC 7636 standard).
 func generatePKCE() (verifier, challenge string, err error) {
-	b := make([]byte, 96)
+	return generatePKCEBytes(96)
+}
+
+func generatePKCEBytes(n int) (verifier, challenge string, err error) {
+	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return "", "", err
 	}
@@ -854,8 +845,17 @@ func generatePKCE() (verifier, challenge string, err error) {
 	return verifier, challenge, nil
 }
 
+func generateOAuthState() (string, error) {
+	stateBytes := make([]byte, 32)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(stateBytes), nil
+}
+
 // generatePKCEHex generates verifier as hex (64 random bytes → 128 hex chars)
-// and S256 challenge as base64url-nopad. Used for Codex (sub2api style).
+// and S256 challenge as base64url-nopad. Kept for compatibility with older
+// sub2api-style tests/tools; new Codex login uses generatePKCEBytes(64).
 func generatePKCEHex() (verifier, challenge string, err error) {
 	b := make([]byte, 64)
 	if _, err := rand.Read(b); err != nil {
@@ -963,6 +963,10 @@ func addB64Padding(s string) string {
 // Used by the chatgpt provider when the cached access_token is close to
 // expiring.
 func (m *Manager) RefreshCodex(ctx context.Context, refreshToken string) (newAccess, newRefresh, idToken string, expiresIn int, err error) {
+	return m.RefreshCodexWithClient(ctx, refreshToken, nil)
+}
+
+func (m *Manager) RefreshCodexWithClient(ctx context.Context, refreshToken string, client *http.Client) (newAccess, newRefresh, idToken string, expiresIn int, err error) {
 	cfg := &CodexConfig
 	form := url.Values{}
 	form.Set("client_id", cfg.ClientID)
@@ -973,7 +977,10 @@ func (m *Manager) RefreshCodex(ctx context.Context, refreshToken string) (newAcc
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "codex-cli/0.91.0")
-	resp, err := http.DefaultClient.Do(req)
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", "", 0, err
 	}

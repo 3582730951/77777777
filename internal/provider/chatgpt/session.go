@@ -40,12 +40,22 @@ type sessionInfo struct {
 type sessionResolver struct {
 	httpClient *http.Client
 	cache      sync.Map // accountID -> sessionInfo
-	refreshFn  func(ctx context.Context, refreshToken string) (newAccess, newRefresh, idToken string, expiresIn int, err error)
+	refreshFn  func(ctx context.Context, refreshToken string, client *http.Client) (newAccess, newRefresh, idToken string, expiresIn int, err error)
 }
 
 // SetRefreshFunc wires the OAuth refresh callback. Optional — when nil, expired
 // access tokens cause Resolve to fail (caller should re-enroll).
 func (r *sessionResolver) SetRefreshFunc(f func(ctx context.Context, refreshToken string) (string, string, string, int, error)) {
+	if f == nil {
+		r.refreshFn = nil
+		return
+	}
+	r.refreshFn = func(ctx context.Context, refreshToken string, _ *http.Client) (string, string, string, int, error) {
+		return f(ctx, refreshToken)
+	}
+}
+
+func (r *sessionResolver) SetRefreshFuncWithClient(f func(ctx context.Context, refreshToken string, client *http.Client) (string, string, string, int, error)) {
 	r.refreshFn = f
 }
 
@@ -58,7 +68,7 @@ func newSessionResolver() *sessionResolver {
 // Resolve returns a non-expired access token for the supplied raw secret. The
 // secret can be either the JSON session blob (Format 1) or the raw next-auth
 // cookie (Format 2). accountID is just a cache key; pass any stable string.
-func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refreshToken, ua string) (sessionInfo, error) {
+func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refreshToken, ua string, client *http.Client) (sessionInfo, error) {
 	currentRefreshToken := chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(secret), strings.TrimSpace(refreshToken))
 	if cached, ok := r.cache.Load(accountID); ok {
 		if info, ok := cached.(sessionInfo); ok && time.Until(info.Expires) > 2*time.Minute {
@@ -87,7 +97,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 				log.Printf("[chatgpt-session] account=%s skip stale cached refresh token; stored token rotated", accountID)
 				r.cache.Delete(accountID)
 			} else {
-				updated, err := r.refreshAny(ctx, info, refreshTokenCandidates(
+				updated, err := r.refreshAny(ctx, info, client, refreshTokenCandidates(
 					chatGPTRefreshTokenFromSession(secret),
 					strings.TrimSpace(refreshToken),
 					info.RefreshToken,
@@ -100,7 +110,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 		}
 	}
 	if strings.TrimSpace(secret) == "" && refreshToken != "" && r.refreshFn != nil {
-		updated, err := r.refreshAny(ctx, sessionInfo{}, refreshToken)
+		updated, err := r.refreshAny(ctx, sessionInfo{}, client, refreshToken)
 		if err != nil {
 			return sessionInfo{}, fmt.Errorf("refresh token: %w", err)
 		}
@@ -108,10 +118,10 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 		return updated, nil
 	}
 	log.Printf("[chatgpt-session] account=%s cache miss/expired, fetching fresh (secret_len=%d)", accountID, len(secret))
-	info, err := r.fetchFresh(ctx, secret, ua)
+	info, err := r.fetchFresh(ctx, secret, ua, client)
 	if err != nil {
 		if refreshToken != "" && r.refreshFn != nil {
-			updated, refreshErr := r.refreshAny(ctx, sessionInfo{}, refreshTokenCandidates(
+			updated, refreshErr := r.refreshAny(ctx, sessionInfo{}, client, refreshTokenCandidates(
 				chatGPTRefreshTokenFromSession(secret),
 				strings.TrimSpace(refreshToken),
 			)...)
@@ -137,7 +147,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 			}
 			return sessionInfo{}, errors.New("chatgpt: access token expired and no refresh_token available")
 		}
-		updated, err := r.refreshAny(ctx, info, refreshTokenCandidates(
+		updated, err := r.refreshAny(ctx, info, client, refreshTokenCandidates(
 			chatGPTRefreshTokenFromSession(secret),
 			strings.TrimSpace(refreshToken),
 			info.RefreshToken,
@@ -159,7 +169,7 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 // ForceRefresh bypasses any still-valid cached access token and refreshes with
 // the newest refresh token currently stored for the account. This is used after
 // the Codex backend returns token_invalidated before the JWT exp claim.
-func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, refreshToken string) (sessionInfo, error) {
+func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, refreshToken string, client *http.Client) (sessionInfo, error) {
 	info, _ := parseStoredSessionSecret(secret, refreshToken)
 	var cachedInfo sessionInfo
 	if cached, ok := r.cache.Load(accountID); ok {
@@ -180,7 +190,7 @@ func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, r
 		r.cache.Delete(accountID)
 		return sessionInfo{}, errors.New("chatgpt: token invalidated and no refresh_token available")
 	}
-	updated, err := r.refreshAny(ctx, info, candidates...)
+	updated, err := r.refreshAny(ctx, info, client, candidates...)
 	if err != nil {
 		r.cache.Delete(accountID)
 		return sessionInfo{}, err
@@ -193,8 +203,8 @@ func (r *sessionResolver) ForceRefresh(ctx context.Context, accountID, secret, r
 // document from a raw next-auth cookie. This is the recovery path when the
 // Codex access token is invalidated and every stored OAuth refresh token has
 // already been consumed by another process.
-func (r *sessionResolver) FetchFresh(ctx context.Context, accountID, secret, refreshToken, ua string) (sessionInfo, error) {
-	info, err := r.fetchFresh(ctx, secret, ua)
+func (r *sessionResolver) FetchFresh(ctx context.Context, accountID, secret, refreshToken, ua string, client *http.Client) (sessionInfo, error) {
+	info, err := r.fetchFresh(ctx, secret, ua, client)
 	if err != nil {
 		return sessionInfo{}, err
 	}
@@ -205,7 +215,7 @@ func (r *sessionResolver) FetchFresh(ctx context.Context, accountID, secret, ref
 	return info, nil
 }
 
-func (r *sessionResolver) refreshAny(ctx context.Context, info sessionInfo, candidates ...string) (sessionInfo, error) {
+func (r *sessionResolver) refreshAny(ctx context.Context, info sessionInfo, client *http.Client, candidates ...string) (sessionInfo, error) {
 	candidates = refreshTokenCandidates(append([]string{info.RefreshToken}, candidates...)...)
 	if len(candidates) == 0 {
 		return sessionInfo{}, errors.New("empty refresh_token")
@@ -214,7 +224,7 @@ func (r *sessionResolver) refreshAny(ctx context.Context, info sessionInfo, cand
 	for i, token := range candidates {
 		next := info
 		next.RefreshToken = token
-		updated, err := r.refresh(ctx, next)
+		updated, err := r.refresh(ctx, next, client)
 		if err == nil {
 			return updated, nil
 		}
@@ -262,14 +272,14 @@ func parseStoredSessionSecret(secret, fallbackRefreshToken string) (sessionInfo,
 	return info, true
 }
 
-func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo) (sessionInfo, error) {
+func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo, client *http.Client) (sessionInfo, error) {
 	if r.refreshFn == nil {
 		return sessionInfo{}, errors.New("refresh callback not configured")
 	}
 	if strings.TrimSpace(info.RefreshToken) == "" {
 		return sessionInfo{}, errors.New("empty refresh_token")
 	}
-	newAccess, newRefresh, idTok, expIn, err := r.refreshFn(ctx, info.RefreshToken)
+	newAccess, newRefresh, idTok, expIn, err := r.refreshFn(ctx, info.RefreshToken, client)
 	if err != nil {
 		return sessionInfo{}, err
 	}
@@ -318,7 +328,7 @@ func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo) (sessio
 	}, nil
 }
 
-func (r *sessionResolver) fetchFresh(ctx context.Context, secret, ua string) (sessionInfo, error) {
+func (r *sessionResolver) fetchFresh(ctx context.Context, secret, ua string, client *http.Client) (sessionInfo, error) {
 	s := strings.TrimSpace(secret)
 	if s == "" {
 		return sessionInfo{}, errors.New("empty session token")
@@ -337,7 +347,10 @@ func (r *sessionResolver) fetchFresh(ctx context.Context, secret, ua string) (se
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+s)
-	resp, err := r.httpClient.Do(req)
+	if client == nil {
+		client = r.httpClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return sessionInfo{}, fmt.Errorf("auth/session: %w", err)
 	}

@@ -30,6 +30,7 @@ import (
 
 	"github.com/llm-pool/gateway/internal/domain"
 	"github.com/llm-pool/gateway/internal/protocol/ir"
+	"github.com/llm-pool/gateway/internal/proxypool"
 	"github.com/llm-pool/gateway/internal/scheduler"
 	"github.com/llm-pool/gateway/internal/store"
 	"github.com/llm-pool/gateway/internal/transport"
@@ -47,6 +48,9 @@ type Provider struct {
 	httpClient *http.Client
 	mu         sync.Mutex
 	resolves   map[string]*sessionResolveCall
+	proxyPool  *proxypool.Manager
+	clientMu   sync.Mutex
+	clients    map[string]*http.Client
 	// sessionLocks serializes every session mutation path for one account. This
 	// mirrors Codex-Manager/sub2api's "lock -> reread persisted token -> refresh"
 	// flow and prevents Resolve and ForceRefresh from consuming the same
@@ -66,6 +70,14 @@ func (p *Provider) SetStore(s *store.Store) { p.store = s }
 // SetRefreshFunc plumbs the OAuth refresh callback to the session resolver.
 func (p *Provider) SetRefreshFunc(f func(ctx context.Context, refreshToken string) (string, string, string, int, error)) {
 	p.resolver.SetRefreshFunc(f)
+}
+
+func (p *Provider) SetRefreshFuncWithClient(f func(ctx context.Context, refreshToken string, client *http.Client) (string, string, string, int, error)) {
+	p.resolver.SetRefreshFuncWithClient(f)
+}
+
+func (p *Provider) SetProxyPool(m *proxypool.Manager) {
+	p.proxyPool = m
 }
 
 // RefreshCredential resolves the stored session and refreshes it when the
@@ -94,10 +106,57 @@ func New(mode string) *Provider {
 		Mode:       mode,
 		resolver:   newSessionResolver(),
 		httpClient: transport.Codex,
+		clients:    map[string]*http.Client{},
 	}
 }
 
 func (p *Provider) Name() string { return "chatgpt" }
+
+func (p *Provider) httpClientForAccount(ctx context.Context, acc *domain.Account) (*http.Client, error) {
+	if p.proxyPool == nil || acc == nil {
+		return p.httpClient, nil
+	}
+	selection, err := p.proxyPool.Resolve(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	if selection.Direct || selection.Proxy == nil || strings.TrimSpace(selection.Proxy.URL) == "" {
+		return p.httpClient, nil
+	}
+	return p.httpClientForProxy(selection.Proxy.URL)
+}
+
+func (p *Provider) httpClientForProxy(proxyURL string) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return p.httpClient, nil
+	}
+	p.clientMu.Lock()
+	if p.clients == nil {
+		p.clients = map[string]*http.Client{}
+	}
+	if client := p.clients[proxyURL]; client != nil {
+		p.clientMu.Unlock()
+		return client, nil
+	}
+	p.clientMu.Unlock()
+
+	client, err := transport.ForProviderProxy(proxyURL, transport.Options{
+		MaxIdleConnsPerHost: 64,
+		Timeout:             600 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.clientMu.Lock()
+	if existing := p.clients[proxyURL]; existing != nil {
+		p.clientMu.Unlock()
+		return existing, nil
+	}
+	p.clients[proxyURL] = client
+	p.clientMu.Unlock()
+	return client, nil
+}
 
 func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
 	if acc == nil {
@@ -170,7 +229,11 @@ func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, 
 				sec = fresh
 			}
 		}
-		info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA)
+		client, err := p.httpClientForAccount(ctx, acc)
+		if err != nil {
+			return sessionInfo{}, err
+		}
+		info, err := p.resolver.Resolve(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, acc.UA, client)
 		if err != nil {
 			if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
 				return recovered, nil
@@ -191,7 +254,11 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 			if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
 				sec = fresh
 				if chatGPTSessionMaterialChanged(used, fresh) {
-					info, resolveErr := p.resolver.Resolve(ctx, acc.ID, fresh.SessionToken, fresh.RefreshToken, acc.UA)
+					client, clientErr := p.httpClientForAccount(ctx, acc)
+					if clientErr != nil {
+						return sessionInfo{}, clientErr
+					}
+					info, resolveErr := p.resolver.Resolve(ctx, acc.ID, fresh.SessionToken, fresh.RefreshToken, acc.UA, client)
 					if resolveErr == nil {
 						if err := p.persistResolvedSession(ctx, acc, fresh, info); err != nil {
 							return sessionInfo{}, fmt.Errorf("persist refreshed session: %w", err)
@@ -203,7 +270,11 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 				}
 			}
 		}
-		info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken)
+		client, err := p.httpClientForAccount(ctx, acc)
+		if err != nil {
+			return sessionInfo{}, err
+		}
+		info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, client)
 		if err != nil {
 			if isChatGPTRefreshReuseError(err) {
 				if recovered, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
@@ -227,7 +298,12 @@ func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *doma
 	if cookie == "" {
 		return sessionInfo{}, false
 	}
-	info, err := p.resolver.FetchFresh(ctx, acc.ID, cookie, "", acc.UA)
+	client, clientErr := p.httpClientForAccount(ctx, acc)
+	if clientErr != nil {
+		log.Printf("[chatgpt-session] account=%s cookie recovery proxy selection failed: %v", acc.ID, clientErr)
+		return sessionInfo{}, false
+	}
+	info, err := p.resolver.FetchFresh(ctx, acc.ID, cookie, "", acc.UA, client)
 	if err != nil {
 		log.Printf("[chatgpt-session] account=%s cookie recovery after refresh reuse failed: refresh_err=%v cookie_err=%v", acc.ID, refreshErr, err)
 		return sessionInfo{}, false
@@ -254,7 +330,11 @@ func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.A
 	if !chatGPTRefreshTokenChanged(used, latest) {
 		return sessionInfo{}, false
 	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, latest.SessionToken, latest.RefreshToken, acc.UA)
+	client, clientErr := p.httpClientForAccount(ctx, acc)
+	if clientErr != nil {
+		return sessionInfo{}, false
+	}
+	info, err := p.resolver.Resolve(ctx, acc.ID, latest.SessionToken, latest.RefreshToken, acc.UA, client)
 	if err != nil {
 		return sessionInfo{}, false
 	}
@@ -770,7 +850,11 @@ func (p *Provider) fetchWhamUsage(ctx context.Context, acc *domain.Account, acce
 		req.Header["ChatGPT-Account-ID"] = []string{accountID}
 	}
 
-	resp, err := p.httpClient.Do(req)
+	client, err := p.httpClientForAccount(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("wham/usage request: %w", err)
 	}
@@ -1017,7 +1101,11 @@ func (p *Provider) fetchLegacyConversationLimit(ctx context.Context, state *doma
 		req.Header["ChatGPT-Account-ID"] = []string{accountID}
 	}
 
-	resp, err := p.httpClient.Do(req)
+	client, err := p.httpClientForAccount(ctx, acc)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1202,7 +1290,11 @@ func (p *Provider) doCodexResponses(ctx context.Context, acc *domain.Account, in
 	httpReq.Header["originator"] = []string{"codex_cli_rs"}
 	httpReq.Header["ChatGPT-Account-ID"] = []string{info.AccountID}
 	setCodexSessionHeaders(httpReq.Header, body)
-	return p.httpClient.Do(httpReq)
+	client, err := p.httpClientForAccount(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(httpReq)
 }
 
 // InvokeRaw sends a raw Responses API JSON body to the upstream Codex endpoint

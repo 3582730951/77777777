@@ -26,6 +26,7 @@ type Root struct {
 	Logging        Logging        `yaml:"logging"`
 	Portal         Portal         `yaml:"portal"`
 	TokenOptimizer TokenOptimizer `yaml:"token_optimizer"`
+	ProxyPool      ProxyPool      `yaml:"proxy_pool"`
 }
 
 // Portal controls user self-registration behavior.
@@ -62,6 +63,32 @@ type NetworkShaper struct {
 	NetworkBurstBytes         int64 `json:"network_burst_bytes" yaml:"network_burst_bytes"`
 }
 
+type ProxyPool struct {
+	// Enabled is nil by default: a non-empty proxy list is active. Set false to
+	// keep the config stored while forcing direct egress.
+	Enabled         *bool             `json:"enabled,omitempty" yaml:"enabled"`
+	StickyWindow    time.Duration     `json:"sticky_window" yaml:"sticky_window"`
+	Proxies         []ProxyConfig     `json:"proxies" yaml:"proxies"`
+	AccountBindings map[string]string `json:"account_bindings,omitempty" yaml:"account_bindings"`
+	GeoIP           GeoIPConfig       `json:"geoip" yaml:"geoip"`
+}
+
+type ProxyConfig struct {
+	ID      string `json:"id" yaml:"id"`
+	URL     string `json:"url" yaml:"url"`
+	Country string `json:"country,omitempty" yaml:"country"`
+	Weight  int    `json:"weight,omitempty" yaml:"weight"`
+	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled"`
+}
+
+type GeoIPConfig struct {
+	// Enabled is nil by default: country lookup is attempted only when a proxy
+	// has no configured country. Set false to allow unknown-country proxies.
+	Enabled  *bool         `json:"enabled,omitempty" yaml:"enabled"`
+	Endpoint string        `json:"endpoint,omitempty" yaml:"endpoint"`
+	Timeout  time.Duration `json:"timeout" yaml:"timeout"`
+}
+
 func NetworkShaperFromServer(cfg Server) NetworkShaper {
 	return NetworkShaper{
 		NetworkIngressBytesPerSec: cfg.NetworkIngressBytesPerSec,
@@ -91,6 +118,56 @@ func ApplyNetworkShaperToServer(cfg NetworkShaper, server *Server) {
 	server.NetworkIngressBytesPerSec = cfg.NetworkIngressBytesPerSec
 	server.NetworkEgressBytesPerSec = cfg.NetworkEgressBytesPerSec
 	server.NetworkBurstBytes = cfg.NetworkBurstBytes
+}
+
+func NormalizeProxyPool(cfg ProxyPool) ProxyPool {
+	if cfg.StickyWindow <= 0 {
+		cfg.StickyWindow = 24 * time.Hour
+	}
+	if cfg.GeoIP.Timeout <= 0 {
+		cfg.GeoIP.Timeout = 10 * time.Second
+	}
+	if strings.TrimSpace(cfg.GeoIP.Endpoint) == "" {
+		cfg.GeoIP.Endpoint = "https://ipapi.co/json/"
+	} else {
+		cfg.GeoIP.Endpoint = strings.TrimSpace(cfg.GeoIP.Endpoint)
+	}
+	normalized := make([]ProxyConfig, 0, len(cfg.Proxies))
+	seenIDs := make(map[string]int, len(cfg.Proxies))
+	for i, p := range cfg.Proxies {
+		p.ID = strings.TrimSpace(p.ID)
+		p.URL = strings.TrimSpace(p.URL)
+		p.Country = strings.ToUpper(strings.TrimSpace(p.Country))
+		if p.URL == "" {
+			continue
+		}
+		if p.ID == "" {
+			p.ID = fmt.Sprintf("proxy-%d", i+1)
+		}
+		if n := seenIDs[p.ID]; n > 0 {
+			p.ID = fmt.Sprintf("%s-%d", p.ID, n+1)
+		}
+		seenIDs[p.ID]++
+		if p.Weight <= 0 {
+			p.Weight = 1
+		}
+		normalized = append(normalized, p)
+	}
+	cfg.Proxies = normalized
+	if cfg.AccountBindings == nil {
+		cfg.AccountBindings = map[string]string{}
+	} else {
+		bindings := make(map[string]string, len(cfg.AccountBindings))
+		for accountID, target := range cfg.AccountBindings {
+			accountID = strings.TrimSpace(accountID)
+			target = strings.TrimSpace(target)
+			if accountID != "" && target != "" {
+				bindings[accountID] = target
+			}
+		}
+		cfg.AccountBindings = bindings
+	}
+	return cfg
 }
 
 type Resource struct {
@@ -330,6 +407,7 @@ func Load(path string) (*Root, error) {
 	if err := yaml.Unmarshal(b, r); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	r.ProxyPool = NormalizeProxyPool(r.ProxyPool)
 	r.Storage.MasterKey = os.Getenv("POOL_MASTER_KEY")
 	return r, nil
 }
@@ -400,6 +478,10 @@ func defaults() *Root {
 	r.TokenOptimizer.HeadLines = 80
 	r.TokenOptimizer.TailLines = 80
 	r.TokenOptimizer.ErrorContextLines = 6
+	r.ProxyPool.StickyWindow = 24 * time.Hour
+	r.ProxyPool.GeoIP.Timeout = 10 * time.Second
+	r.ProxyPool.GeoIP.Endpoint = "https://ipapi.co/json/"
+	r.ProxyPool.AccountBindings = map[string]string{}
 
 	r.Stealth.DefaultTLSProfile = "chrome_124"
 	r.Stealth.WarmupOnFirstUse = true

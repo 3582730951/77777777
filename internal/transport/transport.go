@@ -1,9 +1,10 @@
 // Package transport provides shared, tuned HTTP transports for upstream providers.
 //
 // Anti-detection layers:
-//   L5a: TLS ClientHello fingerprint (JA3/JA4) via utls — Node.js 24.x
-//   L5b: HTTP/2 SETTINGS frame fingerprint — Node.js INITIAL_WINDOW_SIZE, HEADER_TABLE_SIZE
-//   L5c: Header ordering — insertion order, not alphabetical
+//
+//	L5a: TLS ClientHello fingerprint (JA3/JA4) via utls — Node.js 24.x
+//	L5b: HTTP/2 SETTINGS frame fingerprint — Node.js INITIAL_WINDOW_SIZE, HEADER_TABLE_SIZE
+//	L5c: Header ordering — insertion order, not alphabetical
 package transport
 
 import (
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -44,7 +46,7 @@ func ForProvider(host string, opts Options) *http.Client {
 	}
 
 	transport := &http.Transport{
-		DialContext:            doh.DialContext(),
+		DialContext:           doh.DialContext(),
 		TLSClientConfig:       tlsCfg,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          opts.MaxIdleConnsPerHost * 8,
@@ -69,6 +71,53 @@ func ForProvider(host string, opts Options) *http.Client {
 		Transport: transport,
 		Timeout:   opts.Timeout,
 	}
+}
+
+// ForProviderProxy returns a standard HTTP client routed through proxyURL. The
+// shared utls transport cannot reuse http.Transport.Proxy because TLS is dialed
+// manually, so proxy egress intentionally uses the standard Go transport.
+func ForProviderProxy(proxyRaw string, opts Options) (*http.Client, error) {
+	if opts.MaxIdleConnsPerHost <= 0 {
+		opts.MaxIdleConnsPerHost = 32
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = 600 * time.Second
+	}
+	if opts.TLSCacheSize <= 0 {
+		opts.TLSCacheSize = 128
+	}
+	proxyURL, err := url.Parse(proxyRaw)
+	if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return nil, fmt.Errorf("invalid proxy url")
+	}
+	tlsCfg := &tls.Config{
+		ClientSessionCache: tls.NewLRUClientSessionCache(opts.TLSCacheSize),
+		MinVersion:         tls.VersionTLS12,
+		NextProtos:         []string{"h2", "http/1.1"},
+	}
+	tr := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSClientConfig:       tlsCfg,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          opts.MaxIdleConnsPerHost * 8,
+		MaxIdleConnsPerHost:   opts.MaxIdleConnsPerHost,
+		MaxConnsPerHost:       opts.MaxIdleConnsPerHost * 2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableCompression:    true,
+	}
+	if h2Transport, err := http2.ConfigureTransports(tr); err == nil && h2Transport != nil {
+		h2Transport.MaxDecoderHeaderTableSize = 65536
+		h2Transport.MaxEncoderHeaderTableSize = 65536
+		h2Transport.MaxHeaderListSize = 262144
+		h2Transport.MaxReadFrameSize = 16384
+	}
+	return &http.Client{Transport: tr, Timeout: opts.Timeout}, nil
 }
 
 // ForProviderUTLS returns a tuned *http.Client with utls Node.js 24.x fingerprint.

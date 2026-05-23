@@ -2,10 +2,10 @@
 // will accept a request, we POST /backend-api/sentinel/chat-requirements with
 // the bearer access token; the response either:
 //
-//   1. returns a `token` to put in OpenAI-Sentinel-Chat-Requirements-Token
-//      and a proof-of-work spec we have to solve, OR
-//   2. returns a Turnstile / arkose challenge that requires a human (in which
-//      case we surface ErrCFChallenge so the failover loop can route around).
+//  1. returns a `token` to put in OpenAI-Sentinel-Chat-Requirements-Token
+//     and a proof-of-work spec we have to solve, OR
+//  2. returns a Turnstile / arkose challenge that requires a human (in which
+//     case we surface ErrCFChallenge so the failover loop can route around).
 //
 // The PoW format used by ChatGPT today is described in chat-gpt reverse-eng
 // repos: BASE64(sha3-512(seed + "|" + payload)). The "difficulty" string is
@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/llm-pool/gateway/internal/domain"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -57,7 +58,7 @@ type arkoseSpec struct {
 // fetchChatRequirements asks ChatGPT for the per-request anti-bot token. The
 // returned token + (optionally solved) PoW are pumped into the conversation
 // request as headers.
-func (p *Provider) fetchChatRequirements(ctx context.Context, accessToken, ua, cookieHeader string) (reqToken, powToken string, err error) {
+func (p *Provider) fetchChatRequirements(ctx context.Context, acc *domain.Account, accessToken, ua, cookieHeader string) (reqToken, powToken string, err error) {
 	body := map[string]any{"p": generatePowProof("0", "0", "0")} // placeholder body, server only needs the bearer
 	bodyBytes, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, "POST",
@@ -76,7 +77,11 @@ func (p *Provider) fetchChatRequirements(ctx context.Context, accessToken, ua, c
 	if cookieHeader != "" {
 		req.Header.Set("Cookie", cookieHeader)
 	}
-	resp, err := p.httpClient.Do(req)
+	client, err := p.httpClientForAccount(ctx, acc)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("chat-requirements: %w", err)
 	}

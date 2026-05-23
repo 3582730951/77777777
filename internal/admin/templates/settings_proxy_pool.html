@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>出口代理池 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=8">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">出口代理池</div>
+      <div class="topbar-actions">
+        {{template "_topbar_ctrl" (dict "Lang" .Lang "BackURL" "/settings/proxy-pool")}}
+      </div>
+    </header>
+    <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Egress proxy pool</div>
+          <h1 class="hero-title">账号出口 IP 策略</h1>
+          <p class="hero-subtitle">无代理池时直连；单代理时默认固定；多代理时按 24h 国家粘滞约束做负载均衡，同国家多 IP 可动态轮询。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{len .Pool.Proxies}}</b><span>代理数量</span></div>
+          <div class="hero-metric"><b>{{.StickyWindow}}</b><span>国家粘滞窗口</span></div>
+          <div class="hero-metric"><b>{{.Source}}</b><span>配置来源</span></div>
+        </div>
+      </section>
+
+      {{if .Saved}}
+      <div class="alert alert-info">
+        <div>
+          <div class="bold small">已保存</div>
+          <div class="tiny mt-4">代理池已写入数据库，并已在当前 Gateway 进程即时生效。</div>
+        </div>
+      </div>
+      {{end}}
+      {{if .Error}}
+      <div class="alert alert-err">
+        <div>
+          <div class="bold small">保存失败</div>
+          <div class="tiny mt-4">{{.Error}}</div>
+        </div>
+      </div>
+      {{end}}
+
+      <div class="card flat">
+        <div class="card-body">
+          <div class="quick-actions">
+            <a class="btn ghost sm" href="/settings/token-optimizer">Token Optimizer</a>
+            <a class="btn ghost sm" href="/settings/network">网络限速</a>
+            <a class="btn primary sm" href="/settings/proxy-pool">出口代理池</a>
+          </div>
+        </div>
+      </div>
+
+      <form method="post" action="/settings/proxy-pool" class="card work-surface">
+        <div class="card-header">
+          <div>
+            <div class="card-title">代理池配置</div>
+            <div class="tiny muted mt-4">账号编辑页的“出站代理”可填代理池 ID、country:US 或完整代理 URL。</div>
+          </div>
+          <button class="btn primary" type="submit">保存并启用</button>
+        </div>
+        <div class="card-body">
+          <div class="form">
+            <div class="form-row c3">
+              <div class="field">
+                <label for="settings-proxy-enabled">启用代理池</label>
+                <label class="checkline"><input id="settings-proxy-enabled" type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}> 使用代理池配置</label>
+                <div class="tiny muted mt-4">关闭时所有未填写账号代理的请求直连。</div>
+              </div>
+              <div class="field">
+                <label for="settings-proxy-sticky-window">国家粘滞窗口</label>
+                <input id="settings-proxy-sticky-window" name="sticky_window" value="{{.StickyWindow}}" placeholder="24h">
+                <div class="tiny muted mt-4">同一账号在窗口内只能使用同一国家的出口。</div>
+              </div>
+              <div class="field">
+                <label for="settings-proxy-geoip-timeout">国家识别超时</label>
+                <input id="settings-proxy-geoip-timeout" name="geoip_timeout" value="{{.GeoIPTimeout}}" placeholder="10s">
+                <div class="tiny muted mt-4">只在代理条目未填写 country 时触发。</div>
+              </div>
+            </div>
+
+            <div class="form-row c2">
+              <div class="field">
+                <label for="settings-proxy-geoip-enabled">出口国家识别</label>
+                <label class="checkline"><input id="settings-proxy-geoip-enabled" type="checkbox" name="geoip_enabled" {{if .GeoIPEnabled}}checked{{end}}> 自动探测未标注国家</label>
+              </div>
+              <div class="field">
+                <label for="settings-proxy-geoip-endpoint">GeoIP Endpoint</label>
+                <input id="settings-proxy-geoip-endpoint" name="geoip_endpoint" value="{{.Pool.GeoIP.Endpoint}}" placeholder="https://ipapi.co/json/">
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="settings-proxy-proxies">代理列表 JSON</label>
+              <textarea id="settings-proxy-proxies" name="proxies_json" rows="12" spellcheck="false" placeholder='[
+  {"id":"us-1","url":"http://user:pass@1.2.3.4:8080","country":"US","weight":1},
+  {"id":"us-2","url":"socks5://127.0.0.1:1080","country":"US","weight":1},
+  {"id":"jp-1","url":"http://5.6.7.8:8080","country":"JP","weight":1}
+]'>{{.ProxiesJSON}}</textarea>
+              <div class="tiny muted mt-4">country 建议手动填写 ISO 国家码；未填时会通过该代理访问 GeoIP Endpoint 识别出口国家。</div>
+            </div>
+
+            <div class="field">
+              <label for="settings-proxy-bindings">账号固定位置/代理</label>
+              <textarea id="settings-proxy-bindings" name="account_bindings" rows="6" spellcheck="false" placeholder="acc-001=us-1&#10;acc-002=country:US">{{.AccountBindings}}</textarea>
+              <div class="tiny muted mt-4">值可填代理 ID、country:国家码；账号表单中的“出站代理”字段优先级更高。</div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <div class="inline-empty">
+        <div>
+          <div class="inline-empty-title">选择优先级</div>
+          <div class="inline-empty-sub">账号出站代理字段 → 账号绑定 → 24h 国家粘滞 → 全池负载均衡 → 无代理直连。</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body></html>

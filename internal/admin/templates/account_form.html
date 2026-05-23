@@ -77,8 +77,9 @@
                 <div class="form-row c2">
                   <div class="field"><label for="account-form-ua">User-Agent</label>
                     <input id="account-form-ua" name="ua" value="{{.Account.UA}}" placeholder="留空使用默认"/></div>
-                  <div class="field"><label for="account-form-proxy">出站代理</label>
-                    <input id="account-form-proxy" name="proxy" value="{{.Account.Proxy}}" placeholder="socks5://127.0.0.1:1080"/></div>
+                  <div class="field"><label for="account-form-proxy">出站代理 / 代理池目标</label>
+                    <input id="account-form-proxy" name="proxy" value="{{.Account.Proxy}}" placeholder="us-1 / country:US / socks5://127.0.0.1:1080"/>
+                    <div class="tiny muted mt-4">留空时使用全局出口代理池；填写代理池 ID、country:国家码 或完整代理 URL 可固定账号出口。</div></div>
                 </div>
               </div>
 

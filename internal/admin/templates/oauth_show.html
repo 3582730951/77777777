@@ -52,11 +52,17 @@
             </div>
           </div>
           <div class="card-body flex-col items-center gap-16" style="padding-top:24px">
-            <a href="{{.AuthURL}}" target="_blank" class="big-btn">
+            <a href="{{.AuthURL}}" target="_blank" rel="noopener noreferrer" class="big-btn">
               {{if .Cfg}}{{if eq .Cfg.ID "codex"}}🤖{{else if eq .Cfg.ID "claude"}}🧠{{else if eq .Cfg.ID "kiro"}}K{{else}}✨{{end}}
               Login with {{.Cfg.DisplayName}}{{else}}⚡ 开始登录{{end}}
             </a>
             <div class="url-box w-full">{{.AuthURL}}</div>
+            {{if and .Cfg (eq .Cfg.ID "codex")}}
+            <p class="tiny muted center">
+              如果授权页显示 <code>ChatGPT is under heavy load</code> 或 Cloudflare 验证页，通常是当前浏览器出口/IP 被官方临时挑战；
+              不代表 refresh token 失效。换出口、等待冷却或复制链接到已登录 ChatGPT 的浏览器再打开即可。
+            </p>
+            {{end}}
             <p class="tiny muted center">
               登录后浏览器会跳转到
               {{if .Cfg}}

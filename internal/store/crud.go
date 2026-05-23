@@ -17,6 +17,7 @@ const (
 	SettingRemoteChatAccountID = "remote_chat.account_id"
 	SettingTokenOptimizer      = "token_optimizer"
 	SettingNetworkShaper       = "network_shaper"
+	SettingProxyPool           = "proxy_pool"
 )
 
 // extendMigrate adds the tables introduced after the MVP store: tenants
@@ -29,6 +30,14 @@ func (s *Store) extendMigrate() error {
 			value TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS proxy_affinity (
+			account_id TEXT PRIMARY KEY,
+			country TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			proxy_id TEXT,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_proxy_affinity_window ON proxy_affinity(window_start)`,
 		`CREATE TABLE IF NOT EXISTS tenant_secrets (
 			tenant_id TEXT PRIMARY KEY,
 			master_key_hash TEXT NOT NULL,
@@ -174,6 +183,32 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 // DeleteSetting removes an application-level setting.
 func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM app_settings WHERE key=?`, key)
+	return err
+}
+
+func (s *Store) GetProxyAffinity(ctx context.Context, accountID string) (country string, windowStart time.Time, proxyID string, ok bool, err error) {
+	var ts int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT country, window_start, COALESCE(proxy_id, '') FROM proxy_affinity WHERE account_id=?`,
+		accountID).Scan(&country, &ts, &proxyID)
+	if err == sql.ErrNoRows {
+		return "", time.Time{}, "", false, nil
+	}
+	if err != nil {
+		return "", time.Time{}, "", false, err
+	}
+	return country, time.Unix(ts, 0), proxyID, true, nil
+}
+
+func (s *Store) UpsertProxyAffinity(ctx context.Context, accountID, country, proxyID string, windowStart time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO proxy_affinity(account_id, country, window_start, proxy_id, updated_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(account_id) DO UPDATE SET
+		   country=excluded.country,
+		   window_start=excluded.window_start,
+		   proxy_id=excluded.proxy_id,
+		   updated_at=excluded.updated_at`,
+		accountID, country, windowStart.Unix(), proxyID, time.Now().Unix())
 	return err
 }
 

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/llm-pool/gateway/internal/config"
 	"github.com/llm-pool/gateway/internal/store"
@@ -134,6 +136,73 @@ func (s *Server) handleNetworkSettingsPost(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, "/settings/network?saved=1", http.StatusSeeOther)
 }
 
+func (s *Server) handleProxyPoolSettings(w http.ResponseWriter, r *http.Request) {
+	pool, source, err := s.currentProxyPool(r)
+	data := s.proxyPoolTemplateData(pool, source)
+	data["Saved"] = r.URL.Query().Get("saved") == "1"
+	if err != nil {
+		data["Error"] = err.Error()
+	}
+	s.render(w, r, "settings_proxy_pool.html", data)
+}
+
+func (s *Server) handleProxyPoolSettingsPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.renderProxyPoolSettingsError(w, r, config.NormalizeProxyPool(s.deps.Cfg.ProxyPool), err)
+		return
+	}
+	current := config.NormalizeProxyPool(s.deps.Cfg.ProxyPool)
+	pool := config.ProxyPool{}
+	enabled := r.FormValue("enabled") == "on"
+	pool.Enabled = &enabled
+	if raw := strings.TrimSpace(r.FormValue("sticky_window")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			s.renderProxyPoolSettingsError(w, r, current, fmt.Errorf("sticky_window must be a positive Go duration, e.g. 24h"))
+			return
+		}
+		pool.StickyWindow = d
+	}
+	geoIPEnabled := r.FormValue("geoip_enabled") == "on"
+	pool.GeoIP.Enabled = &geoIPEnabled
+	pool.GeoIP.Endpoint = strings.TrimSpace(r.FormValue("geoip_endpoint"))
+	if raw := strings.TrimSpace(r.FormValue("geoip_timeout")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			s.renderProxyPoolSettingsError(w, r, current, fmt.Errorf("geoip_timeout must be a positive Go duration, e.g. 10s"))
+			return
+		}
+		pool.GeoIP.Timeout = d
+	}
+	proxiesText := strings.TrimSpace(r.FormValue("proxies_json"))
+	if proxiesText != "" {
+		if err := json.Unmarshal([]byte(proxiesText), &pool.Proxies); err != nil {
+			s.renderProxyPoolSettingsError(w, r, current, fmt.Errorf("parse proxies_json: %w", err))
+			return
+		}
+	}
+	pool.AccountBindings = parseProxyBindings(r.FormValue("account_bindings"))
+	pool = config.NormalizeProxyPool(pool)
+
+	payload, err := json.Marshal(pool)
+	if err != nil {
+		s.renderProxyPoolSettingsError(w, r, current, err)
+		return
+	}
+	if err := s.deps.Store.SetSetting(r.Context(), store.SettingProxyPool, string(payload)); err != nil {
+		s.renderProxyPoolSettingsError(w, r, current, err)
+		return
+	}
+	s.deps.Cfg.ProxyPool = pool
+	if s.deps.ProxyPool != nil {
+		s.deps.ProxyPool.UpdateConfig(pool)
+	}
+	if s.crud.Audit != nil {
+		s.crud.Audit.Log("info", "settings", "", "", fmt.Sprintf("proxy pool updated: proxies=%d", len(pool.Proxies)))
+	}
+	http.Redirect(w, r, "/settings/proxy-pool?saved=1", http.StatusSeeOther)
+}
+
 func (s *Server) currentTokenOptimizer(r *http.Request) (config.TokenOptimizer, string, error) {
 	opt := config.NormalizeTokenOptimizer(s.deps.Cfg.TokenOptimizer)
 	value, ok, err := s.deps.Store.GetSetting(r.Context(), store.SettingTokenOptimizer)
@@ -173,6 +242,27 @@ func (s *Server) currentNetworkShaper(r *http.Request) (config.NetworkShaper, st
 	return network, "admin", nil
 }
 
+func (s *Server) currentProxyPool(r *http.Request) (config.ProxyPool, string, error) {
+	pool := config.NormalizeProxyPool(s.deps.Cfg.ProxyPool)
+	value, ok, err := s.deps.Store.GetSetting(r.Context(), store.SettingProxyPool)
+	if err != nil {
+		return pool, "memory", err
+	}
+	if !ok || strings.TrimSpace(value) == "" {
+		return pool, "config.yaml", nil
+	}
+	var stored config.ProxyPool
+	if err := json.Unmarshal([]byte(value), &stored); err != nil {
+		return pool, "memory", err
+	}
+	pool = config.NormalizeProxyPool(stored)
+	s.deps.Cfg.ProxyPool = pool
+	if s.deps.ProxyPool != nil {
+		s.deps.ProxyPool.UpdateConfig(pool)
+	}
+	return pool, "admin", nil
+}
+
 func (s *Server) renderTokenOptimizerError(w http.ResponseWriter, r *http.Request, opt config.TokenOptimizer, err error) {
 	s.render(w, r, "settings_token_optimizer.html", map[string]any{
 		"Active": "settings",
@@ -191,6 +281,89 @@ func (s *Server) renderNetworkSettingsError(w http.ResponseWriter, r *http.Reque
 		"Source":  "memory",
 		"Error":   err.Error(),
 	})
+}
+
+func (s *Server) renderProxyPoolSettingsError(w http.ResponseWriter, r *http.Request, pool config.ProxyPool, err error) {
+	data := s.proxyPoolTemplateData(config.NormalizeProxyPool(pool), "memory")
+	data["Error"] = err.Error()
+	s.render(w, r, "settings_proxy_pool.html", data)
+}
+
+func (s *Server) proxyPoolTemplateData(pool config.ProxyPool, source string) map[string]any {
+	pool = config.NormalizeProxyPool(pool)
+	proxiesJSON, _ := json.MarshalIndent(pool.Proxies, "", "  ")
+	return map[string]any{
+		"Active":          "settings-proxy-pool",
+		"Title":           "出口代理池",
+		"Pool":            pool,
+		"Enabled":         enabledForProxyPool(pool),
+		"GeoIPEnabled":    enabledPtr(pool.GeoIP.Enabled, true),
+		"StickyWindow":    pool.StickyWindow.String(),
+		"GeoIPTimeout":    pool.GeoIP.Timeout.String(),
+		"ProxiesJSON":     string(proxiesJSON),
+		"AccountBindings": formatProxyBindings(pool.AccountBindings),
+		"Source":          source,
+	}
+}
+
+func enabledForProxyPool(pool config.ProxyPool) bool {
+	if pool.Enabled != nil {
+		return *pool.Enabled
+	}
+	return len(pool.Proxies) > 0
+}
+
+func enabledPtr(v *bool, fallback bool) bool {
+	if v == nil {
+		return fallback
+	}
+	return *v
+}
+
+func parseProxyBindings(raw string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		var k, v string
+		if left, right, ok := strings.Cut(line, "="); ok {
+			k, v = left, right
+		} else {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				k, v = fields[0], fields[1]
+			}
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k != "" && v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func formatProxyBindings(bindings map[string]string) string {
+	if len(bindings) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(bindings))
+	for key := range bindings {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(key)
+		b.WriteByte('=')
+		b.WriteString(bindings[key])
+	}
+	return b.String()
 }
 
 func parsePositiveIntForm(r *http.Request, name string, fallback int) (int, error) {

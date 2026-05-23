@@ -11,29 +11,24 @@ import (
 	"github.com/llm-pool/gateway/internal/store"
 )
 
-func TestCodexRelayStateIsHexAndDecodable(t *testing.T) {
-	state := encodeRelayState(ProviderCodex, strings.Repeat("a", 64), "https://admin.example.com")
-	if len(state) <= 64 {
+func TestKiroRelayStateIsDecodable(t *testing.T) {
+	state := encodeRelayState(ProviderKiro, strings.Repeat("a", 43), "https://admin.example.com")
+	if !strings.Contains(state, ".") {
 		t.Fatalf("state did not include relay data: %q", state)
 	}
-	for _, ch := range state {
-		if !strings.ContainsRune("0123456789abcdef", ch) {
-			t.Fatalf("codex relay state contains non-hex character %q in %q", ch, state)
-		}
-	}
-	base, ok := RelayBaseFromState(ProviderCodex, state)
+	base, ok := RelayBaseFromState(ProviderKiro, state)
 	if !ok || base != "https://admin.example.com" {
 		t.Fatalf("relay base = %q, %v; want https://admin.example.com, true", base, ok)
 	}
 }
 
 func TestRelayCallbackURLCopiesCallbackQuery(t *testing.T) {
-	state := encodeRelayState(ProviderCodex, strings.Repeat("b", 64), "http://127.0.0.1:8080")
+	state := encodeRelayState(ProviderKiro, strings.Repeat("b", 43), "http://127.0.0.1:8080")
 	q := url.Values{}
 	q.Set("state", state)
 	q.Set("code", "auth-code")
 
-	relayURL, ok := RelayCallbackURL(ProviderCodex, q)
+	relayURL, ok := RelayCallbackURL(ProviderKiro, q)
 	if !ok {
 		t.Fatal("expected relay callback URL")
 	}
@@ -44,7 +39,7 @@ func TestRelayCallbackURLCopiesCallbackQuery(t *testing.T) {
 	if got := u.Scheme + "://" + u.Host + u.Path; got != "http://127.0.0.1:8080/accounts/oauth/callback/relay" {
 		t.Fatalf("relay target = %q", got)
 	}
-	if u.Query().Get("provider") != string(ProviderCodex) || u.Query().Get("state") != state || u.Query().Get("code") != "auth-code" {
+	if u.Query().Get("provider") != string(ProviderKiro) || u.Query().Get("state") != state || u.Query().Get("code") != "auth-code" {
 		t.Fatalf("relay query was not preserved: %s", u.RawQuery)
 	}
 }
@@ -95,8 +90,14 @@ func TestCodexStartBuildsCodexCLICompatibleAuthorizeURL(t *testing.T) {
 	if q.Get("code_challenge") == "" {
 		t.Fatalf("missing code_challenge: %s", authURL)
 	}
-	if _, ok := RelayBaseFromState(ProviderCodex, q.Get("state")); !ok {
-		t.Fatalf("codex state should carry relay base as hex: %q", q.Get("state"))
+	if got := q.Get("state"); len(got) != 43 || !isBase64URLNoPad(got) {
+		t.Fatalf("codex state should match official base64url 32-byte format, got %q", got)
+	}
+	if _, ok := RelayBaseFromState(ProviderCodex, q.Get("state")); ok {
+		t.Fatalf("codex state should not embed relay data: %q", q.Get("state"))
+	}
+	if got := p.CodeVerifier; len(got) != 86 || !isBase64URLNoPad(got) {
+		t.Fatalf("codex verifier should match official base64url 64-byte format, got len=%d value=%q", len(got), got)
 	}
 }
 
@@ -285,4 +286,17 @@ func TestParseKiroTokenAcceptsSnakeCaseAndBuildsSession(t *testing.T) {
 	if session["profileArn"] != "profile-1" || session["client_id"] != "client-id" || session["client_secret"] != "client-secret" {
 		t.Fatalf("kiro session missing oidc fields: %#v", session)
 	}
+}
+
+func isBase64URLNoPad(s string) bool {
+	if s == "" || strings.Contains(s, "=") {
+		return false
+	}
+	for _, ch := range s {
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }

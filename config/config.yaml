@@ -33,6 +33,30 @@ resource:
     idle_ttl: 5m
     max_concurrent: 1
 
+# 出口 IP 代理池。proxies 为空时直连；1 条时默认固定；多条时负载均衡。
+# 同一账号在 sticky_window 内不会跨国家分配出口；同国家多 IP 会轮询。
+proxy_pool:
+  enabled: false
+  sticky_window: 24h
+  geoip:
+    enabled: true
+    endpoint: "https://ipapi.co/json/"
+    timeout: 10s
+  proxies: []
+  account_bindings: {}
+  # 示例：
+  # proxies:
+  #   - id: us-1
+  #     url: "http://user:pass@1.2.3.4:8080"
+  #     country: US
+  #     weight: 1
+  #   - id: us-2
+  #     url: "socks5://127.0.0.1:1080"
+  #     country: US
+  # account_bindings:
+  #   acc-001: us-1
+  #   acc-002: country:US
+
 tenants:
   - id: default
     name: "Default Tenant"

@@ -29,6 +29,7 @@ import (
 	"github.com/llm-pool/gateway/internal/enrollment"
 	"github.com/llm-pool/gateway/internal/i18n"
 	"github.com/llm-pool/gateway/internal/oauth"
+	"github.com/llm-pool/gateway/internal/proxypool"
 	"github.com/llm-pool/gateway/internal/scheduler"
 	"github.com/llm-pool/gateway/internal/store"
 )
@@ -82,6 +83,7 @@ type Deps struct {
 	ProbeFunc    func(ctx context.Context, accountID string) error
 	DiscoverFunc func(ctx context.Context, accountID string) (*domain.QuotaState, error)
 	NetShaper    NetworkShaper
+	ProxyPool    *proxypool.Manager
 }
 
 type NetworkShaper interface {
@@ -522,6 +524,8 @@ func (s *Server) Router() http.Handler {
 		r.Post("/settings/token-optimizer", s.handleTokenOptimizerSettingsPost)
 		r.Get("/settings/network", s.handleNetworkSettings)
 		r.Post("/settings/network", s.handleNetworkSettingsPost)
+		r.Get("/settings/proxy-pool", s.handleProxyPoolSettings)
+		r.Post("/settings/proxy-pool", s.handleProxyPoolSettingsPost)
 		r.Get("/audit", s.handleAuditPage)
 		r.Get("/guide", s.handleAdminGuide)
 		// AutoReg SPA — serves the React frontend under /autoreg/*
