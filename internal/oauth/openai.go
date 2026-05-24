@@ -466,6 +466,10 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 	if cfg == nil {
 		return fmt.Errorf("unknown provider: %s", p.Provider)
 	}
+	redirectURI := strings.TrimSpace(p.RedirectURI)
+	if redirectURI == "" {
+		redirectURI = cfg.RedirectURI
+	}
 
 	// Claude and Kiro use JSON bodies, Codex/Gemini use form-encoded.
 	var req *http.Request
@@ -476,7 +480,7 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 			"grant_type":    "authorization_code",
 			"client_id":     cfg.ClientID,
 			"code":          stripStateFragment(authCode),
-			"redirect_uri":  cfg.RedirectURI,
+			"redirect_uri":  redirectURI,
 			"code_verifier": p.CodeVerifier,
 			"state":         p.State,
 		}
@@ -499,7 +503,7 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 			"grantType":    "authorization_code",
 			"code":         stripStateFragment(authCode),
 			"codeVerifier": p.CodeVerifier,
-			"redirectUri":  cfg.RedirectURI,
+			"redirectUri":  redirectURI,
 		}
 		jsonBody, _ := json.Marshal(body)
 		req, err = http.NewRequest("POST", cfg.TokenURL, bytes.NewReader(jsonBody))
@@ -514,7 +518,7 @@ func (m *Manager) Exchange(p *PendingAuth, authCode string) error {
 		form.Set("code", authCode)
 		form.Set("client_id", cfg.ClientID)
 		form.Set("code_verifier", p.CodeVerifier)
-		form.Set("redirect_uri", cfg.RedirectURI)
+		form.Set("redirect_uri", redirectURI)
 		if cfg.ClientSecret != "" {
 			form.Set("client_secret", cfg.ClientSecret)
 		}

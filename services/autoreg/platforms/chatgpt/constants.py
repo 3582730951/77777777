@@ -66,7 +66,8 @@ OAUTH_SCOPE = "openid email profile offline_access model.request model.read orga
 # Token 获取使用 Codex CLI client（公开客户端，支持 PKCE）
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
-CODEX_SCOPE = "openid email profile offline_access"
+CODEX_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+CODEX_ORIGINATOR = "codex_cli_rs"
 
 # Sentinel（PoW 防护）- 版本号可能随 OpenAI 更新而变化（支持通过环境变量覆盖）
 SENTINEL_BASE = os.environ.get("SENTINEL_BASE_URL", "https://sentinel.openai.com")

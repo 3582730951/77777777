@@ -257,7 +257,7 @@ func (s *Server) handleOAuthShow(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	authURL, _ := url.QueryUnescape(r.URL.Query().Get("u"))
+	authURL := oauthShowAuthURL(r)
 	if authURL == "" {
 		authURL = "(start a new enrollment to get a fresh URL)"
 	}
@@ -269,6 +269,13 @@ func (s *Server) handleOAuthShow(w http.ResponseWriter, r *http.Request) {
 		"AuthURL": authURL,
 		"Cfg":     cfg,
 	})
+}
+
+func oauthShowAuthURL(r *http.Request) string {
+	// r.URL.Query() has already decoded the outer admin `u=` transport
+	// parameter. Do not decode again: the inner OAuth URL must keep its own
+	// percent-encoding (`redirect_uri`, `scope`, etc.) exactly as generated.
+	return strings.TrimSpace(r.URL.Query().Get("u"))
 }
 
 func (s *Server) handleOAuthStatus(w http.ResponseWriter, r *http.Request) {

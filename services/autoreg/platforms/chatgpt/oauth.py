@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional
 from curl_cffi import requests as cffi_requests
 
 from .constants import (
+    CODEX_CLIENT_ID,
+    CODEX_ORIGINATOR,
     OAUTH_CLIENT_ID,
     OAUTH_AUTH_URL,
     OAUTH_TOKEN_URL,
@@ -203,30 +205,45 @@ def generate_oauth_url(
     Returns:
         OAuthStart 对象，包含授权 URL 和必要参数
     """
-    state = _random_state()
+    is_codex_client = client_id == CODEX_CLIENT_ID
+    state = _random_state(32 if is_codex_client else 16)
     code_verifier = _pkce_verifier()
     code_challenge = _sha256_b64url_no_pad(code_verifier)
 
-    params = {
-        "client_id": client_id,
-        "response_type": "code",
-        "redirect_uri": redirect_uri,
-        "scope": scope,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-        "prompt": "login",
-    }
-    # Codex CLI 使用 Hydra endpoint (/oauth/authorize)
-    from .constants import CODEX_CLIENT_ID, OPENAI_AUTH
-    if client_id == CODEX_CLIENT_ID:
-        params["id_token_add_organizations"] = "true"
-        params["codex_cli_simplified_flow"] = "true"
-        base_url = f"{OPENAI_AUTH}/oauth/authorize"
+    if is_codex_client:
+        # Keep this byte-for-byte aligned with official Codex/Codex-Manager:
+        # no prompt parameter, official scope order, spaces encoded as %20,
+        # and originator included.
+        from .constants import OPENAI_AUTH
+        params = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "id_token_add_organizations": "true",
+            "codex_cli_simplified_flow": "true",
+            "state": state,
+            "originator": CODEX_ORIGINATOR,
+        }
+        auth_url = (
+            f"{OPENAI_AUTH}/oauth/authorize?"
+            f"{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
+        )
     else:
+        params = {
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "prompt": "login",
+        }
         params["screen_hint"] = "login_or_signup"
-        base_url = OAUTH_AUTH_URL
-    auth_url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        auth_url = f"{OAUTH_AUTH_URL}?{urllib.parse.urlencode(params)}"
     return OAuthStart(
         auth_url=auth_url,
         state=state,

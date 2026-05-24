@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from core.base_platform import RegisterConfig
 from platforms.chatgpt import browser_register as browser_register_module
+from platforms.chatgpt.constants import (
+    CODEX_CLIENT_ID,
+    CODEX_ORIGINATOR,
+    CODEX_REDIRECT_URI,
+    CODEX_SCOPE,
+)
+from platforms.chatgpt.oauth import generate_oauth_url
 from platforms.chatgpt.plugin import (
     ChatGPTPlatform,
     _assert_complete_oauth_callback,
@@ -40,6 +48,35 @@ def test_generate_chatgpt_registration_password_meets_openai_strength_requiremen
         assert any(ch.isupper() for ch in password)
         assert any(ch.isdigit() for ch in password)
         assert any(ch in ",._!@#" for ch in password)
+
+
+def test_codex_oauth_url_matches_official_shape():
+    oauth_start = generate_oauth_url(
+        redirect_uri=CODEX_REDIRECT_URI,
+        scope=CODEX_SCOPE,
+        client_id=CODEX_CLIENT_ID,
+    )
+    parsed = urlparse(oauth_start.auth_url)
+    query = parse_qs(parsed.query)
+
+    assert (
+        f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        == "https://auth.openai.com/oauth/authorize"
+    )
+    assert query["response_type"] == ["code"]
+    assert query["client_id"] == [CODEX_CLIENT_ID]
+    assert query["redirect_uri"] == [CODEX_REDIRECT_URI]
+    assert query["scope"] == [CODEX_SCOPE]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["id_token_add_organizations"] == ["true"]
+    assert query["codex_cli_simplified_flow"] == ["true"]
+    assert query["originator"] == [CODEX_ORIGINATOR]
+    assert "prompt" not in query
+    assert "screen_hint" not in query
+    assert (
+        "scope=openid%20profile%20email%20offline_access%20"
+        "api.connectors.read%20api.connectors.invoke"
+    ) in oauth_start.auth_url
 
 
 def test_chatgpt_platform_preserves_user_supplied_password():
