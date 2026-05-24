@@ -996,15 +996,19 @@ func (m *Manager) RefreshCodexWithClient(ctx context.Context, refreshToken strin
 	var tok struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		CamelRefresh string `json:"refreshToken"`
 		IDToken      string `json:"id_token"`
+		CamelIDToken string `json:"idToken"`
 		ExpiresIn    int    `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil {
 		return "", "", "", 0, err
 	}
 	if tok.RefreshToken == "" {
-		// Some providers don't return a new refresh token; reuse.
-		tok.RefreshToken = refreshToken
+		tok.RefreshToken = tok.CamelRefresh
+	}
+	if tok.IDToken == "" {
+		tok.IDToken = tok.CamelIDToken
 	}
 	return tok.AccessToken, tok.RefreshToken, tok.IDToken, tok.ExpiresIn, nil
 }

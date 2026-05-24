@@ -238,6 +238,7 @@ func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, 
 			if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
 				return recovered, nil
 			}
+			p.clearStaleRefreshTokenAfterFailure(ctx, acc, sec, err)
 			return sessionInfo{}, err
 		}
 		if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
@@ -284,6 +285,7 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 			if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
 				return recovered, nil
 			}
+			p.clearStaleRefreshTokenAfterFailure(ctx, acc, sec, err)
 			return sessionInfo{}, err
 		}
 		if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
@@ -327,7 +329,7 @@ func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.A
 	if err != nil {
 		return sessionInfo{}, false
 	}
-	if !chatGPTRefreshTokenChanged(used, latest) {
+	if !chatGPTSessionMaterialChanged(used, latest) {
 		return sessionInfo{}, false
 	}
 	client, clientErr := p.httpClientForAccount(ctx, acc)
@@ -342,6 +344,76 @@ func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.A
 		log.Printf("[chatgpt-session] account=%s persist race-recovered session: %v", acc.ID, err)
 	}
 	return info, true
+}
+
+func (p *Provider) clearStaleRefreshTokenAfterFailure(ctx context.Context, acc *domain.Account, used store.AccountSecret, refreshErr error) {
+	if p.store == nil || acc == nil || !isChatGPTRefreshReuseError(refreshErr) {
+		return
+	}
+	staleTokens := refreshTokenCandidates(
+		chatGPTRefreshTokenFromSession(used.SessionToken),
+		strings.TrimSpace(used.RefreshToken),
+	)
+	if cached, ok := p.resolver.cache.Load(acc.ID); ok {
+		if info, ok := cached.(sessionInfo); ok {
+			staleTokens = refreshTokenCandidates(append(staleTokens, info.RefreshToken)...)
+		}
+	}
+	if len(staleTokens) == 0 {
+		return
+	}
+
+	latest := used
+	if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
+		latest = fresh
+	}
+	next, changed := chatGPTClearMatchingRefreshTokens(latest, staleTokens)
+	if !changed {
+		return
+	}
+
+	writeAcc := acc
+	if freshAcc, err := p.store.GetAccount(ctx, acc.ID); err == nil {
+		writeAcc = freshAcc
+	}
+	writeAcc.UpdatedAt = time.Now()
+	if err := p.store.UpsertAccount(ctx, writeAcc, next); err != nil {
+		log.Printf("[chatgpt-session] account=%s clear reused refresh token failed: %v", acc.ID, err)
+		return
+	}
+	p.resolver.cache.Delete(acc.ID)
+	log.Printf("[chatgpt-session] account=%s cleared reused refresh token from persisted credentials", acc.ID)
+}
+
+func chatGPTClearMatchingRefreshTokens(sec store.AccountSecret, staleTokens []string) (store.AccountSecret, bool) {
+	stale := make(map[string]struct{}, len(staleTokens))
+	for _, token := range staleTokens {
+		token = strings.TrimSpace(token)
+		if token != "" {
+			stale[token] = struct{}{}
+		}
+	}
+	if len(stale) == 0 {
+		return sec, false
+	}
+
+	next := sec
+	changed := false
+	if _, ok := stale[strings.TrimSpace(next.RefreshToken)]; ok {
+		next.RefreshToken = ""
+		changed = true
+	}
+	trimmed := strings.TrimSpace(next.SessionToken)
+	if strings.HasPrefix(trimmed, "{") {
+		if info, ok := parseStoredSessionSecret(trimmed, ""); ok {
+			if _, staleSession := stale[strings.TrimSpace(info.RefreshToken)]; staleSession {
+				info.RefreshToken = ""
+				next.SessionToken = buildChatGPTSessionJSON(info)
+				changed = true
+			}
+		}
+	}
+	return next, changed
 }
 
 func isChatGPTRefreshReuseError(err error) bool {
@@ -590,13 +662,18 @@ func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Accou
 	rawCookieWithoutRefresh := trimmed != "" && !strings.HasPrefix(trimmed, "{") && info.RefreshToken == ""
 
 	changed := false
+	persistedSession := false
 	next := sec
 	if !rawCookieWithoutRefresh && shouldPersistChatGPTSession(sec.SessionToken, info) {
 		next.SessionToken = buildChatGPTSessionJSON(info)
 		changed = true
+		persistedSession = true
 	}
 	if info.RefreshToken != "" && next.RefreshToken != info.RefreshToken {
 		next.RefreshToken = info.RefreshToken
+		changed = true
+	} else if info.RefreshToken == "" && persistedSession && next.RefreshToken != "" {
+		next.RefreshToken = ""
 		changed = true
 	}
 	if info.Email != "" && acc.Email == "" {

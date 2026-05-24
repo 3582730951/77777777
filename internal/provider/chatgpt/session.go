@@ -296,9 +296,6 @@ func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo, client 
 			exp = time.Now().Add(50 * time.Minute)
 		}
 	}
-	if newRefresh == "" {
-		newRefresh = info.RefreshToken
-	}
 	if idTok == "" {
 		idTok = info.IDToken
 	}
@@ -378,11 +375,23 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 			PlanType string `json:"planType"`
 		} `json:"account"`
 		AccessToken  string `json:"accessToken"`
+		SnakeAccess  string `json:"access_token"`
 		RefreshToken string `json:"refreshToken"`
+		SnakeRefresh string `json:"refresh_token"`
 		IDToken      string `json:"idToken"`
+		SnakeIDToken string `json:"id_token"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return sessionInfo{}, fmt.Errorf("parse session json: %w", err)
+	}
+	if raw.AccessToken == "" {
+		raw.AccessToken = raw.SnakeAccess
+	}
+	if raw.RefreshToken == "" {
+		raw.RefreshToken = raw.SnakeRefresh
+	}
+	if raw.IDToken == "" {
+		raw.IDToken = raw.SnakeIDToken
 	}
 	if raw.AccessToken == "" {
 		// Check for ban/deactivation signals in the raw JSON

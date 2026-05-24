@@ -143,6 +143,65 @@ func TestRefreshCredentialPrefersSessionRefreshTokenOverStaleSecret(t *testing.T
 	}
 }
 
+func TestRefreshCredentialClearsRefreshTokenWhenAuthorityOmitsRotation(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-empty-refresh-rotation",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken: expiredAccess,
+			Expires:     time.Now().Add(-time.Minute),
+			AccountID:   "chatgpt-account",
+			PlanType:    "plus",
+			Email:       "user@example.com",
+			IDToken:     "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		return newAccess, "", "id-new", 3600, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential: %v", err)
+	}
+
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != newAccess {
+		t.Fatalf("stored access token was not refreshed")
+	}
+	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
+		t.Fatalf("missing rotated refresh token should clear persisted refresh token: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
+	}
+}
+
 func TestTokenInvalidatedDetectionIgnoresTransientChallenge(t *testing.T) {
 	challengeBody := []byte(`<html><title>Just a moment...</title>Cloudflare upstream_challenge_blocked token_invalidated</html>`)
 	if isChatGPTTokenInvalidatedResponse(401, challengeBody) {
@@ -522,6 +581,148 @@ func TestRefreshCredentialSkipsStaleCachedRefreshToken(t *testing.T) {
 	}
 	if sec.RefreshToken != "rt-new" {
 		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
+func TestRefreshCredentialClearsReusedRefreshTokenWhenNoRecovery(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	acc := &domain.Account{
+		ID:       "acc-reused-clear",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  expiredAccess,
+			RefreshToken: "rt-used",
+			Expires:      time.Now().Add(-time.Minute),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-used",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-used" {
+			t.Fatalf("refresh token = %q, want rt-used", refreshToken)
+		}
+		return "", "", "", 0, errors.New("refresh 401: refresh_token_reused")
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err == nil {
+		t.Fatal("refresh credential succeeded, want refresh_token_reused error")
+	}
+
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
+		t.Fatalf("reused refresh token should be cleared: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
+	}
+}
+
+func TestForceRefreshRecoversStoreSessionChangedAfterRefreshReuse(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-reused-race-cleared",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-used",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-used",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	originalSecret, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get original secret: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	var calls atomic.Int32
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		calls.Add(1)
+		if refreshToken != "rt-used" {
+			t.Fatalf("refresh token = %q, want rt-used", refreshToken)
+		}
+		if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+			SessionToken: buildChatGPTSessionJSON(sessionInfo{
+				AccessToken:  newAccess,
+				RefreshToken: "",
+				Expires:      time.Now().Add(2 * time.Hour),
+				AccountID:    "chatgpt-account",
+				PlanType:     "plus",
+				Email:        "user@example.com",
+				IDToken:      "id-new",
+			}),
+			RefreshToken: "",
+		}); err != nil {
+			t.Fatalf("persist concurrent session: %v", err)
+		}
+		return "", "", "", 0, errors.New("refresh 401: refresh_token_reused")
+	})
+
+	info, err := p.forceRefreshSession(ctx, acc, originalSecret)
+	if err != nil {
+		t.Fatalf("force refresh should recover changed stored session: %v", err)
+	}
+	if info.AccessToken != newAccess {
+		t.Fatalf("recovered access token = %q, want new token", info.AccessToken)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != newAccess {
+		t.Fatalf("stored access token = %q, want new token", parsed.AccessToken)
+	}
+	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
+		t.Fatalf("stored refresh token = session %q top %q, want both empty", parsed.RefreshToken, sec.RefreshToken)
 	}
 }
 
