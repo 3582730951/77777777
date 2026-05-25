@@ -286,15 +286,21 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 		}
 		info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, client)
 		if err != nil {
+			var cookieRecoveryErr error
 			if isChatGPTRecoverableRefreshError(err) {
-				if recovered, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
+				if recovered, recoverErr, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
 					return recovered, nil
+				} else {
+					cookieRecoveryErr = recoverErr
 				}
 			}
 			if recovered, ok := p.recoverResolvedSessionRace(ctx, acc, sec, err); ok {
 				return recovered, nil
 			}
 			p.clearStaleRefreshTokenAfterFailure(ctx, acc, sec, err)
+			if cookieRecoveryErr != nil {
+				return sessionInfo{}, chatGPTRefreshRecoveryError(err, cookieRecoveryErr)
+			}
 			return sessionInfo{}, err
 		}
 		if err := p.persistResolvedSession(ctx, acc, sec, info); err != nil {
@@ -304,14 +310,14 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 	})
 }
 
-func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *domain.Account, sec store.AccountSecret, refreshErr error) (sessionInfo, bool) {
+func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *domain.Account, sec store.AccountSecret, refreshErr error) (sessionInfo, error, bool) {
 	info, err := p.refreshSessionFromStoredCookie(ctx, acc, sec, isChatGPTRefreshReuseError(refreshErr))
 	if err != nil {
 		log.Printf("[chatgpt-session] account=%s cookie recovery after refresh failure failed: refresh_err=%v cookie_err=%v", acc.ID, refreshErr, err)
-		return sessionInfo{}, false
+		return sessionInfo{}, err, false
 	}
 	log.Printf("[chatgpt-session] account=%s recovered session via stored next-auth cookie after refresh failure", acc.ID)
-	return info, true
+	return info, nil, true
 }
 
 func (p *Provider) refreshSessionFromStoredCookie(ctx context.Context, acc *domain.Account, sec store.AccountSecret, clearRefreshToken bool) (sessionInfo, error) {
@@ -454,6 +460,22 @@ func isChatGPTNoRefreshTokenError(err error) bool {
 
 func isChatGPTRecoverableRefreshError(err error) bool {
 	return isChatGPTRefreshReuseError(err) || isChatGPTNoRefreshTokenError(err)
+}
+
+func chatGPTRefreshRecoveryError(refreshErr, cookieErr error) error {
+	if cookieErr == nil {
+		return refreshErr
+	}
+	if isChatGPTNoRefreshTokenError(refreshErr) {
+		if strings.Contains(strings.ToLower(cookieErr.Error()), "no stored next-auth cookie") {
+			return errors.New("chatgpt: token invalidated; no OAuth refresh_token and no stored next-auth cookie for web session recovery")
+		}
+		return fmt.Errorf("chatgpt: token invalidated; no OAuth refresh_token; stored web session cookie recovery failed: %w", cookieErr)
+	}
+	if isChatGPTRefreshReuseError(refreshErr) {
+		return fmt.Errorf("chatgpt: refresh_token rejected by authority; stored web session cookie recovery failed: %w", cookieErr)
+	}
+	return fmt.Errorf("chatgpt: refresh failed; stored web session cookie recovery failed: %w", cookieErr)
 }
 
 func isChatGPTTokenInvalidatedError(err error) bool {
@@ -620,7 +642,7 @@ func chatGPTCookiePairsFromBytes(raw []byte) []chatGPTCookiePair {
 	}
 
 	var pairs []chatGPTCookiePair
-	for _, line := range strings.Split(trimmed, "\n") {
+	for _, line := range strings.Split(strings.ReplaceAll(trimmed, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -632,16 +654,67 @@ func chatGPTCookiePairsFromBytes(raw []byte) []chatGPTCookiePair {
 				continue
 			}
 		}
-		for _, part := range strings.Split(line, ";") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			name, value, ok := strings.Cut(part, "=")
-			if ok {
-				pairs = append(pairs, chatGPTCookiePair{Name: strings.TrimSpace(name), Value: strings.TrimSpace(value)})
-			}
+		parsed, recognizedHeader := chatGPTCookiePairsFromTextLine(line)
+		if recognizedHeader || len(parsed) > 0 {
+			pairs = append(pairs, parsed...)
 		}
+	}
+	return pairs
+}
+
+func chatGPTCookiePairsFromTextLine(line string) ([]chatGPTCookiePair, bool) {
+	line = strings.TrimSpace(strings.Trim(line, "'\""))
+	if line == "" {
+		return nil, false
+	}
+	if strings.HasPrefix(line, "-H ") || strings.HasPrefix(line, "--header ") || strings.HasPrefix(line, "-b ") || strings.HasPrefix(line, "--cookie ") {
+		if idx := strings.IndexByte(line, ' '); idx >= 0 {
+			line = strings.TrimSpace(strings.Trim(line[idx+1:], "'\""))
+		}
+	}
+	if idx := strings.Index(line, ":"); idx >= 0 {
+		if eq := strings.Index(line, "="); eq >= 0 && eq < idx {
+			return chatGPTCookiePairsFromCookieHeaderValue(line), false
+		}
+		name := strings.ToLower(strings.TrimSpace(line[:idx]))
+		value := strings.TrimSpace(strings.Trim(line[idx+1:], "'\""))
+		switch name {
+		case "cookie":
+			return chatGPTCookiePairsFromCookieHeaderValue(value), true
+		case "set-cookie":
+			return chatGPTCookiePairsFromSetCookieHeaderValue(value), true
+		default:
+			return nil, true
+		}
+	}
+	return chatGPTCookiePairsFromCookieHeaderValue(line), false
+}
+
+func chatGPTCookiePairsFromCookieHeaderValue(value string) []chatGPTCookiePair {
+	value = strings.TrimSpace(strings.Trim(value, "'\""))
+	if value == "" {
+		return nil
+	}
+	var pairs []chatGPTCookiePair
+	for _, part := range strings.Split(value, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(part, "=")
+		if ok {
+			pairs = append(pairs, chatGPTCookiePair{Name: strings.TrimSpace(name), Value: strings.TrimSpace(value)})
+		}
+	}
+	return pairs
+}
+
+func chatGPTCookiePairsFromSetCookieHeaderValue(value string) []chatGPTCookiePair {
+	resp := http.Response{Header: http.Header{"Set-Cookie": []string{value}}}
+	cookies := resp.Cookies()
+	pairs := make([]chatGPTCookiePair, 0, len(cookies))
+	for _, cookie := range cookies {
+		pairs = append(pairs, chatGPTCookiePair{Name: cookie.Name, Value: cookie.Value})
 	}
 	return pairs
 }

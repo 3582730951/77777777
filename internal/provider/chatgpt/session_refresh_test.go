@@ -283,6 +283,98 @@ func TestRefreshCredentialRefreshesWebSessionFromStoredCookie(t *testing.T) {
 	}
 }
 
+func TestChatGPTCookieHeaderFromSecretParsesDevToolsCookieHeader(t *testing.T) {
+	sec := store.AccountSecret{Cookies: []byte(strings.Join([]string{
+		"Host: chatgpt.com",
+		`sec-ch-ua: "Chromium";v="124"`,
+		"Cookie: __Secure-next-auth.session-token.0=part0; __Secure-next-auth.session-token.1=part1; other=keep",
+		"Accept: */*",
+	}, "\n"))}
+
+	got := chatGPTCookieHeaderFromSecret(sec)
+	want := "__Secure-next-auth.session-token.0=part0; __Secure-next-auth.session-token.1=part1; other=keep"
+	if got != want {
+		t.Fatalf("cookie header = %q, want %q", got, want)
+	}
+	if cookie := chatGPTNextAuthSessionCookie(sec); cookie != "part0part1" {
+		t.Fatalf("next-auth session cookie = %q, want concatenated chunks", cookie)
+	}
+}
+
+func TestForceRefreshNoRefreshTokenReturnsCookieRecoveryError(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-no-refresh-cookie-fails",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken: oldAccess,
+			Expires:     time.Now().Add(time.Hour),
+			AccountID:   "chatgpt-account",
+			PlanType:    "plus",
+			Email:       "user@example.com",
+			IDToken:     "id-old",
+		}),
+		Cookies: []byte("Cookie: __Secure-next-auth.session-token=bad-cookie"),
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	originalSecret, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get original secret: %v", err)
+	}
+
+	var sessionCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/session" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		sessionCalls++
+		if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=bad-cookie" {
+			t.Fatalf("session cookie = %q, want parsed Cookie header", got)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"session expired"}`))
+	}))
+	defer server.Close()
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		t.Fatalf("refresh callback should not be called without refresh token; got %q", refreshToken)
+		return "", "", "", 0, nil
+	})
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	_, err = p.forceRefreshSession(ctx, acc, originalSecret)
+	if err == nil {
+		t.Fatal("force refresh succeeded, want cookie recovery error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "stored web session cookie recovery failed") || !strings.Contains(msg, "auth/session 401") {
+		t.Fatalf("error = %q, want cookie recovery auth/session failure", msg)
+	}
+	if strings.Contains(msg, "token invalidated and no refresh_token available") {
+		t.Fatalf("error should not return the raw ForceRefresh no-refresh message: %q", msg)
+	}
+	if sessionCalls != 1 {
+		t.Fatalf("session calls = %d, want 1", sessionCalls)
+	}
+}
+
 func TestTokenInvalidatedDetectionIgnoresTransientChallenge(t *testing.T) {
 	challengeBody := []byte(`<html><title>Just a moment...</title>Cloudflare upstream_challenge_blocked token_invalidated</html>`)
 	if isChatGPTTokenInvalidatedResponse(401, challengeBody) {
