@@ -277,7 +277,7 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 		}
 		info, err := p.resolver.ForceRefresh(ctx, acc.ID, sec.SessionToken, sec.RefreshToken, client)
 		if err != nil {
-			if isChatGPTRefreshReuseError(err) {
+			if isChatGPTRecoverableRefreshError(err) {
 				if recovered, ok := p.recoverSessionFromStoredCookie(ctx, acc, sec, err); ok {
 					return recovered, nil
 				}
@@ -307,7 +307,7 @@ func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *doma
 	}
 	info, err := p.resolver.FetchFresh(ctx, acc.ID, cookie, "", acc.UA, client)
 	if err != nil {
-		log.Printf("[chatgpt-session] account=%s cookie recovery after refresh reuse failed: refresh_err=%v cookie_err=%v", acc.ID, refreshErr, err)
+		log.Printf("[chatgpt-session] account=%s cookie recovery after refresh failure failed: refresh_err=%v cookie_err=%v", acc.ID, refreshErr, err)
 		return sessionInfo{}, false
 	}
 	clean := sec
@@ -317,12 +317,12 @@ func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *doma
 	if err := p.persistResolvedSession(ctx, acc, clean, info); err != nil {
 		log.Printf("[chatgpt-session] account=%s persist cookie-recovered session: %v", acc.ID, err)
 	}
-	log.Printf("[chatgpt-session] account=%s recovered session via stored next-auth cookie after refresh reuse", acc.ID)
+	log.Printf("[chatgpt-session] account=%s recovered session via stored next-auth cookie after refresh failure", acc.ID)
 	return info, true
 }
 
 func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.Account, used store.AccountSecret, refreshErr error) (sessionInfo, bool) {
-	if p.store == nil || !isChatGPTRefreshReuseError(refreshErr) {
+	if p.store == nil || !isChatGPTRecoverableRefreshError(refreshErr) {
 		return sessionInfo{}, false
 	}
 	latest, err := p.store.GetAccountSecret(ctx, acc.ID)
@@ -425,6 +425,19 @@ func isChatGPTRefreshReuseError(err error) bool {
 		strings.Contains(s, "already been used to generate") ||
 		strings.Contains(s, "refresh_token_reused") ||
 		strings.Contains(s, "invalid_grant")
+}
+
+func isChatGPTNoRefreshTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "no refresh_token available") ||
+		strings.Contains(s, "empty refresh_token")
+}
+
+func isChatGPTRecoverableRefreshError(err error) bool {
+	return isChatGPTRefreshReuseError(err) || isChatGPTNoRefreshTokenError(err)
 }
 
 func isChatGPTTokenInvalidatedError(err error) bool {

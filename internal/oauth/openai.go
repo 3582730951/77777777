@@ -1007,6 +1007,9 @@ func (m *Manager) RefreshCodexWithClient(ctx context.Context, refreshToken strin
 	if tok.RefreshToken == "" {
 		tok.RefreshToken = tok.CamelRefresh
 	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = refreshToken
+	}
 	if tok.IDToken == "" {
 		tok.IDToken = tok.CamelIDToken
 	}

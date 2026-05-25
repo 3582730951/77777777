@@ -3,6 +3,8 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -170,6 +172,48 @@ func TestFormatCodexRefreshErrorExtractsTopLevelInvalidGrant(t *testing.T) {
 	}
 	if !strings.Contains(got, "refresh token expired") {
 		t.Fatalf("formatted error missing description: %q", got)
+	}
+}
+
+func TestRefreshCodexWithClientPreservesRefreshTokenWhenAuthorityOmitsRotation(t *testing.T) {
+	oldConfig := CodexConfig
+	defer func() { CodexConfig = oldConfig }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if got := r.Header.Get("User-Agent"); got != "codex-cli/0.91.0" {
+			t.Fatalf("user-agent = %q", got)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if got := r.Form.Get("grant_type"); got != "refresh_token" {
+			t.Fatalf("grant_type = %q", got)
+		}
+		if got := r.Form.Get("refresh_token"); got != "rt-old" {
+			t.Fatalf("refresh_token = %q", got)
+		}
+		if got := r.Form.Get("client_id"); got != CodexConfig.ClientID {
+			t.Fatalf("client_id = %q", got)
+		}
+		if got := r.Form.Get("scope"); got != "openid profile email" {
+			t.Fatalf("scope = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-new","id_token":"id-new","expires_in":3600}`))
+	}))
+	defer server.Close()
+	CodexConfig.TokenURL = server.URL
+
+	m := New()
+	access, refresh, idToken, expiresIn, err := m.RefreshCodexWithClient(context.Background(), "rt-old", server.Client())
+	if err != nil {
+		t.Fatalf("refresh codex: %v", err)
+	}
+	if access != "access-new" || refresh != "rt-old" || idToken != "id-new" || expiresIn != 3600 {
+		t.Fatalf("unexpected tokens: access=%q refresh=%q id=%q exp=%d", access, refresh, idToken, expiresIn)
 	}
 }
 

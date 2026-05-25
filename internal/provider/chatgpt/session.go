@@ -296,6 +296,9 @@ func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo, client 
 			exp = time.Now().Add(50 * time.Minute)
 		}
 	}
+	if newRefresh == "" {
+		newRefresh = info.RefreshToken
+	}
 	if idTok == "" {
 		idTok = info.IDToken
 	}

@@ -24,17 +24,20 @@ import (
 func (g *Gateway) handleCodexModels(w http.ResponseWriter, r *http.Request) {
 	res, _ := r.Context().Value(ctxResolved).(auth.Resolved)
 
-	type codexModel struct {
-		Slug  string   `json:"slug"`
-		Title string   `json:"title"`
-		Tags  []string `json:"tags,omitempty"`
+	slugs := g.codexModelSlugs(res)
+	models := make([]map[string]any, 0, len(slugs))
+	for i, slug := range slugs {
+		models = append(models, codexModelInfo(slug, i+1))
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
 
-	models := []codexModel{}
+func (g *Gateway) codexModelSlugs(res auth.Resolved) []string {
+	models := []string{}
 	seen := map[string]bool{}
 	add := func(slug string) {
 		if !seen[slug] {
-			models = append(models, codexModel{Slug: slug, Title: slug, Tags: []string{"chat", "code"}})
+			models = append(models, slug)
 			seen[slug] = true
 		}
 	}
@@ -47,7 +50,7 @@ func (g *Gateway) handleCodexModels(w http.ResponseWriter, r *http.Request) {
 			add(m)
 		}
 		// Pull from discovered models in scheduler slots.
-		if len(models) == 0 {
+		if len(models) == 0 && g != nil && g.sched != nil {
 			for _, sl := range g.sched.Snapshot() {
 				if sl.Provider != res.Group.Provider {
 					continue
@@ -59,12 +62,68 @@ func (g *Gateway) handleCodexModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(models) == 0 {
-		for _, m := range []string{"gpt-5.2", "gpt-5.3", "gpt-5.4"} {
+		for _, m := range []string{"gpt-5.2", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5"} {
 			add(m)
 		}
 	}
+	return models
+}
 
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+func codexModelInfo(slug string, priority int) map[string]any {
+	return map[string]any{
+		"slug":                       slug,
+		"title":                      slug,
+		"display_name":               slug,
+		"description":                "Codex-compatible model",
+		"default_reasoning_level":    "xhigh",
+		"supported_reasoning_levels": codexReasoningEfforts(),
+		"shell_type":                 "shell_command",
+		"visibility":                 "list",
+		"supported_in_api":           true,
+		"priority":                   priority,
+		"additional_speed_tiers":     []string{},
+		"service_tiers": []map[string]string{
+			{
+				"id":          "priority",
+				"name":        "fast",
+				"description": "Fast inference priority tier.",
+			},
+		},
+		"availability_nux":                 nil,
+		"upgrade":                          nil,
+		"base_instructions":                "",
+		"supports_reasoning_summaries":     true,
+		"default_reasoning_summary":        "auto",
+		"support_verbosity":                false,
+		"default_verbosity":                nil,
+		"apply_patch_tool_type":            nil,
+		"web_search_tool_type":             "text",
+		"truncation_policy":                map[string]any{"mode": "tokens", "limit": 128000},
+		"supports_parallel_tool_calls":     true,
+		"supports_image_detail_original":   true,
+		"context_window":                   128000,
+		"max_context_window":               128000,
+		"auto_compact_token_limit":         115200,
+		"effective_context_window_percent": 95,
+		"experimental_supported_tools":     []string{},
+		"input_modalities":                 []string{"text", "image"},
+		"supports_search_tool":             false,
+		"tags":                             []string{"chat", "code"},
+	}
+}
+
+func codexReasoningEfforts() []map[string]string {
+	return []map[string]string{
+		{"effort": "low", "description": "Low reasoning effort."},
+		{"effort": "medium", "description": "Medium reasoning effort."},
+		{"effort": "high", "description": "High reasoning effort."},
+		{"effort": "xhigh", "description": "Maximum reasoning effort."},
+	}
+}
+
+func isCodexClientUA(ua string) bool {
+	ua = strings.ToLower(ua)
+	return strings.Contains(ua, "codex")
 }
 
 // handleCodexConversationLimit returns the 5h / 7d quota window status.
@@ -209,6 +268,15 @@ func (g *Gateway) handleClaudeUsage(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) handleListModels(w http.ResponseWriter, r *http.Request) {
 	res, _ := r.Context().Value(ctxResolved).(auth.Resolved)
 	ua := r.Header.Get("User-Agent")
+	if isCodexClientUA(ua) {
+		slugs := g.codexModelSlugs(res)
+		models := make([]map[string]any, 0, len(slugs))
+		for i, slug := range slugs {
+			models = append(models, codexModelInfo(slug, i+1))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		return
+	}
 	_ = strings.HasPrefix(ua, "claude-cli/") // UA available for future routing
 
 	var data []map[string]any

@@ -143,7 +143,7 @@ func TestRefreshCredentialPrefersSessionRefreshTokenOverStaleSecret(t *testing.T
 	}
 }
 
-func TestRefreshCredentialClearsRefreshTokenWhenAuthorityOmitsRotation(t *testing.T) {
+func TestRefreshCredentialPreservesRefreshTokenWhenAuthorityOmitsRotation(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
 	if err != nil {
@@ -197,8 +197,8 @@ func TestRefreshCredentialClearsRefreshTokenWhenAuthorityOmitsRotation(t *testin
 	if parsed.AccessToken != newAccess {
 		t.Fatalf("stored access token was not refreshed")
 	}
-	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
-		t.Fatalf("missing rotated refresh token should clear persisted refresh token: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
+	if parsed.RefreshToken != "rt-old" || sec.RefreshToken != "rt-old" {
+		t.Fatalf("missing rotated refresh token should preserve existing refresh token: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
 	}
 }
 
