@@ -2,11 +2,21 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"html/template"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/llm-pool/gateway/internal/config"
+	"github.com/llm-pool/gateway/internal/enrollment"
+	"github.com/llm-pool/gateway/internal/scheduler"
+	"github.com/llm-pool/gateway/internal/store"
 )
 
 func TestOAuthShowAuthURLKeepsInnerOAuthEncoding(t *testing.T) {
@@ -52,5 +62,119 @@ func TestOAuthAuthURLTemplatePreservesPercentEscapes(t *testing.T) {
 	}
 	if strings.Contains(out, "redirect_uri=http://") || strings.Contains(out, "%253A%252F%252F") {
 		t.Fatalf("template decoded or double-encoded inner URL: %s", out)
+	}
+}
+
+func TestOAuthStartWebSessionModeUsesEnrollmentFlowWithoutOAuthManager(t *testing.T) {
+	s := &Server{enroll: enrollment.New()}
+	form := url.Values{}
+	form.Set("login_mode", "web_session")
+	form.Set("tenant_id", "default")
+	form.Set("note", "web session account")
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/oauth", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthStartPost(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/accounts/oauth/web-session/") {
+		t.Fatalf("redirect = %q, want web-session enrollment", loc)
+	}
+}
+
+func TestOAuthWebSessionSubmitPersistsSessionAndCookies(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	s := &Server{
+		enroll: enrollment.New(),
+		deps: Deps{
+			Store: st,
+			Sched: scheduler.New(config.Scheduler{}),
+		},
+	}
+	pending := s.enroll.Create("default", "chatgpt", "", "web session")
+	session := `{"accessToken":"access-1","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"web@example.com"}}`
+	form := url.Values{}
+	form.Set("session", session)
+	form.Set("cookies", "__Secure-next-auth.session-token=cookie-1; other=keep")
+	form.Set("ua", "codex-web-session-test")
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/oauth/web-session/"+pending.ID+"/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", pending.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthWebSessionSubmit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	got, ok := s.enroll.Get(pending.ID)
+	if !ok || got.State != enrollment.StateCompleted || got.AccountID == "" {
+		t.Fatalf("pending not completed: %+v ok=%v", got, ok)
+	}
+	acc, err := st.GetAccount(t.Context(), got.AccountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.Provider != "chatgpt" || acc.Email != "web@example.com" || acc.UA != "codex-web-session-test" {
+		t.Fatalf("unexpected account: %+v", acc)
+	}
+	sec, err := st.GetAccountSecret(t.Context(), got.AccountID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.SessionToken != session || string(sec.Cookies) != "__Secure-next-auth.session-token=cookie-1; other=keep" {
+		t.Fatalf("unexpected secret: %+v", sec)
+	}
+}
+
+func TestOAuthWebSessionShowRendersCapturePage(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	s := New(Deps{
+		Cfg:   &config.Root{},
+		Store: st,
+		Sched: scheduler.New(config.Scheduler{}),
+	})
+	s.enroll = enrollment.New()
+	pending := s.enroll.Create("default", "chatgpt", "", "web session")
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/oauth/web-session/"+pending.ID, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", pending.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthWebSessionShow(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"ChatGPT Web Session 导入",
+		"/accounts/oauth/web-session/" + pending.ID + "/submit",
+		"__Secure-next-auth.session-token",
+		"/api/auth/session",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered page missing %q: %s", want, body)
+		}
 	}
 }

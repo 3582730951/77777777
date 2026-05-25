@@ -215,6 +215,18 @@ func (r *sessionResolver) FetchFresh(ctx context.Context, accountID, secret, ref
 	return info, nil
 }
 
+func (r *sessionResolver) FetchFreshWithCookieHeader(ctx context.Context, accountID, cookieHeader, refreshToken, ua string, client *http.Client) (sessionInfo, []string, error) {
+	info, setCookies, err := r.fetchFreshWithCookieHeader(ctx, cookieHeader, ua, client)
+	if err != nil {
+		return sessionInfo{}, nil, err
+	}
+	if info.RefreshToken == "" {
+		info.RefreshToken = strings.TrimSpace(refreshToken)
+	}
+	r.cache.Store(accountID, info)
+	return info, setCookies, nil
+}
+
 func (r *sessionResolver) refreshAny(ctx context.Context, info sessionInfo, client *http.Client, candidates ...string) (sessionInfo, error) {
 	candidates = refreshTokenCandidates(append([]string{info.RefreshToken}, candidates...)...)
 	if len(candidates) == 0 {
@@ -337,33 +349,50 @@ func (r *sessionResolver) fetchFresh(ctx context.Context, secret, ua string, cli
 		return parseSessionJSON([]byte(s))
 	}
 	// Raw cookie path — GET /api/auth/session ourselves.
+	return r.fetchFreshFromRawCookie(ctx, s, ua, client)
+}
+
+func (r *sessionResolver) fetchFreshFromRawCookie(ctx context.Context, cookieValue, ua string, client *http.Client) (sessionInfo, error) {
+	info, _, err := r.fetchFreshWithCookieHeader(ctx, "__Secure-next-auth.session-token="+cookieValue, ua, client)
+	return info, err
+}
+
+func (r *sessionResolver) fetchFreshWithCookieHeader(ctx context.Context, cookieHeader, ua string, client *http.Client) (sessionInfo, []string, error) {
+	cookieHeader = strings.TrimSpace(cookieHeader)
+	if cookieHeader == "" {
+		return sessionInfo{}, nil, errors.New("empty cookie header")
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://chatgpt.com/api/auth/session", nil)
 	if err != nil {
-		return sessionInfo{}, err
+		return sessionInfo{}, nil, err
 	}
 	if ua == "" {
 		ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	}
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+s)
+	req.Header.Set("Cookie", cookieHeader)
 	if client == nil {
 		client = r.httpClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return sessionInfo{}, fmt.Errorf("auth/session: %w", err)
+		return sessionInfo{}, nil, fmt.Errorf("auth/session: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		bodyLower := strings.ToLower(string(body))
 		if strings.Contains(bodyLower, "deactivated") || strings.Contains(bodyLower, "banned") || strings.Contains(bodyLower, "suspended") {
-			return sessionInfo{}, fmt.Errorf("account banned: status=%d %s", resp.StatusCode, snippet(body))
+			return sessionInfo{}, nil, fmt.Errorf("account banned: status=%d %s", resp.StatusCode, snippet(body))
 		}
-		return sessionInfo{}, fmt.Errorf("auth/session %d: %s", resp.StatusCode, snippet(body))
+		return sessionInfo{}, nil, fmt.Errorf("auth/session %d: %s", resp.StatusCode, snippet(body))
 	}
-	return parseSessionJSON(body)
+	info, err := parseSessionJSON(body)
+	if err != nil {
+		return sessionInfo{}, nil, err
+	}
+	return info, resp.Header.Values("Set-Cookie"), nil
 }
 
 func parseSessionJSON(body []byte) (sessionInfo, error) {

@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -199,6 +202,84 @@ func TestRefreshCredentialPreservesRefreshTokenWhenAuthorityOmitsRotation(t *tes
 	}
 	if parsed.RefreshToken != "rt-old" || sec.RefreshToken != "rt-old" {
 		t.Fatalf("missing rotated refresh token should preserve existing refresh token: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
+	}
+}
+
+func TestRefreshCredentialRefreshesWebSessionFromStoredCookie(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(10 * time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-web-session-refresh",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken: oldAccess,
+			Expires:     time.Now().Add(10 * time.Minute),
+			AccountID:   "chatgpt-account",
+			PlanType:    "plus",
+			Email:       "user@example.com",
+			IDToken:     "id-old",
+		}),
+		Cookies: []byte(`__Secure-next-auth.session-token=old-cookie; other=keep`),
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	var sessionCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/session" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		sessionCalls++
+		cookie := r.Header.Get("Cookie")
+		if !strings.Contains(cookie, "__Secure-next-auth.session-token=old-cookie") || !strings.Contains(cookie, "other=keep") {
+			t.Fatalf("cookie header = %q, want stored web cookies", cookie)
+		}
+		w.Header().Add("Set-Cookie", "__Secure-next-auth.session-token=new-cookie; Path=/; HttpOnly; Secure")
+		_, _ = w.Write([]byte(`{"accessToken":"` + newAccess + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"user@example.com"}}`))
+	}))
+	defer server.Close()
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential: %v", err)
+	}
+	if sessionCalls != 1 {
+		t.Fatalf("session calls = %d, want 1", sessionCalls)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccessToken != newAccess {
+		t.Fatalf("stored access token = %q, want refreshed web session token", parsed.AccessToken)
+	}
+	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
+		t.Fatalf("web session refresh should not invent refresh token: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
+	}
+	cookies := string(sec.Cookies)
+	if !strings.Contains(cookies, "__Secure-next-auth.session-token=new-cookie") || !strings.Contains(cookies, "other=keep") {
+		t.Fatalf("cookies were not merged with Set-Cookie: %q", cookies)
 	}
 }
 

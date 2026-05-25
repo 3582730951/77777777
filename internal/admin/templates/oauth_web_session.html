@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChatGPT Web Session 导入 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=8">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">ChatGPT Web Session 导入</div>
+      <div class="topbar-actions">
+        <a href="/accounts/oauth" class="btn ghost">← OAuth 登录</a>
+        <a href="/accounts" class="btn ghost">账号池</a>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">Web session enrollment</div>
+          <h1 class="hero-title">导入已登录 ChatGPT Web 会话</h1>
+          <p class="hero-subtitle">
+            适用于 Codex OAuth 页面要求手机号、但同浏览器里 ChatGPT Web 已经登录的账号。
+            导入后后台 token refresh runner 会周期性请求 <code>/api/auth/session</code>，自动更新 session JSON 和 Set-Cookie。
+          </p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>chatgpt</b><span>Provider</span></div>
+          <div class="hero-metric"><b>{{.Pending.TenantID}}</b><span>Tenant</span></div>
+          <div class="hero-metric"><b>{{.Pending.ExpiresAt.Format "15:04"}}</b><span>Expires</span></div>
+        </div>
+      </section>
+
+      <div class="status-command">
+        <div id="status-bar" class="status-bar status-pending" role="status" aria-live="polite" aria-atomic="true">
+          <span class="spin"></span>
+          <span id="status-txt">等待 Web Session 提交…</span>
+        </div>
+        <a href="/accounts" class="btn ghost sm">返回账号池</a>
+      </div>
+
+      <div class="layout-with-rail layout-wide-rail">
+        <div class="card work-surface">
+          <div class="card-header">
+            <div>
+              <div class="card-title">提交完整 Web Session 材料</div>
+              <div class="tiny muted">Session JSON 可以直接从 /api/auth/session 获取；Cookie 需要从 DevTools Network 复制完整请求头。</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="guide-step-card">
+              <h3>1. 打开并确认已登录 ChatGPT</h3>
+              <a href="https://chatgpt.com" target="_blank" rel="noopener noreferrer" class="btn ghost">→ 打开 chatgpt.com</a>
+            </div>
+            <div class="guide-step-card">
+              <h3>2. 获取 Session JSON 和 Cookie header</h3>
+              <p class="muted small">
+                在 DevTools Network 中找到 <code>/api/auth/session</code> 请求：Response 复制完整 JSON 到 Session；
+                Request Headers 复制完整 <code>Cookie</code> 到 Cookies。Cookie 必须包含 <code>__Secure-next-auth.session-token</code>
+                或 <code>__Secure-next-auth.session-token.0/.1</code> 分片。
+              </p>
+            </div>
+
+            <div class="guide-step-card">
+              <h3>3. 粘贴完整 session + cookie</h3>
+              <p class="muted small">
+                在已登录的 chatgpt.com 里请求 <code>https://chatgpt.com/api/auth/session</code>，把响应 JSON 粘到 Session；
+                再从 DevTools Network 复制请求的完整 <code>Cookie</code> header 粘到 Cookies。
+              </p>
+              <form method="post" action="/accounts/oauth/web-session/{{.Pending.ID}}/submit" class="form">
+                <div class="field">
+                  <label for="web-session-json">Session JSON *</label>
+                  <textarea id="web-session-json" name="session" rows="7" required placeholder='{"accessToken":"...","expires":"...","account":{"id":"...","planType":"plus"},"user":{"email":"..."}}'></textarea>
+                </div>
+                <div class="field">
+                  <label for="web-session-cookies">完整 Cookie header *</label>
+                  <textarea id="web-session-cookies" name="cookies" rows="5" required placeholder="__Secure-next-auth.session-token=...; cf_clearance=...; ..."></textarea>
+                  <div class="tiny muted">必须包含 <code>__Secure-next-auth.session-token</code> 或它的分片 cookie；否则后台无法自动刷新。</div>
+                </div>
+                <div class="field">
+                  <label for="web-session-ua">User-Agent（可选）</label>
+                  <input id="web-session-ua" name="ua" placeholder="留空则使用 provider 默认 UA"/>
+                </div>
+                <div class="form-actions">
+                  <button class="btn primary w-full" type="submit">保存并启用自动刷新</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <aside class="assist-rail sticky">
+          <div class="assist-card">
+            <div class="assist-card-head">
+              <div class="assist-card-title">自动刷新机制</div>
+              <div class="assist-card-sub">不是默认 OAuth，只对本模式账号生效</div>
+            </div>
+            <div class="assist-card-body decision-list">
+              <div class="decision-item"><span>1</span><div><b>保存 session JSON</b><small>作为当前 accessToken 快照。</small></div></div>
+              <div class="decision-item"><span>2</span><div><b>保存完整 Cookie</b><small>用于后台访问 /api/auth/session 换新 accessToken。</small></div></div>
+              <div class="decision-item"><span>3</span><div><b>自动合并 Set-Cookie</b><small>服务端返回新 cookie 时写回账号密文凭据。</small></div></div>
+            </div>
+          </div>
+
+          <details class="assist-card disclosure-card" open>
+            <summary>技术信息</summary>
+            <div class="assist-card-body">
+              <div class="kv">
+                <div class="kv-row"><span class="kv-key tiny">Enrollment ID</span><code class="kv-val tiny">{{.Pending.ID}}</code></div>
+                <div class="kv-row"><span class="kv-key tiny">POST URL</span><code class="kv-val tiny">{{.PostURL}}</code></div>
+                <div class="kv-row"><span class="kv-key tiny">状态</span><span class="kv-val tiny" id="state-txt">{{.Pending.State}}</span></div>
+              </div>
+            </div>
+          </details>
+        </aside>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const id="{{.Pending.ID}}";
+const bar=document.getElementById('status-bar');
+const txt=document.getElementById('status-txt');
+const stxt=document.getElementById('state-txt');
+async function poll(){
+  try{
+    const j=await fetch('/accounts/oauth/web-session/'+id+'/status').then(r=>r.json());
+    if(stxt) stxt.textContent=j.state;
+    if(j.state==='completed'){
+      bar.className='status-bar status-success';
+      txt.textContent='✓ Web Session 导入成功，跳转中…';
+      setTimeout(()=>location.href='/accounts/'+(j.account_id||''),1500);
+      return false;
+    }
+    if(j.state==='failed'){
+      bar.className='status-bar status-failed';
+      bar.setAttribute('aria-live','assertive');
+      txt.textContent='✗ 失败：'+(j.error||'未知错误');
+      return false;
+    }
+    if(j.state==='expired'){
+      bar.className='status-bar status-failed';
+      txt.textContent='已过期，请重新创建导入任务';
+      return false;
+    }
+  }catch{}
+  return true;
+}
+(async()=>{while(await poll())await new Promise(r=>setTimeout(r,2000))})();
+</script>
+</body></html>

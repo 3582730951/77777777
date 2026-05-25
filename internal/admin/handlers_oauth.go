@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/llm-pool/gateway/internal/domain"
+	"github.com/llm-pool/gateway/internal/enrollment"
 	"github.com/llm-pool/gateway/internal/oauth"
 	"github.com/llm-pool/gateway/internal/store"
 )
@@ -223,14 +224,11 @@ func (s *Server) handleOAuthStartGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOAuthStartPost(w http.ResponseWriter, r *http.Request) {
-	if s.oauth == nil {
-		http.Error(w, "oauth manager not wired", 500)
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	loginMode := strings.TrimSpace(r.FormValue("login_mode"))
 	provider := oauth.Provider(r.FormValue("provider"))
 	if oauth.ConfigFor(provider) == nil {
 		provider = oauth.ProviderCodex
@@ -241,6 +239,19 @@ func (s *Server) handleOAuthStartPost(w http.ResponseWriter, r *http.Request) {
 	}
 	note := r.FormValue("note")
 	workspaceID := strings.TrimSpace(r.FormValue("workspace_id"))
+	if loginMode == "web_session" {
+		if s.enroll == nil {
+			http.Error(w, "enrollment manager not wired", 500)
+			return
+		}
+		pending := s.enroll.Create(tenantID, "chatgpt", "", note)
+		http.Redirect(w, r, "/accounts/oauth/web-session/"+pending.ID, http.StatusSeeOther)
+		return
+	}
+	if s.oauth == nil {
+		http.Error(w, "oauth manager not wired", 500)
+		return
+	}
 	p, authURL, err := s.oauth.StartWithOptions(provider, tenantID, note, adminPublicBaseURL(r), workspaceID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -336,6 +347,67 @@ func (s *Server) handleOAuthPasteCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	http.Redirect(w, r, "/accounts/"+p.AccountID, http.StatusSeeOther)
+}
+
+func (s *Server) handleOAuthWebSessionShow(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if s.enroll == nil {
+		http.Error(w, "enrollment manager not wired", 500)
+		return
+	}
+	p, ok := s.enroll.Get(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	host := publicHost(r)
+	postURL := fmt.Sprintf("%s/enroll/%s", host, id)
+	s.render(w, r, "oauth_web_session.html", map[string]any{
+		"Active":      "accounts",
+		"Title":       s.t(r, "enroll.title"),
+		"Pending":     p,
+		"PostURL":     postURL,
+		"Bookmarklet": buildBookmarklet("chatgpt", postURL),
+	})
+}
+
+func (s *Server) handleOAuthWebSessionStatus(w http.ResponseWriter, r *http.Request) {
+	s.handleAccountEnrollStatus(w, r)
+}
+
+func (s *Server) handleOAuthWebSessionSubmit(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if s.enroll == nil {
+		http.Error(w, "enrollment manager not wired", 500)
+		return
+	}
+	p, ok := s.enroll.Get(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if p.State != enrollment.StatePending {
+		http.Error(w, "enrollment "+string(p.State), 410)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	sessionJSON := strings.TrimSpace(r.FormValue("session"))
+	cookies := strings.TrimSpace(r.FormValue("cookies"))
+	ua := strings.TrimSpace(r.FormValue("ua"))
+	accID, err := s.completeWebSessionEnrollment(r.Context(), p, sessionJSON, cookies, ua, true)
+	if err != nil {
+		s.enroll.Fail(id, err.Error())
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	s.enroll.Complete(id, accID)
+	if s.crud.Audit != nil {
+		s.crud.Audit.Log("info", "oauth-web-session", accID, "", "ChatGPT web session enrollment completed: tenant="+p.TenantID+" email="+accountEmailFromImport("", sessionJSON))
+	}
+	http.Redirect(w, r, "/accounts/"+accID, http.StatusSeeOther)
 }
 
 func adminPublicBaseURL(r *http.Request) string {

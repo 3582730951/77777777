@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -159,19 +160,37 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", 400)
 		return
 	}
+	accID, err := s.completeWebSessionEnrollment(r.Context(), p, strings.TrimSpace(payload.Session), payload.Cookies, payload.UA, false)
+	if err != nil {
+		s.enroll.Fail(id, err.Error())
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	s.enroll.Complete(id, accID)
+	if s.crud.Audit != nil {
+		s.crud.Audit.Log("info", "enrollment", accID, "", "account enrolled via bookmarklet (provider="+p.Provider+")")
+	}
+	writeJSONStatus(w, 200, map[string]any{"ok": true, "account_id": accID})
+}
+
+// ---- helpers ----
+
+func (s *Server) completeWebSessionEnrollment(ctx context.Context, p *enrollment.Pending, sess, cookies, ua string, requireCookies bool) (string, error) {
+	if p == nil {
+		return "", fmt.Errorf("missing enrollment")
+	}
 	// Validate the session blob looks plausible. For ChatGPT we expect either
 	// a JSON object with accessToken or the raw JWE cookie that starts with eyJ.
-	sess := strings.TrimSpace(payload.Session)
+	sess = strings.TrimSpace(sess)
 	if sess == "" {
-		s.enroll.Fail(id, "empty session")
-		http.Error(w, "empty session", 400)
-		return
+		return "", fmt.Errorf("empty session")
 	}
 	if p.Provider == "chatgpt" {
 		if !strings.HasPrefix(sess, "{") && !strings.HasPrefix(sess, "eyJ") {
-			s.enroll.Fail(id, "session does not look like ChatGPT")
-			http.Error(w, "bad session shape", 400)
-			return
+			return "", fmt.Errorf("session does not look like ChatGPT")
+		}
+		if requireCookies && !looksLikeChatGPTSessionCookies(cookies) {
+			return "", fmt.Errorf("cookies must include __Secure-next-auth.session-token for automatic web session refresh")
 		}
 	}
 	accID := "acc-" + randHex(6)
@@ -181,29 +200,29 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 		Provider:       p.Provider,
 		Email:          accountEmailFromImport("", sess),
 		StealthProfile: "chrome_124_windows",
-		UA:             payload.UA,
+		UA:             ua,
 		State:          domain.StateActive,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
 	sec := store.AccountSecret{
 		SessionToken: sess,
-		Cookies:      []byte(payload.Cookies),
+		Cookies:      []byte(cookies),
 	}
-	if err := s.deps.Store.UpsertAccount(r.Context(), a, sec); err != nil {
-		s.enroll.Fail(id, err.Error())
-		http.Error(w, err.Error(), 500)
-		return
+	if err := s.deps.Store.UpsertAccount(ctx, a, sec); err != nil {
+		return "", err
 	}
-	s.deps.Sched.Register(a)
-	s.enroll.Complete(id, accID)
-	if s.crud.Audit != nil {
-		s.crud.Audit.Log("info", "enrollment", accID, "", "account enrolled via bookmarklet (provider="+p.Provider+")")
+	if s.deps.Sched != nil {
+		s.deps.Sched.Register(a)
 	}
-	writeJSONStatus(w, 200, map[string]any{"ok": true, "account_id": accID})
+	return accID, nil
 }
 
-// ---- helpers ----
+func looksLikeChatGPTSessionCookies(cookies string) bool {
+	low := strings.ToLower(strings.TrimSpace(cookies))
+	return strings.Contains(low, "__secure-next-auth.session-token") ||
+		strings.Contains(low, "next-auth.session-token")
+}
 
 func publicHost(r *http.Request) string {
 	scheme := "http"

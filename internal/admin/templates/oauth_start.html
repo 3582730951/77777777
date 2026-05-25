@@ -63,6 +63,21 @@
           </div>
           <div class="card-body">
             <form method="post" action="/accounts/oauth" class="form" id="oauth-form">
+              <div class="form-section">
+                <div class="form-section-title">登录方式</div>
+                <div class="field">
+                  <label for="oauth-login-mode">模式</label>
+                  <select id="oauth-login-mode" name="login_mode" onchange="updateLoginMode()">
+                    <option value="oauth" selected>OAuth refresh_token（默认，推荐长期稳定）</option>
+                    <option value="web_session">ChatGPT Web Session（手动提供 session + cookie，后台自动刷新）</option>
+                  </select>
+                  <div class="tiny muted" id="oauth-login-mode-hint">
+                    默认模式会获取 access_token + refresh_token；Web Session 模式适合 Codex OAuth 要求手机号但 ChatGPT Web 已登录的账号。
+                  </div>
+                </div>
+              </div>
+
+              <div id="provider-section">
               <div class="provider-choice-grid">
                 {{range .Providers}}
                 <label class="provider-choice-card {{if eq .ID "codex"}}selected{{end}}">
@@ -118,6 +133,7 @@
                 </label>
                 {{end}}
               </div>
+              </div>
 
               <div class="form-section">
                 <div class="form-section-title">绑定配置</div>
@@ -135,7 +151,7 @@
                   </div>
                 </div>
                 <div class="form-row">
-                  <div class="field">
+                  <div class="field" id="workspace-field">
                     <label for="oauth-workspace-id">Codex Workspace ID（可选）</label>
                     <input id="oauth-workspace-id" name="workspace_id" placeholder="例如：org_abc；留空则由 OpenAI 自动选择"/>
                     <div class="tiny muted">仅 Codex OAuth 使用，会生成 allowed_workspace_id 参数。</div>
@@ -143,7 +159,7 @@
                 </div>
               </div>
 
-              <button class="btn primary lg w-full" type="submit">
+              <button class="btn primary lg w-full" type="submit" id="oauth-submit">
                 开始 OAuth 登录 →
               </button>
             </form>
@@ -196,5 +212,22 @@ document.querySelectorAll('.provider-choice-card input[type=radio]').forEach(rad
   });
   if (radio.checked) selectProvider(radio);
 });
+function updateLoginMode() {
+  const mode = document.getElementById('oauth-login-mode')?.value || 'oauth';
+  const web = mode === 'web_session';
+  const providerSection = document.getElementById('provider-section');
+  const workspaceField = document.getElementById('workspace-field');
+  const submit = document.getElementById('oauth-submit');
+  const hint = document.getElementById('oauth-login-mode-hint');
+  if (providerSection) providerSection.style.display = web ? 'none' : '';
+  if (workspaceField) workspaceField.style.display = web ? 'none' : '';
+  if (submit) submit.textContent = web ? '开始 Web Session 导入 →' : '开始 OAuth 登录 →';
+  if (hint) {
+    hint.textContent = web
+      ? '下一页会要求你打开已登录的 chatgpt.com，提交 /api/auth/session 返回的完整 JSON 和 Cookie header；后台会按周期自动刷新 session。'
+      : '默认模式会获取 access_token + refresh_token；Web Session 模式适合 Codex OAuth 要求手机号但 ChatGPT Web 已登录的账号。';
+  }
+}
+updateLoginMode();
 </script>
 </body></html>
