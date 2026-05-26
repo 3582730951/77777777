@@ -1,5 +1,6 @@
 // session.go — resolves a stored credential blob into a usable bearer access
-// token. We accept two flavours of input (set by /accounts/new):
+// token. We accept three flavours of input (set by /accounts/new or bulk
+// imports):
 //
 //  1. The full /api/auth/session JSON (recommended): start with `{`. We can
 //     read the accessToken directly and only refresh when its JWT exp claim is
@@ -8,6 +9,11 @@
 //  2. The raw __Secure-next-auth.session-token JWE cookie value: start with
 //     `eyJ`. We GET https://chatgpt.com/api/auth/session ourselves, with the
 //     cookie set, parse the JSON, and use the accessToken returned.
+//
+//  3. other_codex/Codex CLI auth.json: top-level JSON containing
+//     tokens.access_token, tokens.refresh_token, tokens.id_token and optional
+//     tokens.account_id. This is normalized into the same sessionInfo shape so
+//     expiry and token_invalidated recovery use the OAuth refresh_token first.
 //
 // The cache is keyed by account id. The provider persists refreshed sessions
 // after Resolve returns a rotated token.
@@ -28,13 +34,15 @@ import (
 )
 
 type sessionInfo struct {
-	AccessToken  string
-	RefreshToken string
-	Expires      time.Time
-	AccountID    string
-	PlanType     string
-	Email        string
-	IDToken      string
+	AccessToken   string
+	RefreshToken  string
+	Expires       time.Time
+	AccountID     string
+	PlanType      string
+	Email         string
+	IDToken       string
+	ChatGPTUserID string
+	FedRAMP       bool
 }
 
 type sessionResolver struct {
@@ -317,26 +325,32 @@ func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo, client 
 	accountID := info.AccountID
 	planType := info.PlanType
 	email := info.Email
-	if idTok != "" {
-		claimAccount, claimPlan, claimEmail := codexClaims(idTok)
-		if accountID == "" {
-			accountID = claimAccount
-		}
-		if planType == "" {
-			planType = claimPlan
-		}
-		if email == "" {
-			email = claimEmail
-		}
+	userID := info.ChatGPTUserID
+	fedRAMP := info.FedRAMP
+	claims := mergeCodexClaims(codexClaims(idTok), codexClaims(newAccess))
+	if accountID == "" {
+		accountID = claims.AccountID
 	}
+	if planType == "" {
+		planType = claims.PlanType
+	}
+	if email == "" {
+		email = claims.Email
+	}
+	if claims.UserID != "" && (userID == "" || userID == info.AccountID || userID == accountID) {
+		userID = claims.UserID
+	}
+	fedRAMP = fedRAMP || claims.FedRAMP
 	return sessionInfo{
-		AccessToken:  newAccess,
-		RefreshToken: newRefresh,
-		Expires:      exp,
-		AccountID:    accountID,
-		PlanType:     planType,
-		Email:        email,
-		IDToken:      idTok,
+		AccessToken:   newAccess,
+		RefreshToken:  newRefresh,
+		Expires:       exp,
+		AccountID:     accountID,
+		PlanType:      planType,
+		Email:         email,
+		IDToken:       idTok,
+		ChatGPTUserID: userID,
+		FedRAMP:       fedRAMP,
 	}, nil
 }
 
@@ -403,15 +417,59 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		} `json:"user"`
 		Expires string `json:"expires"`
 		Account struct {
-			ID       string `json:"id"`
-			PlanType string `json:"planType"`
+			ID                         string `json:"id"`
+			PlanType                   string `json:"planType"`
+			SnakePlanType              string `json:"plan_type"`
+			IsFedramp                  bool   `json:"isFedramp"`
+			SnakeIsFedramp             bool   `json:"is_fedramp"`
+			ChatGPTAccountIsFedramp    bool   `json:"chatgpt_account_is_fedramp"`
+			CamelChatGPTAccountID      string `json:"chatgptAccountId"`
+			SnakeChatGPTAccountID      string `json:"chatgpt_account_id"`
+			CamelChatGPTAccountPlan    string `json:"chatgptPlanType"`
+			SnakeChatGPTAccountPlan    string `json:"chatgpt_plan_type"`
+			CamelChatGPTAccountUserID  string `json:"chatgptUserId"`
+			SnakeChatGPTAccountUserID  string `json:"chatgpt_user_id"`
+			CamelChatGPTAccountUserID2 string `json:"userId"`
+			SnakeChatGPTAccountUserID2 string `json:"user_id"`
 		} `json:"account"`
-		AccessToken  string `json:"accessToken"`
-		SnakeAccess  string `json:"access_token"`
-		RefreshToken string `json:"refreshToken"`
-		SnakeRefresh string `json:"refresh_token"`
-		IDToken      string `json:"idToken"`
-		SnakeIDToken string `json:"id_token"`
+		AccessToken                 string `json:"accessToken"`
+		SnakeAccess                 string `json:"access_token"`
+		RefreshToken                string `json:"refreshToken"`
+		SnakeRefresh                string `json:"refresh_token"`
+		IDToken                     string `json:"idToken"`
+		SnakeIDToken                string `json:"id_token"`
+		ChatGPTUserID               string `json:"chatgpt_user_id"`
+		CamelChatGPTUserID          string `json:"chatgptUserId"`
+		UserID                      string `json:"user_id"`
+		CamelUserID                 string `json:"userId"`
+		ChatGPTAccountID            string `json:"chatgpt_account_id"`
+		CamelChatGPTAccountID       string `json:"chatgptAccountId"`
+		ChatGPTPlanType             string `json:"chatgpt_plan_type"`
+		CamelChatGPTPlanType        string `json:"chatgptPlanType"`
+		ChatGPTAccountIsFedramp     bool   `json:"chatgpt_account_is_fedramp"`
+		CamelChatGPTAccountFedramp  bool   `json:"chatgptAccountIsFedramp"`
+		ChatGPTAccountIsFedramp2    bool   `json:"chatgpt_account_is_fedRAMP"`
+		CamelChatGPTAccountFedramp2 bool   `json:"chatgptAccountIsFedRAMP"`
+		Tokens                      *struct {
+			AccessToken                string `json:"access_token"`
+			CamelAccess                string `json:"accessToken"`
+			RefreshToken               string `json:"refresh_token"`
+			CamelRefresh               string `json:"refreshToken"`
+			IDToken                    string `json:"id_token"`
+			CamelIDToken               string `json:"idToken"`
+			AccountID                  string `json:"account_id"`
+			CamelAccount               string `json:"accountId"`
+			ChatGPTAccountID           string `json:"chatgpt_account_id"`
+			CamelChatGPTAccountID      string `json:"chatgptAccountId"`
+			ChatGPTPlanType            string `json:"chatgpt_plan_type"`
+			CamelChatGPTPlanType       string `json:"chatgptPlanType"`
+			ChatGPTUserID              string `json:"chatgpt_user_id"`
+			CamelChatGPTUserID         string `json:"chatgptUserId"`
+			UserID                     string `json:"user_id"`
+			CamelUserID                string `json:"userId"`
+			ChatGPTAccountIsFedramp    bool   `json:"chatgpt_account_is_fedramp"`
+			CamelChatGPTAccountFedramp bool   `json:"chatgptAccountIsFedramp"`
+		} `json:"tokens"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return sessionInfo{}, fmt.Errorf("parse session json: %w", err)
@@ -425,6 +483,64 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 	if raw.IDToken == "" {
 		raw.IDToken = raw.SnakeIDToken
 	}
+	explicitUserID := firstNonEmpty(
+		raw.ChatGPTUserID,
+		raw.CamelChatGPTUserID,
+		raw.UserID,
+		raw.CamelUserID,
+		raw.Account.SnakeChatGPTAccountUserID,
+		raw.Account.CamelChatGPTAccountUserID,
+		raw.Account.SnakeChatGPTAccountUserID2,
+		raw.Account.CamelChatGPTAccountUserID2,
+	)
+	userID := explicitUserID
+	accountID := firstNonEmpty(raw.Account.ID, raw.ChatGPTAccountID, raw.CamelChatGPTAccountID, raw.Account.SnakeChatGPTAccountID, raw.Account.CamelChatGPTAccountID)
+	planType := firstNonEmpty(raw.Account.PlanType, raw.Account.SnakePlanType, raw.ChatGPTPlanType, raw.CamelChatGPTPlanType, raw.Account.SnakeChatGPTAccountPlan, raw.Account.CamelChatGPTAccountPlan)
+	fedRAMP := raw.ChatGPTAccountIsFedramp ||
+		raw.CamelChatGPTAccountFedramp ||
+		raw.ChatGPTAccountIsFedramp2 ||
+		raw.CamelChatGPTAccountFedramp2 ||
+		raw.Account.IsFedramp ||
+		raw.Account.SnakeIsFedramp ||
+		raw.Account.ChatGPTAccountIsFedramp
+	if raw.Tokens != nil {
+		if raw.AccessToken == "" {
+			raw.AccessToken = firstNonEmpty(raw.Tokens.AccessToken, raw.Tokens.CamelAccess)
+		}
+		if raw.RefreshToken == "" {
+			raw.RefreshToken = firstNonEmpty(raw.Tokens.RefreshToken, raw.Tokens.CamelRefresh)
+		}
+		if raw.IDToken == "" {
+			raw.IDToken = firstNonEmpty(raw.Tokens.IDToken, raw.Tokens.CamelIDToken)
+		}
+		if accountID == "" {
+			accountID = firstNonEmpty(raw.Tokens.AccountID, raw.Tokens.CamelAccount, raw.Tokens.ChatGPTAccountID, raw.Tokens.CamelChatGPTAccountID)
+		}
+		if planType == "" {
+			planType = firstNonEmpty(raw.Tokens.ChatGPTPlanType, raw.Tokens.CamelChatGPTPlanType)
+		}
+		if userID == "" {
+			userID = firstNonEmpty(raw.Tokens.ChatGPTUserID, raw.Tokens.CamelChatGPTUserID, raw.Tokens.UserID, raw.Tokens.CamelUserID)
+		}
+		fedRAMP = fedRAMP || raw.Tokens.ChatGPTAccountIsFedramp || raw.Tokens.CamelChatGPTAccountFedramp
+	}
+	claims := mergeCodexClaims(codexClaims(raw.IDToken), codexClaims(raw.AccessToken))
+	if accountID == "" {
+		accountID = claims.AccountID
+	}
+	if planType == "" {
+		planType = claims.PlanType
+	}
+	if raw.User.Email == "" {
+		raw.User.Email = claims.Email
+	}
+	if claims.UserID != "" && (userID == "" || userID == accountID) {
+		userID = claims.UserID
+	}
+	if userID == "" {
+		userID = raw.User.ID
+	}
+	fedRAMP = fedRAMP || claims.FedRAMP
 	if raw.AccessToken == "" {
 		// Check for ban/deactivation signals in the raw JSON
 		bodyLower := strings.ToLower(string(body))
@@ -446,13 +562,15 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		}
 	}
 	return sessionInfo{
-		AccessToken:  raw.AccessToken,
-		RefreshToken: raw.RefreshToken,
-		Expires:      exp,
-		AccountID:    raw.Account.ID,
-		PlanType:     raw.Account.PlanType,
-		Email:        raw.User.Email,
-		IDToken:      raw.IDToken,
+		AccessToken:   raw.AccessToken,
+		RefreshToken:  raw.RefreshToken,
+		Expires:       exp,
+		AccountID:     accountID,
+		PlanType:      planType,
+		Email:         raw.User.Email,
+		IDToken:       raw.IDToken,
+		ChatGPTUserID: userID,
+		FedRAMP:       fedRAMP,
 	}, nil
 }
 
@@ -479,35 +597,75 @@ func jwtExpiry(jwt string) time.Time {
 	return time.Unix(claim.Exp, 0)
 }
 
-func codexClaims(jwt string) (accountID, planType, email string) {
+type codexClaimInfo struct {
+	AccountID string
+	PlanType  string
+	Email     string
+	UserID    string
+	FedRAMP   bool
+}
+
+func mergeCodexClaims(primary, fallback codexClaimInfo) codexClaimInfo {
+	if primary.AccountID == "" {
+		primary.AccountID = fallback.AccountID
+	}
+	if primary.PlanType == "" {
+		primary.PlanType = fallback.PlanType
+	}
+	if primary.Email == "" {
+		primary.Email = fallback.Email
+	}
+	if primary.UserID == "" {
+		primary.UserID = fallback.UserID
+	}
+	primary.FedRAMP = primary.FedRAMP || fallback.FedRAMP
+	return primary
+}
+
+func codexClaims(jwt string) codexClaimInfo {
+	var out codexClaimInfo
 	parts := strings.Split(jwt, ".")
 	if len(parts) < 2 {
-		return
+		return out
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		payload, err = base64.URLEncoding.DecodeString(addB64Padding(parts[1]))
 		if err != nil {
-			return
+			return out
 		}
 	}
 	var nested map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &nested); err != nil {
-		return
+		return out
 	}
 	if a, ok := nested["https://api.openai.com/auth"]; ok {
 		var inner struct {
-			ChatGPTAccountID string `json:"chatgpt_account_id"`
-			ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+			ChatGPTAccountID        string `json:"chatgpt_account_id"`
+			ChatGPTPlanType         string `json:"chatgpt_plan_type"`
+			ChatGPTUserID           string `json:"chatgpt_user_id"`
+			UserID                  string `json:"user_id"`
+			ChatGPTAccountIsFedramp bool   `json:"chatgpt_account_is_fedramp"`
 		}
 		_ = json.Unmarshal(a, &inner)
-		accountID = inner.ChatGPTAccountID
-		planType = inner.ChatGPTPlanType
+		out.AccountID = inner.ChatGPTAccountID
+		out.PlanType = inner.ChatGPTPlanType
+		out.UserID = firstNonEmpty(inner.ChatGPTUserID, inner.UserID)
+		out.FedRAMP = inner.ChatGPTAccountIsFedramp
 	}
 	if e, ok := nested["email"]; ok {
-		_ = json.Unmarshal(e, &email)
+		_ = json.Unmarshal(e, &out.Email)
 	}
-	return
+	if out.Email == "" {
+		if p, ok := nested["https://api.openai.com/profile"]; ok {
+			var profile struct {
+				Email string `json:"email"`
+			}
+			_ = json.Unmarshal(p, &profile)
+			out.Email = profile.Email
+		}
+	}
+	return out
 }
 
 func addB64Padding(s string) string {

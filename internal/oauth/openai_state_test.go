@@ -175,31 +175,39 @@ func TestFormatCodexRefreshErrorExtractsTopLevelInvalidGrant(t *testing.T) {
 	}
 }
 
-func TestRefreshCodexWithClientPreservesRefreshTokenWhenAuthorityOmitsRotation(t *testing.T) {
+func TestRefreshCodexWithClientUsesOtherCodexJSONRefreshFlow(t *testing.T) {
 	oldConfig := CodexConfig
 	defer func() { CodexConfig = oldConfig }()
+	t.Setenv("CODEX_REFRESH_TOKEN_URL_OVERRIDE", "")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
-		if got := r.Header.Get("User-Agent"); got != "codex-cli/0.91.0" {
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("content-type = %q, want application/json", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "codex_cli_rs/0.91.0" {
 			t.Fatalf("user-agent = %q", got)
 		}
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form: %v", err)
+		if got := r.Header.Get("originator"); got != CodexDefaultOriginator {
+			t.Fatalf("originator = %q, want %q", got, CodexDefaultOriginator)
 		}
-		if got := r.Form.Get("grant_type"); got != "refresh_token" {
-			t.Fatalf("grant_type = %q", got)
+		var got map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode json body: %v", err)
 		}
-		if got := r.Form.Get("refresh_token"); got != "rt-old" {
-			t.Fatalf("refresh_token = %q", got)
+		if got["grant_type"] != "refresh_token" {
+			t.Fatalf("grant_type = %q", got["grant_type"])
 		}
-		if got := r.Form.Get("client_id"); got != CodexConfig.ClientID {
-			t.Fatalf("client_id = %q", got)
+		if got["refresh_token"] != "rt-old" {
+			t.Fatalf("refresh_token = %q", got["refresh_token"])
 		}
-		if got := r.Form.Get("scope"); got != "openid profile email" {
-			t.Fatalf("scope = %q", got)
+		if got["client_id"] != CodexConfig.ClientID {
+			t.Fatalf("client_id = %q", got["client_id"])
+		}
+		if _, ok := got["scope"]; ok {
+			t.Fatalf("other_codex refresh flow must not resend scope: %#v", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"access-new","id_token":"id-new","expires_in":3600}`))

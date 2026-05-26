@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -972,15 +973,19 @@ func (m *Manager) RefreshCodex(ctx context.Context, refreshToken string) (newAcc
 
 func (m *Manager) RefreshCodexWithClient(ctx context.Context, refreshToken string, client *http.Client) (newAccess, newRefresh, idToken string, expiresIn int, err error) {
 	cfg := &CodexConfig
-	form := url.Values{}
-	form.Set("client_id", cfg.ClientID)
-	form.Set("grant_type", "refresh_token")
-	form.Set("refresh_token", refreshToken)
-	form.Set("scope", "openid profile email") // sub2api RefreshScopes order
-	req, _ := http.NewRequestWithContext(ctx, "POST", cfg.TokenURL, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	requestBody, _ := json.Marshal(map[string]string{
+		"client_id":     cfg.ClientID,
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", codexRefreshTokenEndpoint(cfg.TokenURL), bytes.NewReader(requestBody))
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "codex-cli/0.91.0")
+	req.Header.Set("User-Agent", "codex_cli_rs/0.91.0")
+	req.Header.Set("originator", CodexDefaultOriginator)
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -1004,6 +1009,9 @@ func (m *Manager) RefreshCodexWithClient(ctx context.Context, refreshToken strin
 	if err := json.Unmarshal(body, &tok); err != nil {
 		return "", "", "", 0, err
 	}
+	if tok.AccessToken == "" {
+		return "", "", "", 0, errors.New("empty access_token in refresh response")
+	}
 	if tok.RefreshToken == "" {
 		tok.RefreshToken = tok.CamelRefresh
 	}
@@ -1014,6 +1022,13 @@ func (m *Manager) RefreshCodexWithClient(ctx context.Context, refreshToken strin
 		tok.IDToken = tok.CamelIDToken
 	}
 	return tok.AccessToken, tok.RefreshToken, tok.IDToken, tok.ExpiresIn, nil
+}
+
+func codexRefreshTokenEndpoint(configured string) string {
+	if override := strings.TrimSpace(os.Getenv("CODEX_REFRESH_TOKEN_URL_OVERRIDE")); override != "" {
+		return override
+	}
+	return configured
 }
 
 func formatCodexRefreshError(status int, body []byte) string {

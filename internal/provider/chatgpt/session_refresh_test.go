@@ -146,6 +146,114 @@ func TestRefreshCredentialPrefersSessionRefreshTokenOverStaleSecret(t *testing.T
 	}
 }
 
+func TestRefreshCredentialUsesOtherCodexAuthJSONRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	otherCodexAuthJSON := `{"auth_mode":"chatgpt","tokens":{"access_token":"` + expiredAccess + `","refresh_token":"rt-authjson","id_token":"id-old","account_id":"chatgpt-account"},"last_refresh":"2026-01-01T00:00:00Z"}`
+	acc := &domain.Account{
+		ID:       "acc-other-codex-auth-json",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: otherCodexAuthJSON,
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-authjson" {
+			t.Fatalf("refresh token = %q, want rt-authjson", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential: %v", err)
+	}
+
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored top-level refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != newAccess || parsed.RefreshToken != "rt-new" || parsed.AccountID != "chatgpt-account" {
+		t.Fatalf("persisted session did not use refreshed other_codex credentials: %+v", parsed)
+	}
+}
+
+func TestParseSessionJSONExtractsOtherCodexAccountFeatures(t *testing.T) {
+	idToken := testJWTClaims(map[string]any{
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"email": "user@example.com",
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id":         "acct-from-claim",
+			"chatgpt_plan_type":          "team",
+			"chatgpt_user_id":            "user-from-claim",
+			"chatgpt_account_is_fedramp": true,
+		},
+	})
+	sessionJSON := `{"auth_mode":"chatgpt","user":{"id":"acct-from-claim"},"tokens":{"access_token":"` + testJWTExp(time.Now().Add(time.Hour)) + `","refresh_token":"rt","id_token":"` + idToken + `"}}`
+
+	parsed, err := parseSessionJSON([]byte(sessionJSON))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccountID != "acct-from-claim" {
+		t.Fatalf("account id = %q, want acct-from-claim", parsed.AccountID)
+	}
+	if parsed.PlanType != "team" {
+		t.Fatalf("plan type = %q, want team", parsed.PlanType)
+	}
+	if parsed.Email != "user@example.com" {
+		t.Fatalf("email = %q, want user@example.com", parsed.Email)
+	}
+	if parsed.ChatGPTUserID != "user-from-claim" {
+		t.Fatalf("chatgpt user id = %q, want user-from-claim", parsed.ChatGPTUserID)
+	}
+	if !parsed.FedRAMP {
+		t.Fatal("fedramp flag was not extracted")
+	}
+}
+
+func TestBuildChatGPTSessionJSONPreservesAccountFeatures(t *testing.T) {
+	sessionJSON := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:   testJWTExp(time.Now().Add(time.Hour)),
+		RefreshToken:  "rt",
+		Expires:       time.Now().Add(time.Hour),
+		AccountID:     "acct-1",
+		PlanType:      "team",
+		Email:         "user@example.com",
+		IDToken:       "id-token",
+		ChatGPTUserID: "user-1",
+		FedRAMP:       true,
+	})
+
+	parsed, err := parseSessionJSON([]byte(sessionJSON))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccountID != "acct-1" || parsed.ChatGPTUserID != "user-1" || !parsed.FedRAMP {
+		t.Fatalf("account features not preserved: %+v", parsed)
+	}
+}
+
 func TestRefreshCredentialPreservesRefreshTokenWhenAuthorityOmitsRotation(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
@@ -900,8 +1008,12 @@ func TestForceRefreshRecoversStoreSessionChangedAfterRefreshReuse(t *testing.T) 
 }
 
 func testJWTExp(exp time.Time) string {
+	return testJWTClaims(map[string]any{"exp": exp.Unix()})
+}
+
+func testJWTClaims(claims map[string]any) string {
 	header, _ := json.Marshal(map[string]string{"alg": "none", "typ": "JWT"})
-	payload, _ := json.Marshal(map[string]int64{"exp": exp.Unix()})
+	payload, _ := json.Marshal(claims)
 	return base64.RawURLEncoding.EncodeToString(header) + "." +
 		base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }

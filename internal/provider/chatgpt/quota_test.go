@@ -125,7 +125,7 @@ func TestFetchWhamUsageTreatsBanSignalAsBanned(t *testing.T) {
 	defer server.Close()
 	p.httpClient = rewriteTransportClient(server.URL)
 
-	_, err := p.fetchWhamUsage(context.Background(), &domain.Account{}, "tok", "acct")
+	_, err := p.fetchWhamUsage(context.Background(), &domain.Account{}, sessionInfo{AccessToken: "tok", AccountID: "acct"})
 	if err == nil {
 		t.Fatal("expected banned error")
 	}
@@ -136,17 +136,22 @@ func TestFetchWhamUsageTreatsBanSignalAsBanned(t *testing.T) {
 
 func TestFetchWhamUsageUsesCodexHeaders(t *testing.T) {
 	p := New(ModeReal)
-	var gotUA, gotOriginator, gotAccount string
+	var gotUA, gotOriginator, gotAccount, gotFedRAMP string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUA = r.Header.Get("User-Agent")
 		gotOriginator = r.Header.Get("originator")
 		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		gotFedRAMP = r.Header.Get("X-OpenAI-Fedramp")
 		_, _ = w.Write([]byte(`{"rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1777722657},"secondary_window":{"used_percent":2,"limit_window_seconds":604800,"reset_at":1778123456}}}`))
 	}))
 	defer server.Close()
 	p.httpClient = rewriteTransportClient(server.URL)
 
-	state, err := p.fetchWhamUsage(context.Background(), &domain.Account{UA: "codex-cli-test"}, "tok", "acct-1")
+	state, err := p.fetchWhamUsage(context.Background(), &domain.Account{UA: "codex-cli-test"}, sessionInfo{
+		AccessToken: "tok",
+		AccountID:   "acct-1",
+		FedRAMP:     true,
+	})
 	if err != nil {
 		t.Fatalf("fetch wham: %v", err)
 	}
@@ -155,6 +160,51 @@ func TestFetchWhamUsageUsesCodexHeaders(t *testing.T) {
 	}
 	if gotUA != "codex-cli-test" || gotOriginator != "codex_cli_rs" || gotAccount != "acct-1" {
 		t.Fatalf("headers not preserved: ua=%q originator=%q account=%q", gotUA, gotOriginator, gotAccount)
+	}
+	if gotFedRAMP != "true" {
+		t.Fatalf("fedramp header = %q, want true", gotFedRAMP)
+	}
+}
+
+func TestChatGPTAccountHeadersOmitFedRAMPWhenDisabled(t *testing.T) {
+	h := http.Header{}
+	setChatGPTAccountHeaders(h, sessionInfo{AccountID: "acct-1"})
+
+	if got := h["ChatGPT-Account-ID"]; len(got) != 1 || got[0] != "acct-1" {
+		t.Fatalf("account header = %q, want acct-1", got)
+	}
+	if got := h["X-OpenAI-Fedramp"]; len(got) != 0 {
+		t.Fatalf("fedramp header = %q, want empty", got)
+	}
+}
+
+func TestFetchLegacyConversationLimitUsesFedRAMPHeader(t *testing.T) {
+	p := New(ModeReal)
+	var gotFedRAMP string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation_limit" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		gotFedRAMP = r.Header.Get("X-OpenAI-Fedramp")
+		_, _ = w.Write([]byte(`{
+			"message_cap_ffp": {"limit": 10, "remaining": 7, "reset_time_utc": "2099-01-01T00:00:00Z"},
+			"message_cap_ffp_7d": {"limit": 20, "remaining": 15, "reset_time_utc": "2099-01-02T00:00:00Z"}
+		}`))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	state := &domain.QuotaState{}
+	err := p.fetchLegacyConversationLimit(context.Background(), state, &domain.Account{UA: "codex-cli-test"}, sessionInfo{
+		AccessToken: "tok",
+		AccountID:   "acct-1",
+		FedRAMP:     true,
+	})
+	if err != nil {
+		t.Fatalf("fetch legacy conversation limit: %v", err)
+	}
+	if gotFedRAMP != "true" {
+		t.Fatalf("fedramp header = %q, want true", gotFedRAMP)
 	}
 }
 
@@ -360,6 +410,37 @@ func TestInvokeRawUsesPromptCacheKeyForCodexSessionHeaders(t *testing.T) {
 	}
 }
 
+func TestDoCodexResponsesUsesAccountFeatureHeaders(t *testing.T) {
+	p := New(ModeReal)
+	var gotAccount, gotFedRAMP, gotOriginator string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		gotFedRAMP = r.Header.Get("X-OpenAI-Fedramp")
+		gotOriginator = r.Header.Get("originator")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	resp, err := p.doCodexResponses(context.Background(), &domain.Account{UA: "codex-cli-test"}, sessionInfo{
+		AccessToken: "tok",
+		AccountID:   "acct-1",
+		FedRAMP:     true,
+	}, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("do codex responses: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotAccount != "acct-1" || gotFedRAMP != "true" || gotOriginator != "codex_cli_rs" {
+		t.Fatalf("account feature headers = account:%q fedramp:%q originator:%q", gotAccount, gotFedRAMP, gotOriginator)
+	}
+}
+
 func TestInvokeRawFallsBackToRandomSessionWithoutPromptCacheKey(t *testing.T) {
 	p, cleanup := newRawInvokeTestProvider(t)
 	defer cleanup()
@@ -414,6 +495,32 @@ func TestInvokeRawNormalizesFastServiceTierAlias(t *testing.T) {
 	}
 	if got := gjson.GetBytes(gotBody, "service_tier").String(); got != "priority" {
 		t.Fatalf("service_tier = %q, want priority; body=%s", got, gotBody)
+	}
+}
+
+func TestInvokeRawDropsDefaultServiceTier(t *testing.T) {
+	p, cleanup := newRawInvokeTestProvider(t)
+	defer cleanup()
+
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(context.Background(), "acc-raw", []byte(`{"model":"gpt-5.5","service_tier":" default ","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if gjson.GetBytes(gotBody, "service_tier").Exists() {
+		t.Fatalf("default service_tier should be omitted; body=%s", gotBody)
 	}
 }
 
@@ -505,6 +612,96 @@ func TestInvokeRawRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 	if parsed.AccessToken != newAccess {
 		t.Fatal("stored access token was not refreshed")
+	}
+}
+
+func TestInvokeRawTokenInvalidatedRefreshesOtherCodexAuthJSONBeforeCookieFallback(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-other-codex-json",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	otherCodexAuthJSON := `{"auth_mode":"chatgpt","tokens":{"access_token":"` + oldAccess + `","refresh_token":"rt-authjson","id_token":"id-old","account_id":"chatgpt-account"},"last_refresh":"2026-01-01T00:00:00Z"}`
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: otherCodexAuthJSON,
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	var refreshCalls int
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		refreshCalls++
+		if refreshToken != "rt-authjson" {
+			t.Fatalf("refresh token = %q, want rt-authjson", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var codexCalls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/auth/session" {
+			t.Fatal("cookie web-session recovery should not run while other_codex refresh_token is present")
+		}
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		codexCalls++
+		auths = append(auths, r.Header.Get("Authorization"))
+		if codexCalls == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated","param":null}}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("retry authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		body, _ := io.ReadAll(rc)
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if refreshCalls != 1 || codexCalls != 2 {
+		t.Fatalf("calls refresh=%d codex=%d, want 1/2", refreshCalls, codexCalls)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer "+oldAccess || auths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", auths)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccessToken != newAccess || parsed.RefreshToken != "rt-new" {
+		t.Fatalf("stored session not refreshed from other_codex token flow: %+v", parsed)
 	}
 }
 

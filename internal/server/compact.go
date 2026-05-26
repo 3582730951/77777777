@@ -224,6 +224,7 @@ func decodeResponsesAPICompact(body []byte) (*ir.Request, error) {
 	var raw struct {
 		Model        string `json:"model"`
 		Instructions string `json:"instructions"`
+		ServiceTier  string `json:"service_tier"`
 		Input        []struct {
 			Type    string `json:"type"`
 			Role    string `json:"role"`
@@ -241,6 +242,7 @@ func decodeResponsesAPICompact(body []byte) (*ir.Request, error) {
 		Model:         raw.Model,
 		OriginalModel: raw.Model,
 		System:        raw.Instructions,
+		ServiceTier:   raw.ServiceTier,
 		Stream:        false,
 	}
 

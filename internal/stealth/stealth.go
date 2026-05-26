@@ -203,6 +203,12 @@ func delHeaderPrefixes(h http.Header, prefixes []string) {
 
 // CodexHeaders sets the full Codex CLI header set for chatgpt.com requests.
 func CodexHeaders(h http.Header, ua, accountID, sessionID, accessToken string) {
+	CodexHeadersWithAccountFeatures(h, ua, accountID, sessionID, accessToken, false)
+}
+
+// CodexHeadersWithAccountFeatures sets the Codex CLI header set plus optional
+// account-routing features discovered from the ChatGPT/Codex auth token.
+func CodexHeadersWithAccountFeatures(h http.Header, ua, accountID, sessionID, accessToken string, fedRAMP bool) {
 	if ua == "" {
 		ua = "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
 	}
@@ -213,6 +219,9 @@ func CodexHeaders(h http.Header, ua, accountID, sessionID, accessToken string) {
 	h.Set("OpenAI-Beta", "responses=experimental")
 	h.Set("originator", "codex_cli_rs")
 	h.Set("ChatGPT-Account-Id", accountID)
+	if fedRAMP {
+		h.Set("X-OpenAI-Fedramp", "true")
+	}
 	h.Set("session_id", sessionID)
 	h.Set("Accept-Encoding", "gzip, deflate, br")
 	ScrubProxy(h)

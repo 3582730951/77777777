@@ -972,23 +972,42 @@ func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
 		old.IDToken != info.IDToken ||
 		old.AccountID != info.AccountID ||
 		old.PlanType != info.PlanType ||
-		old.Email != info.Email
+		old.Email != info.Email ||
+		old.ChatGPTUserID != info.ChatGPTUserID ||
+		old.FedRAMP != info.FedRAMP
 }
 
 func buildChatGPTSessionJSON(info sessionInfo) string {
+	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
 	out := map[string]any{
 		"user": map[string]string{
-			"id":    info.AccountID,
+			"id":    userID,
 			"email": info.Email,
 		},
 		"expires": info.Expires.Format(time.RFC3339),
-		"account": map[string]string{
-			"id":       info.AccountID,
-			"planType": info.PlanType,
+		"account": map[string]any{
+			"id":                         info.AccountID,
+			"planType":                   info.PlanType,
+			"isFedramp":                  info.FedRAMP,
+			"is_fedramp":                 info.FedRAMP,
+			"chatgpt_account_is_fedramp": info.FedRAMP,
+			"chatgpt_account_id":         info.AccountID,
+			"chatgpt_plan_type":          info.PlanType,
+			"chatgpt_user_id":            info.ChatGPTUserID,
+			"chatgptAccountIsFedramp":    info.FedRAMP,
+			"chatgptAccountId":           info.AccountID,
+			"chatgptPlanType":            info.PlanType,
+			"chatgptUserId":              info.ChatGPTUserID,
 		},
-		"accessToken":  info.AccessToken,
-		"refreshToken": info.RefreshToken,
-		"idToken":      info.IDToken,
+		"accessToken":                info.AccessToken,
+		"refreshToken":               info.RefreshToken,
+		"idToken":                    info.IDToken,
+		"chatgpt_user_id":            info.ChatGPTUserID,
+		"user_id":                    info.ChatGPTUserID,
+		"chatgpt_account_id":         info.AccountID,
+		"chatgpt_plan_type":          info.PlanType,
+		"chatgpt_account_is_fedramp": info.FedRAMP,
+		"chatgptAccountIsFedramp":    info.FedRAMP,
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
@@ -1019,13 +1038,13 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 	if err != nil {
 		return err
 	}
-	_, err = p.fetchWhamUsage(ctx, acc, info.AccessToken, info.AccountID)
+	_, err = p.fetchWhamUsage(ctx, acc, info)
 	if isChatGPTTokenInvalidatedError(err) {
 		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
 		if refreshErr != nil {
 			return fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
 		}
-		_, err = p.fetchWhamUsage(ctx, acc, refreshed.AccessToken, refreshed.AccountID)
+		_, err = p.fetchWhamUsage(ctx, acc, refreshed)
 	}
 	return err
 }
@@ -1080,7 +1099,7 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 	log.Printf("[chatgpt-discover] account=%s resolved: access_token_len=%d, account_id=%q, plan=%q, expires=%v",
 		acc.ID, len(info.AccessToken), info.AccountID, info.PlanType, info.Expires)
 
-	quotaState, err := p.fetchConversationLimit(ctx, acc, info.AccessToken, info.AccountID)
+	quotaState, err := p.fetchConversationLimit(ctx, acc, info)
 	if isChatGPTTokenInvalidatedError(err) {
 		log.Printf("[chatgpt-discover] account=%s token invalidated, refreshing session and retrying quota fetch", acc.ID)
 		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
@@ -1088,7 +1107,7 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 			return nil, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
 		}
 		info = refreshed
-		quotaState, err = p.fetchConversationLimit(ctx, acc, info.AccessToken, info.AccountID)
+		quotaState, err = p.fetchConversationLimit(ctx, acc, info)
 	}
 	if err != nil {
 		return nil, err
@@ -1122,14 +1141,14 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 // fetchConversationLimit tries two endpoints to get real quota:
 //  1. /backend-api/wham/usage (Codex CLI style, current)
 //  2. /backend-api/conversation_limit (ChatGPT web style, legacy fallback)
-func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Account, accessToken, accountID string) (*domain.QuotaState, error) {
+func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Account, info sessionInfo) (*domain.QuotaState, error) {
 	state := &domain.QuotaState{
 		ShortWindow: domain.QuotaWindow{ResetAt: time.Now().Add(5 * time.Hour), Confidence: 0.5},
 		LongWindow:  domain.QuotaWindow{ResetAt: time.Now().Add(7 * 24 * time.Hour), Confidence: 0.5},
 	}
 
 	// Try wham/usage first (Codex CLI endpoint)
-	whamState, err := p.fetchWhamUsage(ctx, acc, accessToken, accountID)
+	whamState, err := p.fetchWhamUsage(ctx, acc, info)
 	if err == nil {
 		*state = *whamState
 		log.Printf("[chatgpt-quota] wham/usage ok: 5h=%.0f/%.0f 7d=%.0f/%.0f",
@@ -1145,7 +1164,7 @@ func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Accou
 	}
 	log.Printf("[chatgpt-quota] wham/usage failed, trying conversation_limit: %v", err)
 	// Fallback to conversation_limit (legacy ChatGPT web endpoint)
-	if err := p.fetchLegacyConversationLimit(ctx, state, acc, accessToken, accountID); err != nil {
+	if err := p.fetchLegacyConversationLimit(ctx, state, acc, info); err != nil {
 		return nil, err
 	}
 	log.Printf("[chatgpt-quota] conversation_limit: 5h=%.0f/%.0f 7d=%.0f/%.0f",
@@ -1161,26 +1180,24 @@ func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Accou
 //	 "additional_rate_limits":[{"limit_name":"weekly","rate_limit":{"used_percent":0.1,"window_minutes":10080,"resets_at":...}}],
 //	 "credits":{"has_credits":true,"unlimited":false,"balance":"$4.20"},
 //	 "plan_type":"plus"}
-func (p *Provider) fetchWhamUsage(ctx context.Context, acc *domain.Account, accessToken, accountID string) (*domain.QuotaState, error) {
+func (p *Provider) fetchWhamUsage(ctx context.Context, acc *domain.Account, info sessionInfo) (*domain.QuotaState, error) {
 	state := &domain.QuotaState{
 		ShortWindow: domain.QuotaWindow{ResetAt: time.Now().Add(5 * time.Hour), Confidence: 0.5},
 		LongWindow:  domain.QuotaWindow{ResetAt: time.Now().Add(7 * 24 * time.Hour), Confidence: 0.5},
 		TierWindows: make(map[string]domain.QuotaWindow),
 	}
 	ua := codexUA(acc)
-	log.Printf("[chatgpt-quota] wham/usage: starting, account_id=%q, access_token_len=%d", accountID, len(accessToken))
+	log.Printf("[chatgpt-quota] wham/usage: starting, account_id=%q, access_token_len=%d", info.AccountID, len(info.AccessToken))
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		"https://chatgpt.com/backend-api/wham/usage", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+info.AccessToken)
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "application/json")
 	req.Header["originator"] = []string{"codex_cli_rs"}
-	if accountID != "" {
-		req.Header["ChatGPT-Account-ID"] = []string{accountID}
-	}
+	setChatGPTAccountHeaders(req.Header, info)
 
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
@@ -1419,19 +1436,17 @@ func windowSecsToTierName(secs int64) string {
 }
 
 // fetchLegacyConversationLimit calls /backend-api/conversation_limit (legacy).
-func (p *Provider) fetchLegacyConversationLimit(ctx context.Context, state *domain.QuotaState, acc *domain.Account, accessToken, accountID string) error {
+func (p *Provider) fetchLegacyConversationLimit(ctx context.Context, state *domain.QuotaState, acc *domain.Account, info sessionInfo) error {
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		"https://chatgpt.com/backend-api/conversation_limit", nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Authorization", "Bearer "+info.AccessToken)
 	req.Header.Set("User-Agent", codexUA(acc))
 	req.Header.Set("Accept", "application/json")
 	req.Header["originator"] = []string{"codex_cli_rs"}
-	if accountID != "" {
-		req.Header["ChatGPT-Account-ID"] = []string{accountID}
-	}
+	setChatGPTAccountHeaders(req.Header, info)
 
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
@@ -1482,6 +1497,15 @@ func (p *Provider) fetchLegacyConversationLimit(ctx context.Context, state *doma
 		}
 	}
 	return nil
+}
+
+func setChatGPTAccountHeaders(h http.Header, info sessionInfo) {
+	if info.AccountID != "" {
+		h["ChatGPT-Account-ID"] = []string{info.AccountID}
+	}
+	if info.FedRAMP {
+		h["X-OpenAI-Fedramp"] = []string{"true"}
+	}
 }
 
 func codexUA(acc *domain.Account) string {
@@ -1620,7 +1644,7 @@ func (p *Provider) doCodexResponses(ctx context.Context, acc *domain.Account, in
 	httpReq.Header.Set("User-Agent", ua)
 	httpReq.Header["OpenAI-Beta"] = []string{"responses=experimental"}
 	httpReq.Header["originator"] = []string{"codex_cli_rs"}
-	httpReq.Header["ChatGPT-Account-ID"] = []string{info.AccountID}
+	setChatGPTAccountHeaders(httpReq.Header, info)
 	setCodexSessionHeaders(httpReq.Header, body)
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
@@ -1857,7 +1881,16 @@ func normalizeCodexRawResponsesBody(body []byte) []byte {
 		return body
 	}
 	normalized := normalizeCodexServiceTier(tier.String())
-	if normalized == "" || normalized == tier.String() {
+	if normalized == "" {
+		if strings.EqualFold(strings.TrimSpace(tier.String()), "default") {
+			next, err := sjson.DeleteBytes(body, "service_tier")
+			if err == nil {
+				return next
+			}
+		}
+		return body
+	}
+	if normalized == tier.String() {
 		return body
 	}
 	next, err := sjson.SetBytes(body, "service_tier", normalized)

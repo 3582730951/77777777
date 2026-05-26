@@ -9,9 +9,10 @@ import "net/http"
 // gives the best chance of matching real client behavior.
 //
 // Node.js 24.x / Claude CLI header order:
-//   Host, Connection, Content-Length, Content-Type, Authorization,
-//   anthropic-beta, anthropic-version, user-agent, x-stainless-*,
-//   accept, accept-encoding
+//
+//	Host, Connection, Content-Length, Content-Type, Authorization,
+//	anthropic-beta, anthropic-version, user-agent, x-stainless-*,
+//	accept, accept-encoding
 //
 // Call this AFTER setting all headers, it re-inserts them in order.
 func OrderHeaders(req *http.Request) {
@@ -30,6 +31,7 @@ func OrderHeaders(req *http.Request) {
 		"Anthropic-Version",
 		"OpenAI-Beta",
 		"ChatGPT-Account-Id",
+		"X-OpenAI-Fedramp",
 		"User-Agent",
 		"X-Stainless-Lang",
 		"X-Stainless-Package-Version",
