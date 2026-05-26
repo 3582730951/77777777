@@ -73,10 +73,8 @@ def test_codex_oauth_url_matches_official_shape():
     assert query["originator"] == [CODEX_ORIGINATOR]
     assert "prompt" not in query
     assert "screen_hint" not in query
-    assert (
-        "scope=openid%20profile%20email%20offline_access%20"
-        "api.connectors.read%20api.connectors.invoke"
-    ) in oauth_start.auth_url
+    assert "scope=openid%20profile%20email%20offline_access" in oauth_start.auth_url
+    assert "api.connectors." not in oauth_start.auth_url
 
 
 def test_chatgpt_platform_preserves_user_supplied_password():

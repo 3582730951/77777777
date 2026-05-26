@@ -45,10 +45,11 @@ const (
 	// OAuth and upstream requests.
 	CodexDefaultOriginator = "codex_cli_rs"
 
-	// CodexLoginScope follows current Codex Manager login URLs. Token refresh
-	// follows other_codex/codex-rs/login's JSON refresh_token exchange and does
-	// not resend the authorize scope.
-	CodexLoginScope = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+	// CodexLoginScope keeps the interactive login URL on the minimal
+	// refresh-token scope used by CPA/Codex Manager compatibility flows. Token
+	// refresh follows other_codex/codex-rs/login's JSON refresh_token exchange
+	// and does not resend the authorize scope.
+	CodexLoginScope = "openid profile email offline_access"
 )
 
 // Codex / OpenAI — constants from sub2api plus current Codex Manager OAuth

@@ -86,8 +86,11 @@ func TestCodexStartBuildsCodexCLICompatibleAuthorizeURL(t *testing.T) {
 	if strings.Contains(u.RawQuery, "+") {
 		t.Fatalf("codex authorize query should encode spaces as %%20, got raw query: %s", u.RawQuery)
 	}
-	if !strings.Contains(u.RawQuery, "scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke") {
-		t.Fatalf("codex authorize query should preserve official scope encoding, got raw query: %s", u.RawQuery)
+	if !strings.Contains(u.RawQuery, "scope=openid%20profile%20email%20offline_access") {
+		t.Fatalf("codex authorize query should preserve compatible scope encoding, got raw query: %s", u.RawQuery)
+	}
+	if strings.Contains(u.RawQuery, "api.connectors.") {
+		t.Fatalf("codex authorize query should not request connector scopes in compatibility flow, got raw query: %s", u.RawQuery)
 	}
 	if q.Get("code_challenge") == "" {
 		t.Fatalf("missing code_challenge: %s", authURL)

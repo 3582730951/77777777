@@ -24,7 +24,7 @@ func TestOAuthShowAuthURLKeepsInnerOAuthEncoding(t *testing.T) {
 		"response_type=code" +
 		"&client_id=app_EMoamEEZ73f0CkXaXp7hrann" +
 		"&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback" +
-		"&scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke" +
+		"&scope=openid%20profile%20email%20offline_access" +
 		"&code_challenge=challenge" +
 		"&code_challenge_method=S256" +
 		"&id_token_add_organizations=true" +
