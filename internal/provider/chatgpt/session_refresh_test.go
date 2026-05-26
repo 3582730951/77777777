@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/llm-pool/gateway/internal/domain"
+	"github.com/llm-pool/gateway/internal/protocol/ir"
 	"github.com/llm-pool/gateway/internal/store"
 )
 
@@ -667,6 +668,101 @@ func TestInvokeRawRecoversCPAAuthJSONWithSessionTokenAfter401(t *testing.T) {
 	}
 	if responseCalls != 2 || sessionCalls != 1 {
 		t.Fatalf("calls: responses=%d session=%d, want 2/1", responseCalls, sessionCalls)
+	}
+}
+
+func TestInvokeRealFallsBackToWebConversationForCPAWithoutRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	webAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	cpaAuthJSON := `{"type":"codex","email":"cpa@example.com","account_id":"acct-cpa","plan_type":"plus","access_token":"` + oldAccess + `","refresh_token":"","session_token":"next-auth-cpa","id_token_synthetic":true,"expired":"2099-01-01T00:00:00Z"}`
+	acc := &domain.Account{
+		ID:       "acc-cpa-web-fallback",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: cpaAuthJSON}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	var codexCalls, sessionCalls, sentinelCalls, conversationCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/codex/responses":
+			codexCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+		case "/api/auth/session":
+			sessionCalls++
+			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa" {
+				t.Fatalf("auth/session cookie = %q, want CPA session token cookie", got)
+			}
+			_, _ = w.Write([]byte(`{"accessToken":"` + webAccess + `","sessionToken":"next-auth-cpa-new","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-cpa","planType":"plus"},"user":{"email":"cpa@example.com"}}`))
+		case "/backend-api/sentinel/chat-requirements":
+			sentinelCalls++
+			if got := r.Header.Get("Authorization"); got != "Bearer "+webAccess {
+				t.Fatalf("sentinel authorization = %q, want refreshed web bearer", got)
+			}
+			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa-new" {
+				t.Fatalf("sentinel cookie = %q, want refreshed session cookie", got)
+			}
+			_, _ = w.Write([]byte(`{"token":"requirements-token"}`))
+		case "/backend-api/conversation":
+			conversationCalls++
+			if got := r.Header.Get("Authorization"); got != "Bearer "+webAccess {
+				t.Fatalf("conversation authorization = %q, want refreshed web bearer", got)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token"); got != "requirements-token" {
+				t.Fatalf("conversation requirements token = %q", got)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"v\":{\"message\":{\"content\":{\"parts\":[\"web ok\"]},\"status\":\"finished_successfully\"}}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	ch, err := p.Invoke(ctx, acc, &ir.Request{
+		Model: "gpt-5.4",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello"}},
+		}},
+		Stream: true,
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		if ev.Kind == ir.EvError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Kind == ir.EvTextDelta {
+			text += ev.Text
+		}
+	}
+	if text != "web ok" {
+		t.Fatalf("fallback stream text = %q, want web ok", text)
+	}
+	if codexCalls != 2 || sessionCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
+		t.Fatalf("calls codex/session/sentinel/conversation = %d/%d/%d/%d, want 2/1/1/1", codexCalls, sessionCalls, sentinelCalls, conversationCalls)
 	}
 }
 
