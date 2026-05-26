@@ -491,6 +491,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/accounts/oauth/web-session/{id}", s.handleOAuthWebSessionShow)
 		r.Get("/accounts/oauth/web-session/{id}/status", s.handleOAuthWebSessionStatus)
 		r.Post("/accounts/oauth/web-session/{id}/submit", s.handleOAuthWebSessionSubmit)
+		r.Get("/accounts/oauth/{id}/open", s.handleOAuthOpen)
 		r.Get("/accounts/oauth/{id}", s.handleOAuthShow)
 		r.Get("/accounts/oauth/{id}/status", s.handleOAuthStatus)
 		r.Post("/accounts/oauth/{id}/paste", s.handleOAuthPasteCallback)

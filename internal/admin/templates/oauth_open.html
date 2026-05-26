@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex PAuth 浏览器交接 · LLM Pool</title>
+<link rel="stylesheet" href="/static/app.css?v=8">
+</head>
+<body class="theme-auto">
+<div class="app">
+  {{template "_sidebar" .}}
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">Codex PAuth 浏览器交接</div>
+      <div class="topbar-actions">
+        <a href="{{.ShowURL}}" class="btn ghost">← 返回授权页</a>
+        <button class="btn-icon" type="button" aria-label="切换主题" onclick="toggleTheme()">◐</button>
+      </div>
+    </header>
+    <div class="content">
+      <section class="page-hero command-hero compact">
+        <div>
+          <div class="hero-eyebrow">same browser handoff</div>
+          <h1 class="hero-title">先建立 ChatGPT 登录态，再继续 OAuth</h1>
+          <p class="hero-subtitle">不要把原始 auth.openai.com 授权链接复制到一个全新的浏览器直接打开；用下面两步在目标浏览器内完成同浏览器交接。</p>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-metric"><b>{{.Cfg.ID}}</b><span>Provider</span></div>
+          <div class="hero-metric"><b>{{.Pending.TenantID}}</b><span>Tenant</span></div>
+          <div class="hero-metric"><b>{{.Pending.ExpiresAt.Format "15:04"}}</b><span>Expires</span></div>
+        </div>
+      </section>
+
+      <div class="layout-with-rail">
+        <div class="card work-surface">
+          <div class="card-header">
+            <div>
+              <div class="card-title">PAuth 两步打开</div>
+              <div class="tiny muted">这和 Codex/管理面板的远程浏览器模式一致：登录态跟着浏览器走，回调用下方页面粘贴。</div>
+            </div>
+          </div>
+          <div class="card-body flex-col gap-16">
+            <div class="decision-list">
+              <div class="decision-item">
+                <span>1</span>
+                <div>
+                  <b>在当前浏览器打开 ChatGPT</b>
+                  <small>确认能正常进入 ChatGPT。完成后回到这个标签页。</small>
+                </div>
+              </div>
+              <div class="form-actions">
+                <a class="btn secondary lg w-full" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">打开 ChatGPT 预热登录态</a>
+              </div>
+
+              <div class="decision-item">
+                <span>2</span>
+                <div>
+                  <b>继续 OpenAI Codex OAuth</b>
+                  <small>在同一个浏览器环境里打开授权链接，授权完成后按原页面提示自动回调或粘贴回调 URL。</small>
+                </div>
+              </div>
+              <div class="form-actions">
+                <a class="btn primary lg w-full" href="{{.DirectOpenURL}}">继续授权</a>
+              </div>
+            </div>
+
+            <div class="assist-card">
+              <div class="assist-card-head">
+                <div class="assist-card-title">原始 OAuth 链接</div>
+                <div class="assist-card-sub">仅用于排查，不作为跨浏览器入口</div>
+              </div>
+              <div class="assist-card-body">
+                <div class="url-box w-full">{{.AuthURL}}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="assist-rail sticky">
+          <div class="assist-card">
+            <div class="assist-card-head">
+              <div class="assist-card-title">为什么这样打开</div>
+              <div class="assist-card-sub">避免丢失浏览器登录上下文</div>
+            </div>
+            <div class="assist-card-body decision-list">
+              <div class="decision-item"><span>✓</span><div><b>同浏览器</b><small>ChatGPT 登录态、OpenAI 授权页和回调地址属于同一次浏览器操作。</small></div></div>
+              <div class="decision-item"><span>↗</span><div><b>跨机回调</b><small>如果 localhost 回调打不开，复制地址栏完整 URL 回到授权页粘贴。</small></div></div>
+              <div class="decision-item"><span>↩</span><div><b>状态轮询</b><small>授权页会继续轮询这个 enrollment 的状态，成功后写入账号池。</small></div></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+</div>
+</body></html>

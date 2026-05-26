@@ -274,12 +274,15 @@ func (s *Server) handleOAuthShow(w http.ResponseWriter, r *http.Request) {
 		authURL = "(start a new enrollment to get a fresh URL)"
 	}
 	cfg := oauth.ConfigFor(p.Provider)
+	openURL := oauthOpenURL(p.ID, authURL, false)
 	s.render(w, r, "oauth_show.html", map[string]any{
-		"Active":  "accounts",
-		"Title":   s.t(r, "enroll.title"),
-		"Pending": p,
-		"AuthURL": authURL,
-		"Cfg":     cfg,
+		"Active":        "accounts",
+		"Title":         s.t(r, "enroll.title"),
+		"Pending":       p,
+		"AuthURL":       authURL,
+		"OpenURL":       openURL,
+		"DirectOpenURL": oauthOpenURL(p.ID, authURL, true),
+		"Cfg":           cfg,
 	})
 }
 
@@ -288,6 +291,88 @@ func oauthShowAuthURL(r *http.Request) string {
 	// parameter. Do not decode again: the inner OAuth URL must keep its own
 	// percent-encoding (`redirect_uri`, `scope`, etc.) exactly as generated.
 	return strings.TrimSpace(r.URL.Query().Get("u"))
+}
+
+func oauthOpenURL(id, authURL string, direct bool) string {
+	authURL = strings.TrimSpace(authURL)
+	if id == "" || authURL == "" || strings.HasPrefix(authURL, "(") {
+		return "#"
+	}
+	v := url.Values{}
+	v.Set("u", authURL)
+	if direct {
+		v.Set("direct", "1")
+	}
+	return "/accounts/oauth/" + url.PathEscape(id) + "/open?" + v.Encode()
+}
+
+func (s *Server) handleOAuthOpen(w http.ResponseWriter, r *http.Request) {
+	if s.oauth == nil {
+		http.Error(w, "oauth manager not wired", http.StatusInternalServerError)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	p, ok := s.oauth.Get(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	authURL := oauthShowAuthURL(r)
+	if authURL == "" {
+		http.Error(w, "auth URL required", http.StatusBadRequest)
+		return
+	}
+	cfg := oauth.ConfigFor(p.Provider)
+	if !oauthAuthorizeURLValid(authURL, p, cfg) {
+		http.Error(w, "auth URL does not match this enrollment", http.StatusBadRequest)
+		return
+	}
+	if cfg == nil || p.Provider != oauth.ProviderCodex || r.URL.Query().Get("direct") == "1" {
+		http.Redirect(w, r, authURL, http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	s.render(w, r, "oauth_open.html", map[string]any{
+		"Active":        "accounts",
+		"Title":         s.t(r, "enroll.title"),
+		"Pending":       p,
+		"AuthURL":       authURL,
+		"ShowURL":       oauthShowURL(p.ID, authURL),
+		"DirectOpenURL": oauthOpenURL(p.ID, authURL, true),
+		"Cfg":           cfg,
+	})
+}
+
+func oauthShowURL(id, authURL string) string {
+	authURL = strings.TrimSpace(authURL)
+	if id == "" || authURL == "" {
+		return "/accounts/oauth"
+	}
+	return "/accounts/oauth/" + url.PathEscape(id) + "?u=" + url.QueryEscape(authURL)
+}
+
+func oauthAuthorizeURLValid(authURL string, p *oauth.PendingAuth, cfg *oauth.ProviderConfig) bool {
+	if p == nil || cfg == nil {
+		return false
+	}
+	u, err := url.Parse(authURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	base, err := url.Parse(cfg.AuthorizeURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
+		return false
+	}
+	if strings.TrimRight(u.Path, "/") != strings.TrimRight(base.Path, "/") {
+		return false
+	}
+	if state := u.Query().Get("state"); state != "" && state != p.State {
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleOAuthStatus(w http.ResponseWriter, r *http.Request) {

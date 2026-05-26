@@ -16,6 +16,7 @@ import (
 
 	"github.com/llm-pool/gateway/internal/config"
 	"github.com/llm-pool/gateway/internal/enrollment"
+	"github.com/llm-pool/gateway/internal/oauth"
 	"github.com/llm-pool/gateway/internal/scheduler"
 	"github.com/llm-pool/gateway/internal/store"
 )
@@ -63,6 +64,100 @@ func TestOAuthAuthURLTemplatePreservesPercentEscapes(t *testing.T) {
 	}
 	if strings.Contains(out, "redirect_uri=http://") || strings.Contains(out, "%253A%252F%252F") {
 		t.Fatalf("template decoded or double-encoded inner URL: %s", out)
+	}
+}
+
+func TestOAuthOpenCodexRendersSameBrowserHandoff(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	s := New(Deps{
+		Cfg:   &config.Root{},
+		Store: st,
+		Sched: scheduler.New(config.Scheduler{}),
+	})
+	m := oauth.New()
+	s.SetOAuth(m)
+	p, authURL, err := m.StartWithOptions(oauth.ProviderCodex, "default", "", "", "")
+	if err != nil {
+		t.Fatalf("start codex oauth: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/oauth/"+p.ID+"/open?u="+url.QueryEscape(authURL), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", p.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthOpen(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Codex PAuth 浏览器交接",
+		"https://chatgpt.com/",
+		"/accounts/oauth/" + p.ID + "/open?",
+		"direct=1",
+		"auth.openai.com/oauth/authorize",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("handoff page missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestOAuthOpenDirectRedirectsToAuthorizeURL(t *testing.T) {
+	s := &Server{oauth: oauth.New()}
+	p, authURL, err := s.oauth.StartWithOptions(oauth.ProviderCodex, "default", "", "", "")
+	if err != nil {
+		t.Fatalf("start codex oauth: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/oauth/"+p.ID+"/open?direct=1&u="+url.QueryEscape(authURL), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", p.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthOpen(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != authURL {
+		t.Fatalf("Location = %q, want %q", got, authURL)
+	}
+}
+
+func TestOAuthOpenRejectsMismatchedAuthorizeURL(t *testing.T) {
+	s := &Server{oauth: oauth.New()}
+	p, _, err := s.oauth.StartWithOptions(oauth.ProviderCodex, "default", "", "", "")
+	if err != nil {
+		t.Fatalf("start codex oauth: %v", err)
+	}
+	badURL := "https://auth.openai.com/oauth/authorize?state=other"
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/oauth/"+p.ID+"/open?u="+url.QueryEscape(badURL), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", p.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthOpen(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
 }
 
