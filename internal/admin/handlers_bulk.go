@@ -23,9 +23,12 @@ func (s *Server) handleAccountsBulkImport(w http.ResponseWriter, r *http.Request
 	body, _ := io.ReadAll(r.Body)
 	created := []string{}
 
-	// Try JSON-array first.
-	var arr []createAccountReq
-	if err := json.Unmarshal(body, &arr); err == nil && len(arr) > 0 {
+	// Try JSON account imports first. Accepts an array, {"accounts":[...]}, or
+	// one raw CPA/Codex auth JSON object.
+	if arr, ok, err := decodeAccountImportRequests(body, tenantID); err != nil {
+		errJSON(w, 400, err.Error())
+		return
+	} else if ok && len(arr) > 0 {
 		for _, req := range arr {
 			id := req.ID
 			if id == "" {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -129,6 +130,34 @@ func TestNormalizeChatGPTAccountSecretKeepsWebSessionCookies(t *testing.T) {
 
 	if string(sec.Cookies) != "__Secure-next-auth.session-token=keep" {
 		t.Fatalf("web-session cookies should be preserved: %+v", sec)
+	}
+}
+
+func TestDecodeAccountImportRequestsAcceptsSingleCPAAuthJSON(t *testing.T) {
+	body := []byte(`{
+		"type":"codex",
+		"email":"cpa@example.com",
+		"account_id":"acct-cpa",
+		"chatgpt_plan_type":"plus",
+		"access_token":"access-1",
+		"refresh_token":"",
+		"session_token":"next-auth-cpa",
+		"id_token_synthetic":true
+	}`)
+
+	reqs, ok, err := decodeAccountImportRequests(body, "default")
+	if err != nil {
+		t.Fatalf("decode import: %v", err)
+	}
+	if !ok || len(reqs) != 1 {
+		t.Fatalf("decode import ok=%v len=%d", ok, len(reqs))
+	}
+	req := reqs[0]
+	if req.Provider != "chatgpt" || req.ID != "acct-cpa" || req.Email != "cpa@example.com" || req.PlanTier != "plus" {
+		t.Fatalf("normalized metadata mismatch: %+v", req)
+	}
+	if !strings.Contains(req.SessionToken, `"access_token":"access-1"`) || !strings.Contains(req.SessionToken, `"session_token":"next-auth-cpa"`) {
+		t.Fatalf("CPA auth JSON should be stored intact as session token: %s", req.SessionToken)
 	}
 }
 

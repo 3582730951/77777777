@@ -245,6 +245,15 @@ func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, 
 			}
 		}
 		sec = chatGPTSessionOnlySnapshotSecret(sec)
+		if chatGPTWebSessionRefreshDue(sec, time.Now()) {
+			if info, err := p.refreshSessionFromStoredCookie(ctx, acc, sec, false); err == nil {
+				return info, nil
+			} else if !chatGPTStoredAccessTokenUsable(sec, time.Now().Add(2*time.Minute)) {
+				return sessionInfo{}, err
+			} else {
+				log.Printf("[chatgpt-session] account=%s web session refresh failed; keeping current access token: %v", acc.ID, err)
+			}
+		}
 		client, err := p.httpClientForAccount(ctx, acc)
 		if err != nil {
 			return sessionInfo{}, err
@@ -318,7 +327,7 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 }
 
 func chatGPTCanRecoverAuthFailure(sec store.AccountSecret) bool {
-	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) && chatGPTCookieHeaderFromSecret(sec) == "" {
 		return false
 	}
 	return chatGPTRefreshTokenFromSecret(sec) != "" || chatGPTCookieHeaderFromSecret(sec) != ""
@@ -657,6 +666,9 @@ func chatGPTNextAuthSessionCookie(sec store.AccountSecret) string {
 	if st := strings.TrimSpace(sec.SessionToken); st != "" && !strings.HasPrefix(st, "{") {
 		return st
 	}
+	if st := chatGPTSessionTokenFromJSON(sec.SessionToken); st != "" {
+		return st
+	}
 	return chatGPTNextAuthCookieFromBytes(sec.Cookies)
 }
 
@@ -828,11 +840,13 @@ func chatGPTCookiePairsFromSetCookieHeaderValue(value string) []chatGPTCookiePai
 }
 
 func chatGPTCookieHeaderFromSecret(sec store.AccountSecret) string {
-	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) && chatGPTSessionTokenFromJSON(sec.SessionToken) == "" {
 		return ""
 	}
 	pairs := chatGPTCookiePairsFromBytes(sec.Cookies)
-	if st := strings.TrimSpace(sec.SessionToken); st != "" && !strings.HasPrefix(st, "{") {
+	if st := strings.TrimSpace(sec.SessionToken); st != "" && !strings.HasPrefix(st, "{") && chatGPTNextAuthCookieFromPairs(pairs) == "" {
+		pairs = append([]chatGPTCookiePair{{Name: "__Secure-next-auth.session-token", Value: st}}, pairs...)
+	} else if st := chatGPTSessionTokenFromJSON(sec.SessionToken); st != "" && chatGPTNextAuthCookieFromPairs(pairs) == "" {
 		pairs = append([]chatGPTCookiePair{{Name: "__Secure-next-auth.session-token", Value: st}}, pairs...)
 	}
 	if len(pairs) == 0 {
@@ -1190,6 +1204,9 @@ func IsSessionOnlyAuthJSON(raw string) bool {
 	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return false
 	}
+	if chatGPTJSONSessionToken(obj) != "" {
+		return false
+	}
 	if mode, _ := obj["session_import_mode"].(string); strings.EqualFold(strings.TrimSpace(mode), "session_only_json") {
 		return true
 	}
@@ -1207,6 +1224,21 @@ func IsSessionOnlyAuthJSON(raw string) bool {
 		return true
 	}
 	return false
+}
+
+func chatGPTSessionTokenFromJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "{") {
+		return ""
+	}
+	if info, err := parseSessionJSON([]byte(raw)); err == nil && strings.TrimSpace(info.SessionToken) != "" {
+		return strings.TrimSpace(info.SessionToken)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return ""
+	}
+	return chatGPTJSONSessionToken(obj)
 }
 
 func chatGPTJSONAccessToken(obj map[string]any) string {
@@ -1230,6 +1262,20 @@ func chatGPTJSONRefreshToken(obj map[string]any) string {
 	for _, key := range []string{"token_data", "tokenData", "tokens", "metadata", "attributes", "token"} {
 		if nested, ok := obj[key].(map[string]any); ok {
 			if value := chatGPTJSONRefreshToken(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func chatGPTJSONSessionToken(obj map[string]any) string {
+	if value := firstNonEmpty(jsonStringValue(obj["session_token"]), jsonStringValue(obj["sessionToken"])); value != "" {
+		return value
+	}
+	for _, key := range []string{"token_data", "tokenData", "tokens", "metadata", "attributes"} {
+		if nested, ok := obj[key].(map[string]any); ok {
+			if value := chatGPTJSONSessionToken(nested); value != "" {
 				return value
 			}
 		}

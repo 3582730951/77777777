@@ -296,17 +296,29 @@ function importSecretString(raw,keys){
   return typeof value==='string'?value:JSON.stringify(value);
 }
 
+function looksLikeCpaAuth(raw){
+  if(!raw||typeof raw!=='object'||Array.isArray(raw))return false;
+  const type=String(raw.type||raw.auth_mode||raw.authMode||'').toLowerCase();
+  if(type==='codex'||type==='chatgpt')return true;
+  if(raw.access_token||raw.accessToken||raw.id_token||raw.idToken||raw.id_token_synthetic)return true;
+  for(const key of ['token_data','tokenData','tokens','metadata','attributes']){
+    if(looksLikeCpaAuth(raw[key]))return true;
+  }
+  return false;
+}
+
 function normalizeImportAccount(raw){
+  const cpa=looksLikeCpaAuth(raw);
   return {
     id:importString(raw,['id','ID','account_id','AccountID']),
     tenant_id:importString(raw,['tenant_id','TenantID','tenantId']),
-    provider:importString(raw,['provider','Provider']).toLowerCase(),
+    provider:(importString(raw,['provider','Provider'])||(cpa?'chatgpt':'')).toLowerCase(),
     email:importString(raw,['email','Email']),
     plan_tier:importString(raw,['plan_tier','PlanTier','planTier']),
     stealth_profile:importString(raw,['stealth_profile','StealthProfile','stealthProfile']),
     ua:importString(raw,['ua','UA']),
     proxy:importString(raw,['proxy','Proxy']),
-    session_token:importSecretString(raw,['session_token','SessionToken','sessionToken']),
+    session_token:cpa?JSON.stringify(raw):importSecretString(raw,['session_token','SessionToken','sessionToken']),
     refresh_token:importSecretString(raw,['refresh_token','RefreshToken','refreshToken']),
     cookies:importSecretString(raw,['cookies','Cookies'])
   };
@@ -315,7 +327,8 @@ function normalizeImportAccount(raw){
 function extractImportAccounts(payload){
   const source=Array.isArray(payload)?payload:
     Array.isArray(payload&&payload.accounts)?payload.accounts:
-    Array.isArray(payload&&payload.Accounts)?payload.Accounts:[];
+    Array.isArray(payload&&payload.Accounts)?payload.Accounts:
+    (looksLikeCpaAuth(payload)||(payload&&typeof payload==='object'&&payload.provider))?[payload]:[];
   return source.map(normalizeImportAccount);
 }
 

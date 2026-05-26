@@ -493,8 +493,9 @@ type createAccountReq struct {
 }
 
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
-	var req createAccountReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, _ := io.ReadAll(r.Body)
+	req, err := decodeCreateAccountRequest(body, "default")
+	if err != nil {
 		errJSON(w, 400, err.Error())
 		return
 	}

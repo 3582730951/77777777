@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -352,7 +353,7 @@ func TestNormalizeSessionOnlyAuthJSONBuildsSyntheticIDTokenForCPA(t *testing.T) 
 	}
 }
 
-func TestSessionOnlyDetectsFlatCPAWithoutRefreshToken(t *testing.T) {
+func TestFlatCPAWithSessionTokenIsRecoverableWebSession(t *testing.T) {
 	accessToken := testJWTExp(time.Now().Add(time.Hour))
 	idToken := testJWTClaims(map[string]any{
 		"exp":   time.Now().Add(time.Hour).Unix(),
@@ -365,8 +366,8 @@ func TestSessionOnlyDetectsFlatCPAWithoutRefreshToken(t *testing.T) {
 	})
 	rawSession := `{"type":"codex","email":"flat@example.com","account_id":"acct-flat","plan_type":"plus","access_token":"` + accessToken + `","id_token":"` + idToken + `","refresh_token":"","session_token":"next-auth-flat","expired":"2099-01-01T00:00:00Z"}`
 
-	if !IsSessionOnlyAuthJSON(rawSession) {
-		t.Fatal("flat CPA auth JSON without refresh_token should be treated as a fixed session-only snapshot")
+	if IsSessionOnlyAuthJSON(rawSession) {
+		t.Fatal("flat CPA auth JSON with session_token should be treated as a recoverable web session")
 	}
 	parsed, err := parseSessionJSON([]byte(rawSession))
 	if err != nil {
@@ -374,6 +375,10 @@ func TestSessionOnlyDetectsFlatCPAWithoutRefreshToken(t *testing.T) {
 	}
 	if parsed.AccountID != "acct-flat" || parsed.PlanType != "plus" || parsed.ChatGPTUserID != "user-flat" || parsed.SessionToken != "next-auth-flat" {
 		t.Fatalf("parsed flat CPA auth JSON mismatch: %+v", parsed)
+	}
+	sec := store.AccountSecret{SessionToken: rawSession}
+	if got := chatGPTCookieHeaderFromSecret(sec); got != "__Secure-next-auth.session-token=next-auth-flat" {
+		t.Fatalf("cookie header = %q, want next-auth session cookie from CPA JSON", got)
 	}
 }
 
@@ -522,6 +527,146 @@ func TestRefreshCredentialTreatsTaggedSessionOnlyAsNonRecoverableSnapshot(t *tes
 	}
 	if got := sessionCalls.Load(); got != 0 {
 		t.Fatalf("auth/session calls = %d, want 0", got)
+	}
+}
+
+func TestResolveSessionRefreshesCPAAuthJSONFromSessionTokenWhenExpired(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	cpaAuthJSON := `{"type":"codex","email":"cpa@example.com","account_id":"acct-cpa","plan_type":"plus","access_token":"` + expiredAccess + `","refresh_token":"","session_token":"next-auth-cpa","id_token_synthetic":true,"expired":"2099-01-01T00:00:00Z"}`
+	acc := &domain.Account{
+		ID:       "acc-cpa-session-refresh",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: cpaAuthJSON}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	originalSecret, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get original secret: %v", err)
+	}
+
+	var sessionCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/session" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		sessionCalls++
+		if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa" {
+			t.Fatalf("cookie header = %q, want CPA session token cookie", got)
+		}
+		_, _ = w.Write([]byte(`{"accessToken":"` + newAccess + `","sessionToken":"next-auth-cpa-new","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-cpa","planType":"plus"},"user":{"email":"cpa@example.com"}}`))
+	}))
+	defer server.Close()
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	info, err := p.resolveSession(ctx, acc, originalSecret)
+	if err != nil {
+		t.Fatalf("resolve session: %v", err)
+	}
+	if info.AccessToken != newAccess {
+		t.Fatalf("resolved access token = %q, want refreshed token", info.AccessToken)
+	}
+	if sessionCalls != 1 {
+		t.Fatalf("session calls = %d, want 1", sessionCalls)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get stored secret: %v", err)
+	}
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		t.Fatal("persisted CPA session should remain recoverable while sessionToken is present")
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != newAccess || parsed.SessionToken != "next-auth-cpa-new" {
+		t.Fatalf("persisted session mismatch: %+v", parsed)
+	}
+}
+
+func TestInvokeRawRecoversCPAAuthJSONWithSessionTokenAfter401(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	cpaAuthJSON := `{"type":"codex","email":"cpa@example.com","account_id":"acct-cpa","plan_type":"plus","access_token":"` + oldAccess + `","refresh_token":"","session_token":"next-auth-cpa","id_token_synthetic":true,"expired":"2099-01-01T00:00:00Z"}`
+	acc := &domain.Account{
+		ID:       "acc-cpa-recover-401",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: cpaAuthJSON}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	var responseCalls, sessionCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/codex/responses":
+			responseCalls++
+			if responseCalls == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+				return
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer "+newAccess {
+				t.Fatalf("authorization = %q, want refreshed bearer", got)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"))
+		case "/api/auth/session":
+			sessionCalls++
+			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa" {
+				t.Fatalf("cookie header = %q, want CPA session token cookie", got)
+			}
+			_, _ = w.Write([]byte(`{"accessToken":"` + newAccess + `","sessionToken":"next-auth-cpa-new","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-cpa","planType":"plus"},"user":{"email":"cpa@example.com"}}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	body, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.4","input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatalf("invoke raw: %v", err)
+	}
+	defer body.Close()
+	_, _ = io.ReadAll(body)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if responseCalls != 2 || sessionCalls != 1 {
+		t.Fatalf("calls: responses=%d session=%d, want 2/1", responseCalls, sessionCalls)
 	}
 }
 
