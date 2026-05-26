@@ -1099,22 +1099,29 @@ func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
 	}
 	return old.AccessToken != info.AccessToken ||
 		old.RefreshToken != info.RefreshToken ||
+		old.SessionToken != info.SessionToken ||
 		old.IDToken != info.IDToken ||
+		!old.SessionExpires.Equal(info.SessionExpires) ||
 		old.AccountID != info.AccountID ||
 		old.PlanType != info.PlanType ||
 		old.Email != info.Email ||
 		old.ChatGPTUserID != info.ChatGPTUserID ||
-		old.FedRAMP != info.FedRAMP
+		old.FedRAMP != info.FedRAMP ||
+		old.Disabled != info.Disabled
 }
 
 func buildChatGPTSessionJSON(info sessionInfo) string {
 	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
+	expires := info.Expires
+	if displayExpires := chatGPTSessionDisplayExpiry(info); !displayExpires.IsZero() {
+		expires = displayExpires
+	}
 	out := map[string]any{
 		"user": map[string]string{
 			"id":    userID,
 			"email": info.Email,
 		},
-		"expires": info.Expires.Format(time.RFC3339),
+		"expires": expires.Format(time.RFC3339),
 		"account": map[string]any{
 			"id":                         info.AccountID,
 			"planType":                   info.PlanType,
@@ -1138,6 +1145,13 @@ func buildChatGPTSessionJSON(info sessionInfo) string {
 		"chatgpt_plan_type":          info.PlanType,
 		"chatgpt_account_is_fedramp": info.FedRAMP,
 		"chatgptAccountIsFedramp":    info.FedRAMP,
+	}
+	if info.SessionToken != "" {
+		out["sessionToken"] = info.SessionToken
+		out["session_token"] = info.SessionToken
+	}
+	if info.Disabled {
+		out["disabled"] = true
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
@@ -1187,7 +1201,49 @@ func IsSessionOnlyAuthJSON(raw string) bool {
 			return true
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(jsonStringValue(obj["type"])), "codex") &&
+		chatGPTJSONAccessToken(obj) != "" &&
+		chatGPTJSONRefreshToken(obj) == "" {
+		return true
+	}
 	return false
+}
+
+func chatGPTJSONAccessToken(obj map[string]any) string {
+	if value := firstNonEmpty(jsonStringValue(obj["access_token"]), jsonStringValue(obj["accessToken"])); value != "" {
+		return value
+	}
+	for _, key := range []string{"token_data", "tokenData", "tokens", "metadata", "attributes", "token"} {
+		if nested, ok := obj[key].(map[string]any); ok {
+			if value := chatGPTJSONAccessToken(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func chatGPTJSONRefreshToken(obj map[string]any) string {
+	if value := firstNonEmpty(jsonStringValue(obj["refresh_token"]), jsonStringValue(obj["refreshToken"])); value != "" {
+		return value
+	}
+	for _, key := range []string{"token_data", "tokenData", "tokens", "metadata", "attributes", "token"} {
+		if nested, ok := obj[key].(map[string]any); ok {
+			if value := chatGPTJSONRefreshToken(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func jsonStringValue(v any) string {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
 }
 
 func chatGPTSessionOnlySnapshotSecret(sec store.AccountSecret) store.AccountSecret {
@@ -1215,29 +1271,36 @@ func chatGPTFixedAccessTokenSnapshot(sec store.AccountSecret) bool {
 
 func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
+	accountUserID := chatGPTAccountUserID(info.ChatGPTUserID, info.AccountID)
 	idToken := info.IDToken
-	syntheticIDToken := false
+	syntheticIDToken := isSyntheticCodexIDToken(idToken)
 	if idToken == "" && info.AccountID != "" {
 		idToken = buildSyntheticCodexIDToken(info, now)
 		syntheticIDToken = idToken != ""
 	}
 	expires := ""
-	if !info.Expires.IsZero() {
-		expires = info.Expires.UTC().Format(time.RFC3339)
+	if displayExpires := chatGPTSessionDisplayExpiry(info); !displayExpires.IsZero() {
+		expires = displayExpires.UTC().Format(time.RFC3339)
 	}
 	tokenData := map[string]any{
-		"access_token":       info.AccessToken,
-		"refresh_token":      "",
-		"id_token":           idToken,
-		"account_id":         info.AccountID,
-		"chatgpt_plan_type":  info.PlanType,
-		"chatgpt_user_id":    info.ChatGPTUserID,
-		"chatgptAccountId":   info.AccountID,
-		"chatgptPlanType":    info.PlanType,
-		"chatgptUserId":      info.ChatGPTUserID,
-		"email":              info.Email,
-		"expired":            expires,
-		"id_token_synthetic": syntheticIDToken,
+		"access_token":            info.AccessToken,
+		"refresh_token":           "",
+		"session_token":           info.SessionToken,
+		"id_token":                idToken,
+		"account_id":              info.AccountID,
+		"chatgpt_account_id":      info.AccountID,
+		"plan_type":               info.PlanType,
+		"chatgpt_plan_type":       info.PlanType,
+		"chatgpt_user_id":         info.ChatGPTUserID,
+		"user_id":                 info.ChatGPTUserID,
+		"chatgpt_account_user_id": accountUserID,
+		"chatgptAccountId":        info.AccountID,
+		"chatgptPlanType":         info.PlanType,
+		"chatgptUserId":           info.ChatGPTUserID,
+		"email":                   info.Email,
+		"expires":                 expires,
+		"expired":                 expires,
+		"id_token_synthetic":      syntheticIDToken,
 	}
 	out := map[string]any{
 		"auth_mode":    "chatgpt",
@@ -1246,11 +1309,15 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 		"tokens": map[string]any{
 			"access_token":               info.AccessToken,
 			"refresh_token":              "",
+			"session_token":              info.SessionToken,
 			"id_token":                   idToken,
 			"account_id":                 info.AccountID,
 			"chatgpt_account_id":         info.AccountID,
+			"plan_type":                  info.PlanType,
 			"chatgpt_plan_type":          info.PlanType,
 			"chatgpt_user_id":            info.ChatGPTUserID,
+			"user_id":                    info.ChatGPTUserID,
+			"chatgpt_account_user_id":    accountUserID,
 			"chatgpt_account_is_fedramp": info.FedRAMP,
 			"chatgptAccountIsFedramp":    info.FedRAMP,
 			"chatgptAccountId":           info.AccountID,
@@ -1280,20 +1347,24 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 		"expired":                    expires,
 		"email":                      info.Email,
 		"type":                       "codex",
+		"disabled":                   info.Disabled,
 		"accessToken":                info.AccessToken,
 		"access_token":               info.AccessToken,
 		"refreshToken":               "",
 		"refresh_token":              "",
+		"sessionToken":               info.SessionToken,
+		"session_token":              info.SessionToken,
 		"idToken":                    idToken,
 		"id_token":                   idToken,
 		"account_id":                 info.AccountID,
 		"accountId":                  info.AccountID,
+		"chatgpt_account_id":         info.AccountID,
 		"plan_type":                  info.PlanType,
 		"planType":                   info.PlanType,
+		"chatgpt_plan_type":          info.PlanType,
 		"chatgpt_user_id":            info.ChatGPTUserID,
 		"user_id":                    info.ChatGPTUserID,
-		"chatgpt_account_id":         info.AccountID,
-		"chatgpt_plan_type":          info.PlanType,
+		"chatgpt_account_user_id":    accountUserID,
 		"chatgpt_account_is_fedramp": info.FedRAMP,
 		"chatgptAccountIsFedramp":    info.FedRAMP,
 		"id_token_synthetic":         syntheticIDToken,
@@ -1303,6 +1374,40 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 	return string(b)
 }
 
+func chatGPTAccountUserID(userID, accountID string) string {
+	userID = strings.TrimSpace(userID)
+	accountID = strings.TrimSpace(accountID)
+	if userID == "" || accountID == "" {
+		return ""
+	}
+	return userID + "__" + accountID
+}
+
+func chatGPTSessionDisplayExpiry(info sessionInfo) time.Time {
+	if !info.SessionExpires.IsZero() {
+		return info.SessionExpires
+	}
+	return info.Expires
+}
+
+func isSyntheticCodexIDToken(token string) bool {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(addB64Padding(parts[0]))
+		if err != nil {
+			return false
+		}
+	}
+	var header struct {
+		CPASynthetic bool `json:"cpa_synthetic"`
+	}
+	return json.Unmarshal(payload, &header) == nil && header.CPASynthetic
+}
+
 func buildSyntheticCodexIDToken(info sessionInfo, now time.Time) string {
 	if strings.TrimSpace(info.AccountID) == "" {
 		return ""
@@ -1310,7 +1415,7 @@ func buildSyntheticCodexIDToken(info sessionInfo, now time.Time) string {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	exp := info.Expires
+	exp := chatGPTSessionDisplayExpiry(info)
 	if exp.IsZero() {
 		exp = now.Add(90 * 24 * time.Hour)
 	}
@@ -1323,6 +1428,9 @@ func buildSyntheticCodexIDToken(info sessionInfo, now time.Time) string {
 	if info.ChatGPTUserID != "" {
 		authInfo["chatgpt_user_id"] = info.ChatGPTUserID
 		authInfo["user_id"] = info.ChatGPTUserID
+		if accountUserID := chatGPTAccountUserID(info.ChatGPTUserID, info.AccountID); accountUserID != "" {
+			authInfo["chatgpt_account_user_id"] = accountUserID
+		}
 	}
 	if info.FedRAMP {
 		authInfo["chatgpt_account_is_fedramp"] = true
@@ -1716,6 +1824,17 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func normalizeChatGPTAccountUserID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if userID, _, ok := strings.Cut(value, "__"); ok {
+		return strings.TrimSpace(userID)
+	}
+	return value
+}
+
 func isNumericString(value string) bool {
 	if value == "" {
 		return false
@@ -2015,10 +2134,6 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 				b, _ = io.ReadAll(resp.Body)
 				resp.Body.Close()
 			}
-			if chatGPTFixedAccessTokenSnapshot(sec) && isChatGPTPlainUnauthorizedResponse(resp.StatusCode, b) {
-				log.Printf("[chatgpt-session] account=%s codex bearer rejected for session-only JSON; falling back to web conversation endpoint", acc.ID)
-				return p.invokeWebConversationWithInfo(ctx, acc, req, info, sec)
-			}
 		}
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
 	}
@@ -2154,14 +2269,6 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 					return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
 				}
 				return resp.Body, resp.StatusCode, nil
-			}
-			if chatGPTFixedAccessTokenSnapshot(sec) && isChatGPTPlainUnauthorizedResponse(resp.StatusCode, respBody) {
-				log.Printf("[chatgpt-session] account=%s raw codex bearer rejected for session-only JSON; falling back to web conversation endpoint", acc.ID)
-				if fallbackBody, fallbackStatus, fallbackErr := p.doWebConversationResponsesFallback(rctx, acc, info, sec, body); fallbackErr == nil {
-					return fallbackBody, fallbackStatus, nil
-				} else {
-					log.Printf("[chatgpt-session] account=%s web conversation fallback unavailable: %v", acc.ID, fallbackErr)
-				}
 			}
 		}
 		return io.NopCloser(bytes.NewReader(respBody)), resp.StatusCode, nil

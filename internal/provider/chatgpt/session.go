@@ -37,15 +37,18 @@ import (
 )
 
 type sessionInfo struct {
-	AccessToken   string
-	RefreshToken  string
-	Expires       time.Time
-	AccountID     string
-	PlanType      string
-	Email         string
-	IDToken       string
-	ChatGPTUserID string
-	FedRAMP       bool
+	AccessToken    string
+	RefreshToken   string
+	SessionToken   string
+	Expires        time.Time
+	SessionExpires time.Time
+	AccountID      string
+	PlanType       string
+	Email          string
+	IDToken        string
+	ChatGPTUserID  string
+	FedRAMP        bool
+	Disabled       bool
 }
 
 type sessionJSONTokenBlock struct {
@@ -53,6 +56,8 @@ type sessionJSONTokenBlock struct {
 	CamelAccess                string          `json:"accessToken"`
 	RefreshToken               string          `json:"refresh_token"`
 	CamelRefresh               string          `json:"refreshToken"`
+	SessionToken               string          `json:"session_token"`
+	CamelSessionToken          string          `json:"sessionToken"`
 	IDToken                    string          `json:"id_token"`
 	CamelIDToken               string          `json:"idToken"`
 	AccountID                  string          `json:"account_id"`
@@ -65,15 +70,22 @@ type sessionJSONTokenBlock struct {
 	CamelChatGPTPlanType       string          `json:"chatgptPlanType"`
 	ChatGPTUserID              string          `json:"chatgpt_user_id"`
 	CamelChatGPTUserID         string          `json:"chatgptUserId"`
+	ChatGPTAccountUserID       string          `json:"chatgpt_account_user_id"`
+	CamelChatGPTAccountUserID  string          `json:"chatgptAccountUserId"`
 	UserID                     string          `json:"user_id"`
 	CamelUserID                string          `json:"userId"`
 	Email                      string          `json:"email"`
 	Expires                    string          `json:"expires"`
+	Expire                     string          `json:"expire"`
 	Expired                    string          `json:"expired"`
+	ExpiresAt                  string          `json:"expires_at"`
+	CamelExpiresAt             string          `json:"expiresAt"`
+	Expiry                     string          `json:"expiry"`
 	IsFedramp                  bool            `json:"is_fedramp"`
 	CamelIsFedramp             bool            `json:"isFedramp"`
 	ChatGPTAccountIsFedramp    bool            `json:"chatgpt_account_is_fedramp"`
 	CamelChatGPTAccountFedramp bool            `json:"chatgptAccountIsFedramp"`
+	Disabled                   bool            `json:"disabled"`
 	Token                      json.RawMessage `json:"token"`
 	TokenData                  json.RawMessage `json:"token_data"`
 	CamelTokenData             json.RawMessage `json:"tokenData"`
@@ -361,6 +373,7 @@ func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo, client 
 	email := info.Email
 	userID := info.ChatGPTUserID
 	fedRAMP := info.FedRAMP
+	disabled := info.Disabled
 	claims := mergeCodexClaims(codexClaims(idTok), codexClaims(newAccess))
 	if accountID == "" {
 		accountID = claims.AccountID
@@ -376,15 +389,18 @@ func (r *sessionResolver) refresh(ctx context.Context, info sessionInfo, client 
 	}
 	fedRAMP = fedRAMP || claims.FedRAMP
 	return sessionInfo{
-		AccessToken:   newAccess,
-		RefreshToken:  newRefresh,
-		Expires:       exp,
-		AccountID:     accountID,
-		PlanType:      planType,
-		Email:         email,
-		IDToken:       idTok,
-		ChatGPTUserID: userID,
-		FedRAMP:       fedRAMP,
+		AccessToken:    newAccess,
+		RefreshToken:   newRefresh,
+		SessionToken:   info.SessionToken,
+		Expires:        exp,
+		SessionExpires: info.SessionExpires,
+		AccountID:      accountID,
+		PlanType:       planType,
+		Email:          email,
+		IDToken:        idTok,
+		ChatGPTUserID:  userID,
+		FedRAMP:        fedRAMP,
+		Disabled:       disabled,
 	}, nil
 }
 
@@ -463,6 +479,8 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 			SnakeChatGPTAccountPlan    string `json:"chatgpt_plan_type"`
 			CamelChatGPTAccountUserID  string `json:"chatgptUserId"`
 			SnakeChatGPTAccountUserID  string `json:"chatgpt_user_id"`
+			CamelChatGPTAccountUserID3 string `json:"chatgptAccountUserId"`
+			SnakeChatGPTAccountUserID3 string `json:"chatgpt_account_user_id"`
 			CamelChatGPTAccountUserID2 string `json:"userId"`
 			SnakeChatGPTAccountUserID2 string `json:"user_id"`
 		} `json:"account"`
@@ -470,9 +488,15 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		SnakeAccess                 string                 `json:"access_token"`
 		RefreshToken                string                 `json:"refreshToken"`
 		SnakeRefresh                string                 `json:"refresh_token"`
+		SessionToken                string                 `json:"sessionToken"`
+		SnakeSessionToken           string                 `json:"session_token"`
 		IDToken                     string                 `json:"idToken"`
 		SnakeIDToken                string                 `json:"id_token"`
 		Expired                     string                 `json:"expired"`
+		Expire                      string                 `json:"expire"`
+		ExpiresAt                   string                 `json:"expires_at"`
+		CamelExpiresAt              string                 `json:"expiresAt"`
+		Expiry                      string                 `json:"expiry"`
 		Email                       string                 `json:"email"`
 		AccountID                   string                 `json:"account_id"`
 		CamelAccountID              string                 `json:"accountId"`
@@ -482,6 +506,8 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		CamelIsFedramp              bool                   `json:"isFedramp"`
 		ChatGPTUserID               string                 `json:"chatgpt_user_id"`
 		CamelChatGPTUserID          string                 `json:"chatgptUserId"`
+		ChatGPTAccountUserID        string                 `json:"chatgpt_account_user_id"`
+		CamelChatGPTAccountUserID   string                 `json:"chatgptAccountUserId"`
 		UserID                      string                 `json:"user_id"`
 		CamelUserID                 string                 `json:"userId"`
 		ChatGPTAccountID            string                 `json:"chatgpt_account_id"`
@@ -492,6 +518,7 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		CamelChatGPTAccountFedramp  bool                   `json:"chatgptAccountIsFedramp"`
 		ChatGPTAccountIsFedramp2    bool                   `json:"chatgpt_account_is_fedRAMP"`
 		CamelChatGPTAccountFedramp2 bool                   `json:"chatgptAccountIsFedRAMP"`
+		Disabled                    bool                   `json:"disabled"`
 		Tokens                      *sessionJSONTokenBlock `json:"tokens"`
 		TokenData                   *sessionJSONTokenBlock `json:"token_data"`
 		CamelTokenData              *sessionJSONTokenBlock `json:"tokenData"`
@@ -507,19 +534,26 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 	if raw.RefreshToken == "" {
 		raw.RefreshToken = raw.SnakeRefresh
 	}
+	if raw.SessionToken == "" {
+		raw.SessionToken = raw.SnakeSessionToken
+	}
 	if raw.IDToken == "" {
 		raw.IDToken = raw.SnakeIDToken
 	}
 	if raw.Expires == "" {
-		raw.Expires = raw.Expired
+		raw.Expires = firstNonEmpty(raw.Expired, raw.Expire, raw.ExpiresAt, raw.CamelExpiresAt, raw.Expiry)
 	}
 	explicitUserID := firstNonEmpty(
 		raw.ChatGPTUserID,
 		raw.CamelChatGPTUserID,
+		normalizeChatGPTAccountUserID(raw.ChatGPTAccountUserID),
+		normalizeChatGPTAccountUserID(raw.CamelChatGPTAccountUserID),
 		raw.UserID,
 		raw.CamelUserID,
 		raw.Account.SnakeChatGPTAccountUserID,
 		raw.Account.CamelChatGPTAccountUserID,
+		normalizeChatGPTAccountUserID(raw.Account.SnakeChatGPTAccountUserID3),
+		normalizeChatGPTAccountUserID(raw.Account.CamelChatGPTAccountUserID3),
 		raw.Account.SnakeChatGPTAccountUserID2,
 		raw.Account.CamelChatGPTAccountUserID2,
 	)
@@ -550,6 +584,9 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		if raw.RefreshToken == "" {
 			raw.RefreshToken = firstNonEmpty(block.RefreshToken, block.CamelRefresh)
 		}
+		if raw.SessionToken == "" {
+			raw.SessionToken = firstNonEmpty(block.SessionToken, block.CamelSessionToken)
+		}
 		if raw.IDToken == "" {
 			raw.IDToken = firstNonEmpty(block.IDToken, block.CamelIDToken)
 		}
@@ -560,19 +597,27 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 			planType = firstNonEmpty(block.PlanType, block.CamelPlanType, block.ChatGPTPlanType, block.CamelChatGPTPlanType)
 		}
 		if userID == "" {
-			userID = firstNonEmpty(block.ChatGPTUserID, block.CamelChatGPTUserID, block.UserID, block.CamelUserID)
+			userID = firstNonEmpty(
+				block.ChatGPTUserID,
+				block.CamelChatGPTUserID,
+				normalizeChatGPTAccountUserID(block.ChatGPTAccountUserID),
+				normalizeChatGPTAccountUserID(block.CamelChatGPTAccountUserID),
+				block.UserID,
+				block.CamelUserID,
+			)
 		}
 		if raw.User.Email == "" {
 			raw.User.Email = block.Email
 		}
 		if raw.Expires == "" {
-			raw.Expires = firstNonEmpty(block.Expires, block.Expired)
+			raw.Expires = firstNonEmpty(block.Expires, block.Expired, block.Expire, block.ExpiresAt, block.CamelExpiresAt, block.Expiry)
 		}
 		fedRAMP = fedRAMP ||
 			block.IsFedramp ||
 			block.CamelIsFedramp ||
 			block.ChatGPTAccountIsFedramp ||
 			block.CamelChatGPTAccountFedramp
+		raw.Disabled = raw.Disabled || block.Disabled
 		if depth >= 3 {
 			return
 		}
@@ -638,25 +683,40 @@ func parseSessionJSON(body []byte) (sessionInfo, error) {
 		}
 		return sessionInfo{}, errors.New("no accessToken in session response")
 	}
+	sessionExp := parseChatGPTTime(raw.Expires)
 	exp := jwtExpiry(raw.AccessToken)
 	if exp.IsZero() {
-		if t, err := time.Parse(time.RFC3339, raw.Expires); err == nil {
-			exp = t
+		if !sessionExp.IsZero() {
+			exp = sessionExp
 		} else {
 			exp = time.Now().Add(5 * time.Minute)
 		}
 	}
 	return sessionInfo{
-		AccessToken:   raw.AccessToken,
-		RefreshToken:  raw.RefreshToken,
-		Expires:       exp,
-		AccountID:     accountID,
-		PlanType:      planType,
-		Email:         raw.User.Email,
-		IDToken:       raw.IDToken,
-		ChatGPTUserID: userID,
-		FedRAMP:       fedRAMP,
+		AccessToken:    raw.AccessToken,
+		RefreshToken:   raw.RefreshToken,
+		SessionToken:   raw.SessionToken,
+		Expires:        exp,
+		SessionExpires: sessionExp,
+		AccountID:      accountID,
+		PlanType:       planType,
+		Email:          raw.User.Email,
+		IDToken:        raw.IDToken,
+		ChatGPTUserID:  userID,
+		FedRAMP:        fedRAMP,
+		Disabled:       raw.Disabled,
 	}, nil
+}
+
+func parseChatGPTTime(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t
+	}
+	return time.Time{}
 }
 
 // jwtExpiry decodes a JWT's payload (without verifying signature) and returns
@@ -729,13 +789,14 @@ func codexClaims(jwt string) codexClaimInfo {
 			ChatGPTAccountID        string `json:"chatgpt_account_id"`
 			ChatGPTPlanType         string `json:"chatgpt_plan_type"`
 			ChatGPTUserID           string `json:"chatgpt_user_id"`
+			ChatGPTAccountUserID    string `json:"chatgpt_account_user_id"`
 			UserID                  string `json:"user_id"`
 			ChatGPTAccountIsFedramp bool   `json:"chatgpt_account_is_fedramp"`
 		}
 		_ = json.Unmarshal(a, &inner)
 		out.AccountID = inner.ChatGPTAccountID
 		out.PlanType = inner.ChatGPTPlanType
-		out.UserID = firstNonEmpty(inner.ChatGPTUserID, inner.UserID)
+		out.UserID = firstNonEmpty(inner.ChatGPTUserID, inner.UserID, normalizeChatGPTAccountUserID(inner.ChatGPTAccountUserID))
 		out.FedRAMP = inner.ChatGPTAccountIsFedramp
 	}
 	if e, ok := nested["email"]; ok {

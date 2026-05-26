@@ -246,7 +246,7 @@ func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *t
 	accessToken := testJWTClaims(map[string]any{
 		"exp": time.Now().Add(time.Hour).Unix(),
 	})
-	rawSession := `{"accessToken":"` + accessToken + `","refreshToken":"rt-should-not-survive","idToken":"` + idToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-input","planType":"team"},"user":{"id":"user-input","email":"session@example.com"}}`
+	rawSession := `{"accessToken":"` + accessToken + `","refreshToken":"rt-should-not-survive","sessionToken":"next-auth-session-token","idToken":"` + idToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-input","planType":"team"},"user":{"id":"user-input","email":"session@example.com"},"disabled":true}`
 
 	normalized, err := NormalizeSessionOnlyAuthJSON(rawSession)
 	if err != nil {
@@ -262,6 +262,12 @@ func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *t
 	}
 	if raw["refreshToken"] != "" || raw["refresh_token"] != "" {
 		t.Fatalf("top-level refresh token survived: refreshToken=%v refresh_token=%v", raw["refreshToken"], raw["refresh_token"])
+	}
+	if raw["session_token"] != "next-auth-session-token" || raw["sessionToken"] != "next-auth-session-token" {
+		t.Fatalf("session token not preserved: session_token=%v sessionToken=%v", raw["session_token"], raw["sessionToken"])
+	}
+	if raw["disabled"] != true {
+		t.Fatalf("disabled = %v, want true", raw["disabled"])
 	}
 	if _, ok := raw["last_refresh"].(string); !ok {
 		t.Fatalf("last_refresh missing or not string: %v", raw["last_refresh"])
@@ -283,7 +289,7 @@ func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *t
 	if !ok {
 		t.Fatalf("token_data missing: %#v", raw["token_data"])
 	}
-	if tokenData["access_token"] != accessToken || tokenData["account_id"] != "acct-input" || tokenData["refresh_token"] != "" {
+	if tokenData["access_token"] != accessToken || tokenData["account_id"] != "acct-input" || tokenData["chatgpt_account_id"] != "acct-input" || tokenData["refresh_token"] != "" || tokenData["session_token"] != "next-auth-session-token" {
 		t.Fatalf("token_data not CPA-compatible: %#v", tokenData)
 	}
 
@@ -293,6 +299,12 @@ func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *t
 	}
 	if parsed.RefreshToken != "" {
 		t.Fatalf("parsed refresh token = %q, want empty", parsed.RefreshToken)
+	}
+	if parsed.SessionToken != "next-auth-session-token" {
+		t.Fatalf("parsed session token = %q, want next-auth-session-token", parsed.SessionToken)
+	}
+	if !parsed.Disabled {
+		t.Fatal("disabled flag was not preserved")
 	}
 	if parsed.Email != "session@example.com" || parsed.AccountID != "acct-input" || parsed.PlanType != "team" {
 		t.Fatalf("parsed features not preserved: %+v", parsed)
@@ -324,6 +336,9 @@ func TestNormalizeSessionOnlyAuthJSONBuildsSyntheticIDTokenForCPA(t *testing.T) 
 	if raw["id_token_synthetic"] != true {
 		t.Fatalf("id_token_synthetic = %v, want true", raw["id_token_synthetic"])
 	}
+	if raw["disabled"] != false {
+		t.Fatalf("disabled = %v, want false", raw["disabled"])
+	}
 	claims := codexClaims(idToken)
 	if claims.AccountID != "acct-cpa" || claims.PlanType != "plus" || claims.UserID != "user-cpa" || claims.Email != "cpa@example.com" {
 		t.Fatalf("synthetic id_token claims not CPA-compatible: %+v", claims)
@@ -334,6 +349,31 @@ func TestNormalizeSessionOnlyAuthJSONBuildsSyntheticIDTokenForCPA(t *testing.T) 
 	}
 	if parsed.IDToken != idToken || parsed.RefreshToken != "" || parsed.AccountID != "acct-cpa" || parsed.PlanType != "plus" {
 		t.Fatalf("parsed synthetic session mismatch: %+v", parsed)
+	}
+}
+
+func TestSessionOnlyDetectsFlatCPAWithoutRefreshToken(t *testing.T) {
+	accessToken := testJWTExp(time.Now().Add(time.Hour))
+	idToken := testJWTClaims(map[string]any{
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"email": "flat@example.com",
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id":      "acct-flat",
+			"chatgpt_plan_type":       "plus",
+			"chatgpt_account_user_id": "user-flat__acct-flat",
+		},
+	})
+	rawSession := `{"type":"codex","email":"flat@example.com","account_id":"acct-flat","plan_type":"plus","access_token":"` + accessToken + `","id_token":"` + idToken + `","refresh_token":"","session_token":"next-auth-flat","expired":"2099-01-01T00:00:00Z"}`
+
+	if !IsSessionOnlyAuthJSON(rawSession) {
+		t.Fatal("flat CPA auth JSON without refresh_token should be treated as a fixed session-only snapshot")
+	}
+	parsed, err := parseSessionJSON([]byte(rawSession))
+	if err != nil {
+		t.Fatalf("parse flat CPA auth JSON: %v", err)
+	}
+	if parsed.AccountID != "acct-flat" || parsed.PlanType != "plus" || parsed.ChatGPTUserID != "user-flat" || parsed.SessionToken != "next-auth-flat" {
+		t.Fatalf("parsed flat CPA auth JSON mismatch: %+v", parsed)
 	}
 }
 
