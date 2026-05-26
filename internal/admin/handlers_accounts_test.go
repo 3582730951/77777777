@@ -105,6 +105,33 @@ func TestAccountPoolTestFailureClassPreservesQuotaExhaustion(t *testing.T) {
 	}
 }
 
+func TestNormalizeChatGPTAccountSecretClearsSessionOnlyRecoveryMaterial(t *testing.T) {
+	sessionOnly := `{"auth_mode":"chatgpt","session_import_mode":"session_only_json","access_token":"access-1","refresh_token":"","tokens":{"access_token":"access-1","refresh_token":"","id_token_synthetic":true}}`
+	sec := normalizeChatGPTAccountSecret("chatgpt", store.AccountSecret{
+		SessionToken: sessionOnly,
+		RefreshToken: "rt-must-drop",
+		Cookies:      []byte("__Secure-next-auth.session-token=must-drop"),
+	})
+
+	if sec.RefreshToken != "" || len(sec.Cookies) != 0 {
+		t.Fatalf("session-only secret retained recovery material: %+v", sec)
+	}
+	if sec.SessionToken != sessionOnly {
+		t.Fatalf("session token changed: %q", sec.SessionToken)
+	}
+}
+
+func TestNormalizeChatGPTAccountSecretKeepsWebSessionCookies(t *testing.T) {
+	sec := normalizeChatGPTAccountSecret("chatgpt", store.AccountSecret{
+		SessionToken: `{"accessToken":"access-1","expires":"2099-01-01T00:00:00Z"}`,
+		Cookies:      []byte("__Secure-next-auth.session-token=keep"),
+	})
+
+	if string(sec.Cookies) != "__Secure-next-auth.session-token=keep" {
+		t.Fatalf("web-session cookies should be preserved: %+v", sec)
+	}
+}
+
 func testAccountWithQuota(id string, limit, used float64) *domain.Account {
 	return &domain.Account{
 		ID:       id,

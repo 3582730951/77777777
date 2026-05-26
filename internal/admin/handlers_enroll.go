@@ -213,6 +213,7 @@ func (s *Server) completeWebSessionEnrollment(ctx context.Context, p *enrollment
 		SessionToken: sess,
 		Cookies:      []byte(cookies),
 	}
+	sec = normalizeChatGPTAccountSecret(p.Provider, sec)
 	if err := s.deps.Store.UpsertAccount(ctx, a, sec); err != nil {
 		return "", err
 	}

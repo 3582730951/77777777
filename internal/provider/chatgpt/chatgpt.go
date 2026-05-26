@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -238,6 +239,7 @@ func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, 
 				sec = fresh
 			}
 		}
+		sec = chatGPTSessionOnlySnapshotSecret(sec)
 		client, err := p.httpClientForAccount(ctx, acc)
 		if err != nil {
 			return sessionInfo{}, err
@@ -258,11 +260,11 @@ func (p *Provider) resolveSessionOnce(ctx context.Context, acc *domain.Account, 
 }
 
 func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
-	used := sec
+	used := chatGPTSessionOnlySnapshotSecret(sec)
 	return p.withSessionMutationLock(acc.ID, func() (sessionInfo, error) {
 		if p.store != nil {
 			if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
-				sec = fresh
+				sec = chatGPTSessionOnlySnapshotSecret(fresh)
 				if chatGPTSessionMaterialChanged(used, fresh) {
 					client, clientErr := p.httpClientForAccount(ctx, acc)
 					if clientErr != nil {
@@ -308,6 +310,13 @@ func (p *Provider) forceRefreshSessionOnce(ctx context.Context, acc *domain.Acco
 		}
 		return info, nil
 	})
+}
+
+func chatGPTCanRecoverAuthFailure(sec store.AccountSecret) bool {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		return false
+	}
+	return chatGPTRefreshTokenFromSecret(sec) != "" || chatGPTCookieHeaderFromSecret(sec) != ""
 }
 
 func (p *Provider) recoverSessionFromStoredCookie(ctx context.Context, acc *domain.Account, sec store.AccountSecret, refreshErr error) (sessionInfo, error, bool) {
@@ -573,6 +582,9 @@ func chatGPTSessionMaterialChanged(oldSec, newSec store.AccountSecret) bool {
 }
 
 func chatGPTRefreshTokenFromSecret(sec store.AccountSecret) string {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		return ""
+	}
 	return chatGPTPreferredRefreshToken(chatGPTRefreshTokenFromSession(sec.SessionToken), strings.TrimSpace(sec.RefreshToken))
 }
 
@@ -598,6 +610,9 @@ func chatGPTAccessTokenFromSession(sessionToken string) string {
 
 func chatGPTRefreshTokenFromSession(sessionToken string) string {
 	trimmed := strings.TrimSpace(sessionToken)
+	if IsSessionOnlyAuthJSON(trimmed) {
+		return ""
+	}
 	if info, err := parseSessionJSON([]byte(trimmed)); err == nil {
 		return strings.TrimSpace(info.RefreshToken)
 	}
@@ -798,6 +813,9 @@ func chatGPTCookiePairsFromSetCookieHeaderValue(value string) []chatGPTCookiePai
 }
 
 func chatGPTCookieHeaderFromSecret(sec store.AccountSecret) string {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		return ""
+	}
 	pairs := chatGPTCookiePairsFromBytes(sec.Cookies)
 	if st := strings.TrimSpace(sec.SessionToken); st != "" && !strings.HasPrefix(st, "{") {
 		pairs = append([]chatGPTCookiePair{{Name: "__Secure-next-auth.session-token", Value: st}}, pairs...)
@@ -919,6 +937,9 @@ func chatGPTNextAuthCookieFromPairs(pairs []chatGPTCookiePair) string {
 }
 
 func chatGPTWebSessionRefreshDue(sec store.AccountSecret, now time.Time) bool {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		return false
+	}
 	if chatGPTRefreshTokenFromSecret(sec) != "" {
 		return false
 	}
@@ -933,6 +954,7 @@ func chatGPTWebSessionRefreshDue(sec store.AccountSecret, now time.Time) bool {
 }
 
 func chatGPTStoredAccessTokenUsable(sec store.AccountSecret, until time.Time) bool {
+	sec = chatGPTSessionOnlySnapshotSecret(sec)
 	info, ok := parseStoredSessionSecret(sec.SessionToken, sec.RefreshToken)
 	if !ok || info.AccessToken == "" {
 		return false
@@ -944,6 +966,7 @@ func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Accou
 	if p.store == nil || info.AccessToken == "" {
 		return nil
 	}
+	sec = chatGPTSessionOnlySnapshotSecret(sec)
 	trimmed := strings.TrimSpace(sec.SessionToken)
 	rawCookieWithoutRefresh := trimmed != "" && !strings.HasPrefix(trimmed, "{") && info.RefreshToken == ""
 
@@ -1049,6 +1072,9 @@ func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
 	if trimmed == "" {
 		return true
 	}
+	if IsSessionOnlyAuthJSON(trimmed) {
+		return false
+	}
 	if !strings.HasPrefix(trimmed, "{") {
 		return info.RefreshToken != ""
 	}
@@ -1123,9 +1149,49 @@ func NormalizeSessionOnlyAuthJSON(raw string) (string, error) {
 	return buildChatGPTSessionOnlyAuthJSON(info, time.Now().UTC()), nil
 }
 
+// IsSessionOnlyAuthJSON reports whether a stored ChatGPT JSON credential was
+// imported as the CPA/session-only fixed access-token snapshot. These entries
+// intentionally do not use OAuth refresh_token or web next-auth cookie recovery.
+func IsSessionOnlyAuthJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "{") {
+		return false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return false
+	}
+	if mode, _ := obj["session_import_mode"].(string); strings.EqualFold(strings.TrimSpace(mode), "session_only_json") {
+		return true
+	}
+	if synthetic, _ := obj["id_token_synthetic"].(bool); synthetic {
+		return true
+	}
+	if tokens, ok := obj["tokens"].(map[string]any); ok {
+		if synthetic, _ := tokens["id_token_synthetic"].(bool); synthetic {
+			return true
+		}
+	}
+	return false
+}
+
+func chatGPTSessionOnlySnapshotSecret(sec store.AccountSecret) store.AccountSecret {
+	if !IsSessionOnlyAuthJSON(sec.SessionToken) {
+		return sec
+	}
+	sec.RefreshToken = ""
+	sec.Cookies = nil
+	return sec
+}
+
 func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
-	idToken := firstNonEmpty(info.IDToken, info.AccessToken)
+	idToken := info.IDToken
+	syntheticIDToken := false
+	if idToken == "" && info.AccountID != "" {
+		idToken = buildSyntheticCodexIDToken(info, now)
+		syntheticIDToken = idToken != ""
+	}
 	expires := ""
 	if !info.Expires.IsZero() {
 		expires = info.Expires.UTC().Format(time.RFC3339)
@@ -1146,6 +1212,7 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 			"chatgptAccountId":           info.AccountID,
 			"chatgptPlanType":            info.PlanType,
 			"chatgptUserId":              info.ChatGPTUserID,
+			"id_token_synthetic":         syntheticIDToken,
 		},
 		"user": map[string]string{
 			"id":    userID,
@@ -1182,10 +1249,57 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 		"chatgpt_plan_type":          info.PlanType,
 		"chatgpt_account_is_fedramp": info.FedRAMP,
 		"chatgptAccountIsFedramp":    info.FedRAMP,
+		"id_token_synthetic":         syntheticIDToken,
 		"session_import_mode":        "session_only_json",
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
+}
+
+func buildSyntheticCodexIDToken(info sessionInfo, now time.Time) string {
+	if strings.TrimSpace(info.AccountID) == "" {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	exp := info.Expires
+	if exp.IsZero() {
+		exp = now.Add(90 * 24 * time.Hour)
+	}
+	authInfo := map[string]any{
+		"chatgpt_account_id": info.AccountID,
+	}
+	if info.PlanType != "" {
+		authInfo["chatgpt_plan_type"] = info.PlanType
+	}
+	if info.ChatGPTUserID != "" {
+		authInfo["chatgpt_user_id"] = info.ChatGPTUserID
+		authInfo["user_id"] = info.ChatGPTUserID
+	}
+	if info.FedRAMP {
+		authInfo["chatgpt_account_is_fedramp"] = true
+	}
+	payload := map[string]any{
+		"iat":                         now.Unix(),
+		"exp":                         exp.Unix(),
+		"https://api.openai.com/auth": authInfo,
+	}
+	if info.Email != "" {
+		payload["email"] = info.Email
+	}
+	header := map[string]any{
+		"alg":           "none",
+		"typ":           "JWT",
+		"cpa_synthetic": true,
+	}
+	return base64.RawURLEncoding.EncodeToString(mustJSON(header)) + "." +
+		base64.RawURLEncoding.EncodeToString(mustJSON(payload)) + "."
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
@@ -1214,7 +1328,7 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 		return err
 	}
 	_, err = p.fetchWhamUsageWithSecret(ctx, acc, info, sec)
-	if isChatGPTRecoverableAuthError(err) {
+	if isChatGPTRecoverableAuthError(err) && chatGPTCanRecoverAuthFailure(sec) {
 		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
 		if refreshErr != nil {
 			return fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
@@ -1275,7 +1389,7 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 		acc.ID, len(info.AccessToken), info.AccountID, info.PlanType, info.Expires)
 
 	quotaState, err := p.fetchConversationLimitWithSecret(ctx, acc, info, sec)
-	if isChatGPTRecoverableAuthError(err) {
+	if isChatGPTRecoverableAuthError(err) && chatGPTCanRecoverAuthFailure(sec) {
 		log.Printf("[chatgpt-discover] account=%s upstream auth failed, refreshing session and retrying quota fetch", acc.ID)
 		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
 		if refreshErr != nil {
@@ -1798,21 +1912,23 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if isChatGPTRecoverableAuthResponse(resp.StatusCode, b) {
-			refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
-			if refreshErr != nil {
-				return nil, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+			if chatGPTCanRecoverAuthFailure(sec) {
+				refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+				if refreshErr != nil {
+					return nil, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+				}
+				resp, err = p.doCodexResponsesWithSecret(ctx, acc, refreshed, p.latestAccountSecretOr(ctx, acc.ID, sec), body)
+				if err != nil {
+					return nil, fmt.Errorf("post codex/responses after refresh: %w", err)
+				}
+				if resp.StatusCode == 200 {
+					out := make(chan ir.Event, 32)
+					go streamResponsesSSE(ctx, resp.Body, out)
+					return out, nil
+				}
+				b, _ = io.ReadAll(resp.Body)
+				resp.Body.Close()
 			}
-			resp, err = p.doCodexResponsesWithSecret(ctx, acc, refreshed, p.latestAccountSecretOr(ctx, acc.ID, sec), body)
-			if err != nil {
-				return nil, fmt.Errorf("post codex/responses after refresh: %w", err)
-			}
-			if resp.StatusCode == 200 {
-				out := make(chan ir.Event, 32)
-				go streamResponsesSSE(ctx, resp.Body, out)
-				return out, nil
-			}
-			b, _ = io.ReadAll(resp.Body)
-			resp.Body.Close()
 		}
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
 	}
@@ -1891,15 +2007,17 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 		resp.Body.Close()
 		if isChatGPTRecoverableAuthResponse(resp.StatusCode, respBody) {
-			refreshed, refreshErr := p.forceRefreshSession(rctx, acc, sec)
-			if refreshErr != nil {
-				return nil, 0, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+			if chatGPTCanRecoverAuthFailure(sec) {
+				refreshed, refreshErr := p.forceRefreshSession(rctx, acc, sec)
+				if refreshErr != nil {
+					return nil, 0, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+				}
+				resp, err = p.doCodexResponsesWithSecret(rctx, acc, refreshed, p.latestAccountSecretOr(rctx, acc.ID, sec), body)
+				if err != nil {
+					return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
+				}
+				return resp.Body, resp.StatusCode, nil
 			}
-			resp, err = p.doCodexResponsesWithSecret(rctx, acc, refreshed, p.latestAccountSecretOr(rctx, acc.ID, sec), body)
-			if err != nil {
-				return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
-			}
-			return resp.Body, resp.StatusCode, nil
 		}
 		return io.NopCloser(bytes.NewReader(respBody)), resp.StatusCode, nil
 	}

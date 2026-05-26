@@ -55,6 +55,7 @@ func (s *Server) handleAccountsBulkImport(w http.ResponseWriter, r *http.Request
 				SessionToken: req.SessionToken,
 				RefreshToken: req.RefreshToken,
 			}
+			sec = normalizeChatGPTAccountSecret(a.Provider, sec)
 			if err := s.deps.Store.UpsertAccount(r.Context(), a, sec); err != nil {
 				continue
 			}

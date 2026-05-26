@@ -657,6 +657,72 @@ func TestInvokeRawRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 }
 
+func TestInvokeRawSessionOnlyUnauthorizedDoesNotAttemptRefresh(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	accessToken := testJWTExp(time.Now().Add(time.Hour))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{"accessToken":"` + accessToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"session@example.com"}}`)
+	if err != nil {
+		t.Fatalf("normalize session-only auth json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-json-raw",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	var refreshCalls int
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		refreshCalls++
+		t.Fatalf("session-only auth JSON must not call refresh; got refresh_token=%q", refreshToken)
+		return "", "", "", 0, nil
+	})
+
+	var calls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		calls++
+		auths = append(auths, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw returned refresh error for session-only auth JSON: %v", err)
+	}
+	defer rc.Close()
+	body, _ := io.ReadAll(rc)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s, want 401 upstream passthrough", status, body)
+	}
+	if !strings.Contains(string(body), "Unauthorized") {
+		t.Fatalf("body = %s, want upstream Unauthorized body", body)
+	}
+	if refreshCalls != 0 || calls != 1 {
+		t.Fatalf("calls refresh=%d upstream=%d, want 0/1", refreshCalls, calls)
+	}
+	if len(auths) != 1 || auths[0] != "Bearer "+accessToken {
+		t.Fatalf("authorization sequence = %#v", auths)
+	}
+}
+
 func TestInvokeRawTokenInvalidatedRefreshesOtherCodexAuthJSONBeforeCookieFallback(t *testing.T) {
 	ctx := context.Background()
 	p := New(ModeReal)
@@ -1146,6 +1212,77 @@ func TestInvokeRealRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestInvokeRealSessionOnlyTokenInvalidatedDoesNotAttemptRefresh(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	accessToken := testJWTExp(time.Now().Add(time.Hour))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{"accessToken":"` + accessToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"session@example.com"}}`)
+	if err != nil {
+		t.Fatalf("normalize session-only auth json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-json-ir",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	var refreshCalls int
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		refreshCalls++
+		t.Fatalf("session-only auth JSON must not call refresh; got refresh_token=%q", refreshToken)
+		return "", "", "", 0, nil
+	})
+
+	var calls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		calls++
+		auths = append(auths, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"invalid_request_error","code":"token_invalidated","param":null}}`))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	_, err = p.Invoke(ctx, acc, &ir.Request{
+		Model: "gpt-5.5",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello"}},
+		}},
+		Stream: true,
+	})
+	if err == nil {
+		t.Fatal("Invoke succeeded; want upstream 401 error")
+	}
+	if !strings.Contains(err.Error(), "upstream 401") {
+		t.Fatalf("error = %v, want direct upstream 401", err)
+	}
+	if strings.Contains(err.Error(), "no OAuth refresh_token") || strings.Contains(err.Error(), "web session cookie recovery") {
+		t.Fatalf("session-only auth JSON should not attempt refresh/cookie recovery; error=%v", err)
+	}
+	if refreshCalls != 0 || calls != 1 {
+		t.Fatalf("calls refresh=%d upstream=%d, want 0/1", refreshCalls, calls)
+	}
+	if len(auths) != 1 || auths[0] != "Bearer "+accessToken {
+		t.Fatalf("authorization sequence = %#v", auths)
 	}
 }
 

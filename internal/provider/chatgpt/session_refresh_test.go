@@ -295,6 +295,41 @@ func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *t
 	}
 }
 
+func TestNormalizeSessionOnlyAuthJSONBuildsSyntheticIDTokenForCPA(t *testing.T) {
+	accessToken := testJWTClaims(map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	rawSession := `{"accessToken":"` + accessToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-cpa","planType":"plus"},"user":{"id":"user-cpa","email":"cpa@example.com"}}`
+
+	normalized, err := NormalizeSessionOnlyAuthJSON(rawSession)
+	if err != nil {
+		t.Fatalf("normalize session-only auth json: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(normalized), &raw); err != nil {
+		t.Fatalf("unmarshal normalized json: %v", err)
+	}
+	idToken, _ := raw["id_token"].(string)
+	if idToken == "" || idToken == accessToken {
+		t.Fatalf("id_token = %q, want synthetic token distinct from access token", idToken)
+	}
+	if raw["id_token_synthetic"] != true {
+		t.Fatalf("id_token_synthetic = %v, want true", raw["id_token_synthetic"])
+	}
+	claims := codexClaims(idToken)
+	if claims.AccountID != "acct-cpa" || claims.PlanType != "plus" || claims.UserID != "user-cpa" || claims.Email != "cpa@example.com" {
+		t.Fatalf("synthetic id_token claims not CPA-compatible: %+v", claims)
+	}
+	parsed, err := parseSessionJSON([]byte(normalized))
+	if err != nil {
+		t.Fatalf("parse normalized session: %v", err)
+	}
+	if parsed.IDToken != idToken || parsed.RefreshToken != "" || parsed.AccountID != "acct-cpa" || parsed.PlanType != "plus" {
+		t.Fatalf("parsed synthetic session mismatch: %+v", parsed)
+	}
+}
+
 func TestRefreshCredentialDoesNotRefreshSessionOnlyAuthJSON(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
@@ -342,6 +377,66 @@ func TestRefreshCredentialDoesNotRefreshSessionOnlyAuthJSON(t *testing.T) {
 	}
 	if parsed.RefreshToken != "" || sec.RefreshToken != "" || len(sec.Cookies) != 0 {
 		t.Fatalf("session-only credentials gained refresh material: parsed_rt=%q top_rt=%q cookies=%q", parsed.RefreshToken, sec.RefreshToken, string(sec.Cookies))
+	}
+}
+
+func TestRefreshCredentialTreatsTaggedSessionOnlyAsNonRecoverableSnapshot(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{"accessToken":"` + expiredAccess + `","expires":"2000-01-01T00:00:00Z","account":{"id":"acct-session","planType":"plus"},"user":{"email":"session@example.com"}}`)
+	if err != nil {
+		t.Fatalf("normalize session-only auth json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-tagged",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: sessionOnly,
+		RefreshToken: "rt-must-not-be-used",
+		Cookies:      []byte("__Secure-next-auth.session-token=must-not-be-used"),
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	var refreshCalls atomic.Int32
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		refreshCalls.Add(1)
+		return testJWTExp(time.Now().Add(time.Hour)), "rt-new", "id-new", 3600, nil
+	})
+	var sessionCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/auth/session" {
+			sessionCalls.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	if err := p.RefreshCredential(ctx, acc); err == nil {
+		t.Fatal("refresh credential succeeded with expired tagged session-only token")
+	}
+	if got := refreshCalls.Load(); got != 0 {
+		t.Fatalf("refresh callback calls = %d, want 0", got)
+	}
+	if got := sessionCalls.Load(); got != 0 {
+		t.Fatalf("auth/session calls = %d, want 0", got)
 	}
 }
 

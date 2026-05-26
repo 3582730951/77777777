@@ -67,6 +67,7 @@ func (s *Server) handleAccountCreatePost(w http.ResponseWriter, r *http.Request)
 		SessionToken: r.FormValue("session_token"),
 		RefreshToken: r.FormValue("refresh_token"),
 	}
+	sec = normalizeChatGPTAccountSecret(a.Provider, sec)
 	if err := s.deps.Store.UpsertAccount(r.Context(), a, sec); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -681,6 +682,7 @@ func (s *Server) handleAccountEditPost(w http.ResponseWriter, r *http.Request) {
 	if rt := r.FormValue("refresh_token"); rt != "" {
 		sec.RefreshToken = rt
 	}
+	sec = normalizeChatGPTAccountSecret(a.Provider, sec)
 	if err := s.deps.Store.UpsertAccount(r.Context(), a, sec); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
