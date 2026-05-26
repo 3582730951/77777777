@@ -41,10 +41,10 @@ const (
 	ModeMock = "mock"
 	ModeReal = "real"
 
-	defaultCodexUserAgent  = "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
+	defaultCodexUserAgent  = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
 	defaultCodexOriginator = "codex_cli_rs"
-	cpaCodexUserAgent      = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
-	cpaCodexOriginator     = "codex-tui"
+	cpaCodexUserAgent      = defaultCodexUserAgent
+	cpaCodexOriginator     = defaultCodexOriginator
 )
 
 type Provider struct {
@@ -2050,7 +2050,7 @@ func codexHeaderProfile(acc *domain.Account, sec store.AccountSecret) (ua, origi
 		ua = acc.UA
 	}
 	if IsSessionOnlyAuthJSON(sec.SessionToken) {
-		if ua == "" || !looksLikeCodexUserAgent(ua) {
+		if ua == "" || !looksLikeOfficialCodexUserAgent(ua) {
 			ua = cpaCodexUserAgent
 		}
 		return ua, cpaCodexOriginator
@@ -2064,6 +2064,11 @@ func codexHeaderProfile(acc *domain.Account, sec store.AccountSecret) (ua, origi
 func looksLikeCodexUserAgent(ua string) bool {
 	ua = strings.ToLower(strings.TrimSpace(ua))
 	return strings.Contains(ua, "codex")
+}
+
+func looksLikeOfficialCodexUserAgent(ua string) bool {
+	ua = strings.ToLower(strings.TrimSpace(ua))
+	return strings.HasPrefix(ua, "codex_cli_rs/")
 }
 
 func looksLikeBrowserUserAgent(ua string) bool {
@@ -2148,6 +2153,27 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	if err != nil {
 		return nil, fmt.Errorf("resolve session: %w", err)
 	}
+	latestSec := p.latestAccountSecretOr(ctx, acc.ID, sec)
+	var primaryWebErr error
+	if shouldPreferChatGPTWebConversation(req, latestSec) {
+		webInfo := info
+		webSec := latestSec
+		if chatGPTCookieHeaderFromSecret(webSec) != "" {
+			if refreshed, refreshErr := p.refreshSessionFromStoredCookie(ctx, acc, webSec, false); refreshErr == nil {
+				webInfo = refreshed
+				webSec = p.latestAccountSecretOr(ctx, acc.ID, webSec)
+			} else {
+				log.Printf("[chatgpt] account=%s web conversation primary session refresh failed; using resolved access token: %v", acc.ID, refreshErr)
+			}
+		}
+		if ch, webErr := p.invokeWebConversationWithInfo(ctx, acc, req, webInfo, webSec); webErr == nil {
+			log.Printf("[chatgpt] account=%s served via web conversation primary path", acc.ID)
+			return ch, nil
+		} else {
+			primaryWebErr = webErr
+			log.Printf("[chatgpt] account=%s web conversation primary path failed; trying codex/responses: %v", acc.ID, webErr)
+		}
+	}
 
 	model := mapToCodexModelSlug(req.Model)
 	body, err := buildResponsesBody(req, model)
@@ -2162,6 +2188,7 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		fallbackErr := primaryWebErr
 		if isChatGPTRecoverableAuthResponse(resp.StatusCode, b) {
 			if chatGPTCanRecoverAuthFailure(sec) {
 				refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
@@ -2185,6 +2212,7 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 						log.Printf("[chatgpt] account=%s codex/responses unauthorized after session recovery; served via web conversation fallback", acc.ID)
 						return ch, nil
 					} else {
+						fallbackErr = webErr
 						log.Printf("[chatgpt] account=%s web conversation fallback failed after codex 401: %v", acc.ID, webErr)
 					}
 				}
@@ -2195,9 +2223,13 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 					log.Printf("[chatgpt] account=%s codex/responses unauthorized; served via web conversation fallback", acc.ID)
 					return ch, nil
 				} else {
+					fallbackErr = webErr
 					log.Printf("[chatgpt] account=%s web conversation fallback failed after codex 401: %v", acc.ID, webErr)
 				}
 			}
+		}
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("upstream %d: %s; web conversation fallback failed: %w", resp.StatusCode, snippet(b), fallbackErr)
 		}
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
 	}
@@ -2223,7 +2255,7 @@ func (p *Provider) doCodexResponsesWithSecret(ctx context.Context, acc *domain.A
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", ua)
-	httpReq.Header["OpenAI-Beta"] = []string{"responses=experimental"}
+	httpReq.Header.Set("Connection", "Keep-Alive")
 	httpReq.Header.Set("Originator", originator)
 	setChatGPTAccountHeaders(httpReq.Header, info)
 	setChatGPTCookieHeader(httpReq.Header, sec)
@@ -2246,6 +2278,16 @@ func canUseChatGPTWebConversationFallback(req *ir.Request, sec store.AccountSecr
 		return true
 	}
 	return chatGPTFixedAccessTokenSnapshot(sec) && chatGPTAccessTokenFromSession(sec.SessionToken) != ""
+}
+
+func shouldPreferChatGPTWebConversation(req *ir.Request, sec store.AccountSecret) bool {
+	if req != nil && len(req.Tools) > 0 {
+		return false
+	}
+	if chatGPTRefreshTokenFromSecret(sec) != "" {
+		return false
+	}
+	return chatGPTCookieHeaderFromSecret(sec) != ""
 }
 
 func (p *Provider) invokeWebConversationWithInfo(ctx context.Context, acc *domain.Account, req *ir.Request, info sessionInfo, sec store.AccountSecret) (<-chan ir.Event, error) {
@@ -2678,11 +2720,8 @@ const maxCodexSessionHeaderLen = 512
 
 func setCodexSessionHeaders(h http.Header, responsesBody []byte) {
 	sessionID, threadID := codexSessionHeadersFromResponsesBody(responsesBody)
-	h.Set("session-id", sessionID)
 	h.Set("session_id", sessionID)
 	if threadID != "" {
-		h.Set("thread-id", threadID)
-		h.Set("thread_id", threadID)
 		h.Set("x-client-request-id", threadID)
 	}
 }

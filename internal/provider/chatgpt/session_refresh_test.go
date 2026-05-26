@@ -761,8 +761,8 @@ func TestInvokeRealFallsBackToWebConversationForCPAWithoutRefreshToken(t *testin
 	if text != "web ok" {
 		t.Fatalf("fallback stream text = %q, want web ok", text)
 	}
-	if codexCalls != 2 || sessionCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
-		t.Fatalf("calls codex/session/sentinel/conversation = %d/%d/%d/%d, want 2/1/1/1", codexCalls, sessionCalls, sentinelCalls, conversationCalls)
+	if codexCalls != 0 || sessionCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
+		t.Fatalf("calls codex/session/sentinel/conversation = %d/%d/%d/%d, want 0/1/1/1", codexCalls, sessionCalls, sentinelCalls, conversationCalls)
 	}
 }
 

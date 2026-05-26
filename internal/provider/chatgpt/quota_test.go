@@ -405,11 +405,11 @@ func TestInvokeRawUsesPromptCacheKeyForCodexSessionHeaders(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200", status)
 	}
-	if gotSessionID != "thread-stable-123" || gotThreadID != "thread-stable-123" || gotRequestID != "thread-stable-123" {
+	if gotSessionID != "thread-stable-123" || gotRequestID != "thread-stable-123" {
 		t.Fatalf("session headers not derived from prompt_cache_key: session=%q thread=%q request=%q", gotSessionID, gotThreadID, gotRequestID)
 	}
-	if gotHyphenSessionID != "thread-stable-123" || gotHyphenThreadID != "thread-stable-123" {
-		t.Fatalf("official hyphen session headers not derived from prompt_cache_key: session=%q thread=%q", gotHyphenSessionID, gotHyphenThreadID)
+	if gotThreadID != "" || gotHyphenSessionID != "" || gotHyphenThreadID != "" {
+		t.Fatalf("legacy session/thread headers should be omitted: thread=%q session-id=%q thread-id=%q", gotThreadID, gotHyphenSessionID, gotHyphenThreadID)
 	}
 	if !bytes.Equal(gotBody, wantBody) {
 		t.Fatalf("raw body changed:\n got %s\nwant %s", gotBody, wantBody)
@@ -516,11 +516,8 @@ func TestInvokeRawFallsBackToRandomSessionWithoutPromptCacheKey(t *testing.T) {
 	if gotSessionID == "" {
 		t.Fatal("session_id fallback should be set")
 	}
-	if gotHyphenSessionID == "" || gotHyphenSessionID != gotSessionID {
-		t.Fatalf("session-id fallback = %q, want same non-empty value as session_id %q", gotHyphenSessionID, gotSessionID)
-	}
-	if gotThreadID != "" || gotHyphenThreadID != "" || gotRequestID != "" {
-		t.Fatalf("thread headers should not be invented without prompt_cache_key: thread=%q thread-hyphen=%q request=%q", gotThreadID, gotHyphenThreadID, gotRequestID)
+	if gotHyphenSessionID != "" || gotThreadID != "" || gotHyphenThreadID != "" || gotRequestID != "" {
+		t.Fatalf("thread/legacy headers should not be invented without prompt_cache_key: session-id=%q thread=%q thread-hyphen=%q request=%q", gotHyphenSessionID, gotThreadID, gotHyphenThreadID, gotRequestID)
 	}
 }
 
@@ -1259,7 +1256,7 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	}
 	p.SetStore(st)
 
-	var gotAuthorization, gotAccount, gotOriginator, gotUA, gotSessionID, gotCompatSessionID string
+	var gotAuthorization, gotAccount, gotOriginator, gotUA, gotSessionID, gotLegacySessionID, gotBeta, gotConnection string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/codex/responses" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -1268,8 +1265,10 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 		gotAccount = r.Header.Get("ChatGPT-Account-ID")
 		gotOriginator = r.Header.Get("Originator")
 		gotUA = r.Header.Get("User-Agent")
-		gotSessionID = r.Header.Get("session-id")
-		gotCompatSessionID = r.Header.Get("session_id")
+		gotSessionID = r.Header.Get("session_id")
+		gotLegacySessionID = r.Header.Get("session-id")
+		gotBeta = r.Header.Get("OpenAI-Beta")
+		gotConnection = r.Header.Get("Connection")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(
 			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
@@ -1307,8 +1306,11 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	if gotOriginator != cpaCodexOriginator || gotUA != cpaCodexUserAgent {
 		t.Fatalf("CPA header profile = originator:%q ua:%q", gotOriginator, gotUA)
 	}
-	if gotSessionID == "" || gotCompatSessionID != gotSessionID {
-		t.Fatalf("session headers = session-id:%q session_id:%q", gotSessionID, gotCompatSessionID)
+	if gotSessionID == "" || gotLegacySessionID != "" {
+		t.Fatalf("session headers = session_id:%q legacy session-id:%q", gotSessionID, gotLegacySessionID)
+	}
+	if gotBeta != "" || gotConnection != "Keep-Alive" {
+		t.Fatalf("CPA transport headers = OpenAI-Beta:%q Connection:%q", gotBeta, gotConnection)
 	}
 }
 

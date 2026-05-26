@@ -181,7 +181,7 @@ func (s *Server) persistOAuthAccount(ctx context.Context, p *oauth.PendingAuth) 
 		Email:          p.Email,
 		PlanTier:       p.PlanType,
 		StealthProfile: "chrome_124_windows",
-		UA:             "codex_cli_rs/0.45.0",
+		UA:             "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9",
 		State:          domain.StateActive,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
