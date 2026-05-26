@@ -19,6 +19,7 @@ from platforms.chatgpt.plugin import (
     _assert_complete_oauth_callback,
     _generate_chatgpt_registration_password,
 )
+from platforms.chatgpt.switch import extract_session_token
 
 
 def test_assert_complete_oauth_callback_accepts_complete_payload():
@@ -75,6 +76,16 @@ def test_codex_oauth_url_matches_official_shape():
     assert "screen_hint" not in query
     assert "scope=openid%20profile%20email%20offline_access" in oauth_start.auth_url
     assert "api.connectors." not in oauth_start.auth_url
+
+
+def test_extract_session_token_accepts_chunked_chrome_cookie_table():
+    cookies = "\n".join([
+        "Name\tValue\tDomain\tPath\tExpires\tSize\tHttpOnly\tSecure\tSameSite\tPriority",
+        "__Secure-next-auth.session-token.0\tpart0\t.chatgpt.com\t/\t2026-08-24T05:54:55.225Z\t3967\t✓\t✓\tLax\tMedium",
+        "__Secure-next-auth.session-token.1\tpart1\t.chatgpt.com\t/\t2026-08-24T05:54:55.227Z\t77\t✓\t✓\tLax\tMedium",
+        "cf_clearance\tclear-token\t.chatgpt.com\t/\t2027-05-26T05:51:27.062Z\t417\t✓\t✓\tNone\tMedium",
+    ])
+    assert extract_session_token(cookies=cookies) == "part0part1"
 
 
 def test_chatgpt_platform_preserves_user_supplied_password():

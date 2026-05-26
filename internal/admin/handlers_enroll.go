@@ -14,6 +14,7 @@ import (
 
 	"github.com/llm-pool/gateway/internal/domain"
 	"github.com/llm-pool/gateway/internal/enrollment"
+	chatgptprovider "github.com/llm-pool/gateway/internal/provider/chatgpt"
 	"github.com/llm-pool/gateway/internal/store"
 )
 
@@ -189,8 +190,11 @@ func (s *Server) completeWebSessionEnrollment(ctx context.Context, p *enrollment
 		if !strings.HasPrefix(sess, "{") && !strings.HasPrefix(sess, "eyJ") {
 			return "", fmt.Errorf("session does not look like ChatGPT")
 		}
+		if normalized := chatgptprovider.NormalizeWebSessionCookieHeader(cookies); normalized != "" {
+			cookies = normalized
+		}
 		if requireCookies && !looksLikeChatGPTSessionCookies(cookies) {
-			return "", fmt.Errorf("cookies must include __Secure-next-auth.session-token for automatic web session refresh")
+			return "", fmt.Errorf("cookies must include __Secure-next-auth.session-token or __Secure-next-auth.session-token.0/.1 for automatic web session refresh")
 		}
 	}
 	accID := "acc-" + randHex(6)
@@ -219,9 +223,7 @@ func (s *Server) completeWebSessionEnrollment(ctx context.Context, p *enrollment
 }
 
 func looksLikeChatGPTSessionCookies(cookies string) bool {
-	low := strings.ToLower(strings.TrimSpace(cookies))
-	return strings.Contains(low, "__secure-next-auth.session-token") ||
-		strings.Contains(low, "next-auth.session-token")
+	return chatgptprovider.LooksLikeWebSessionCookies(cookies)
 }
 
 func publicHost(r *http.Request) string {

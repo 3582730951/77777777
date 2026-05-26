@@ -61,8 +61,8 @@
               <h3>2. 获取 Session JSON 和 Cookie header</h3>
               <p class="muted small">
                 在 DevTools Network 中找到 <code>/api/auth/session</code> 请求：Response 复制完整 JSON 到 Session；
-                Request Headers 复制完整 <code>Cookie</code> 到 Cookies。Cookie 必须包含 <code>__Secure-next-auth.session-token</code>
-                或 <code>__Secure-next-auth.session-token.0/.1</code> 分片。
+                Request Headers 复制完整 <code>Cookie</code> 到 Cookies；也可以从 Application → Cookies 复制多行表格。
+                Cookie 必须包含 <code>__Secure-next-auth.session-token</code> 或 <code>__Secure-next-auth.session-token.0/.1</code> 分片。
               </p>
             </div>
 
@@ -79,8 +79,8 @@
                 </div>
                 <div class="field">
                   <label for="web-session-cookies">完整 Cookie header *</label>
-                  <textarea id="web-session-cookies" name="cookies" rows="5" required placeholder="__Secure-next-auth.session-token=...; cf_clearance=...; ..."></textarea>
-                  <div class="tiny muted">必须包含 <code>__Secure-next-auth.session-token</code> 或它的分片 cookie；否则后台无法自动刷新。</div>
+                  <textarea id="web-session-cookies" name="cookies" rows="5" required placeholder="__Secure-next-auth.session-token.0=...; __Secure-next-auth.session-token.1=...; cf_clearance=...; ..."></textarea>
+                  <div class="tiny muted">支持 Cookie header、curl -H Cookie、Netscape cookies.txt、JSON cookie 导出、Chrome Application Cookies 表格；必须包含 session-token 或分片 cookie。</div>
                 </div>
                 <div class="field">
                   <label for="web-session-ua">User-Agent（可选）</label>

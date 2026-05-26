@@ -140,6 +140,67 @@ func TestOAuthWebSessionSubmitPersistsSessionAndCookies(t *testing.T) {
 	}
 }
 
+func TestOAuthWebSessionSubmitNormalizesChromeApplicationCookieTable(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	s := &Server{
+		enroll: enrollment.New(),
+		deps: Deps{
+			Store: st,
+			Sched: scheduler.New(config.Scheduler{}),
+		},
+	}
+	pending := s.enroll.Create("default", "chatgpt", "", "web session")
+	session := `{"accessToken":"access-1","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"web@example.com"}}`
+	cookies := strings.Join([]string{
+		"Name\tValue\tDomain\tPath\tExpires\tSize\tHttpOnly\tSecure\tSameSite\tPriority",
+		"__Secure-next-auth.session-token.0\tpart0\t.chatgpt.com\t/\t2026-08-24T05:54:55.225Z\t3967\t✓\t✓\tLax\tMedium",
+		"__Secure-next-auth.session-token.1\tpart1\t.chatgpt.com\t/\t2026-08-24T05:54:55.227Z\t77\t✓\t✓\tLax\tMedium",
+		"cf_clearance\tclear-token\t.chatgpt.com\t/\t2027-05-26T05:51:27.062Z\t417\t✓\t✓\tNone\tMedium",
+	}, "\n")
+	form := url.Values{}
+	form.Set("session", session)
+	form.Set("cookies", cookies)
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/oauth/web-session/"+pending.ID+"/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", pending.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthWebSessionSubmit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	got, ok := s.enroll.Get(pending.ID)
+	if !ok || got.AccountID == "" {
+		t.Fatalf("pending not completed: %+v ok=%v", got, ok)
+	}
+	sec, err := st.GetAccountSecret(t.Context(), got.AccountID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	stored := string(sec.Cookies)
+	for _, want := range []string{
+		"__Secure-next-auth.session-token.0=part0",
+		"__Secure-next-auth.session-token.1=part1",
+		"cf_clearance=clear-token",
+	} {
+		if !strings.Contains(stored, want) {
+			t.Fatalf("stored cookies = %q, missing %q", stored, want)
+		}
+	}
+	if strings.Contains(stored, "\t") || strings.Contains(stored, "Name=Value") {
+		t.Fatalf("stored cookies were not normalized: %q", stored)
+	}
+}
+
 func TestOAuthWebSessionShowRendersCapturePage(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
 	if err != nil {

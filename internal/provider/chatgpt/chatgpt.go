@@ -610,6 +610,19 @@ func chatGPTNextAuthCookieFromBytes(raw []byte) string {
 	return chatGPTNextAuthCookieFromPairs(chatGPTCookiePairsFromBytes(raw))
 }
 
+// NormalizeWebSessionCookieHeader converts cookies copied from DevTools
+// request headers, curl headers, Netscape cookies.txt, JSON exports, or the
+// Chrome Application > Cookies table into a single Cookie header value.
+func NormalizeWebSessionCookieHeader(raw string) string {
+	return chatGPTCookieHeaderFromPairs(chatGPTCookiePairsFromBytes([]byte(raw)))
+}
+
+// LooksLikeWebSessionCookies reports whether the supplied cookie material
+// contains a ChatGPT/NextAuth session cookie, including split .0/.1 chunks.
+func LooksLikeWebSessionCookies(raw string) bool {
+	return chatGPTNextAuthCookieFromBytes([]byte(raw)) != ""
+}
+
 func chatGPTCookiePairsFromBytes(raw []byte) []chatGPTCookiePair {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
@@ -648,9 +661,8 @@ func chatGPTCookiePairsFromBytes(raw []byte) []chatGPTCookiePair {
 			continue
 		}
 		if strings.Contains(line, "\t") {
-			fs := strings.Split(line, "\t")
-			if len(fs) >= 7 {
-				pairs = append(pairs, chatGPTCookiePair{Name: fs[5], Value: fs[6]})
+			if pair, ok := chatGPTCookiePairFromTabLine(line); ok {
+				pairs = append(pairs, pair)
 				continue
 			}
 		}
@@ -660,6 +672,43 @@ func chatGPTCookiePairsFromBytes(raw []byte) []chatGPTCookiePair {
 		}
 	}
 	return pairs
+}
+
+func chatGPTCookiePairFromTabLine(line string) (chatGPTCookiePair, bool) {
+	fields := strings.Split(line, "\t")
+	for i := range fields {
+		fields[i] = strings.TrimSpace(fields[i])
+	}
+	if len(fields) >= 2 && strings.EqualFold(fields[0], "name") && strings.EqualFold(fields[1], "value") {
+		return chatGPTCookiePair{}, false
+	}
+	if len(fields) >= 7 && chatGPTBoolCookieField(fields[1]) {
+		return chatGPTCookiePair{Name: fields[5], Value: fields[6]}, fields[5] != ""
+	}
+	if len(fields) >= 2 && chatGPTLooksLikeCookieName(fields[0]) {
+		return chatGPTCookiePair{Name: fields[0], Value: fields[1]}, true
+	}
+	return chatGPTCookiePair{}, false
+}
+
+func chatGPTBoolCookieField(value string) bool {
+	return strings.EqualFold(value, "true") || strings.EqualFold(value, "false")
+}
+
+func chatGPTLooksLikeCookieName(name string) bool {
+	if name == "" || strings.EqualFold(name, "name") {
+		return false
+	}
+	for _, r := range name {
+		if r <= 0x20 || r >= 0x7f {
+			return false
+		}
+		switch r {
+		case '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '=', '{', '}':
+			return false
+		}
+	}
+	return true
 }
 
 func chatGPTCookiePairsFromTextLine(line string) ([]chatGPTCookiePair, bool) {

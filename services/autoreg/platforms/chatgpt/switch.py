@@ -44,7 +44,7 @@ def _chromium_utc(dt: datetime) -> int:
 
 
 def _cookie_targets(name: str) -> list[tuple[str, int]]:
-    if name == "__Secure-next-auth.session-token":
+    if name == "__Secure-next-auth.session-token" or name.startswith("__Secure-next-auth.session-token."):
         return [
             (".chatgpt.com", 1),
             ("chatgpt.com", 1),
@@ -57,25 +57,80 @@ def _cookie_targets(name: str) -> list[tuple[str, int]]:
     ]
 
 
+def _looks_like_cookie_name(name: str) -> bool:
+    if not name or name.lower() == "name":
+        return False
+    forbidden = set('()<>@,;:\\"/[]?={}')
+    return all(0x20 < ord(ch) < 0x7F and ch not in forbidden for ch in name)
+
+
+def _parse_tab_cookie_line(line: str) -> tuple[str, str] | None:
+    fields = [part.strip() for part in line.split("\t")]
+    if len(fields) >= 2 and fields[0].lower() == "name" and fields[1].lower() == "value":
+        return None
+    if len(fields) >= 7 and fields[1].lower() in {"true", "false"}:
+        return fields[5], fields[6]
+    if len(fields) >= 2 and _looks_like_cookie_name(fields[0]):
+        return fields[0], fields[1]
+    return None
+
+
 def _parse_cookie_header(cookies: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
-    for part in (cookies or "").split(";"):
-        part = part.strip()
-        if not part or "=" not in part:
+    normalized = (cookies or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return parsed
+    for line in normalized.split("\n"):
+        line = line.strip().strip("'\"")
+        if not line or line.startswith("#"):
             continue
-        name, value = part.split("=", 1)
-        name = name.strip()
-        if not name:
+        if "\t" in line:
+            pair = _parse_tab_cookie_line(line)
+            if pair:
+                name, value = pair
+                if name:
+                    parsed[name] = value
+                continue
+        lower = line.lower()
+        if lower.startswith("cookie:"):
+            line = line.split(":", 1)[1].strip()
+        elif lower.startswith("-h ") or lower.startswith("--header ") or lower.startswith("-b ") or lower.startswith("--cookie "):
+            line = line.split(" ", 1)[1].strip().strip("'\"")
+            if line.lower().startswith("cookie:"):
+                line = line.split(":", 1)[1].strip()
+        elif ":" in line and "=" not in line.split(":", 1)[0]:
             continue
-        parsed[name] = value.strip()
+        for part in line.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            name, value = part.split("=", 1)
+            name = name.strip()
+            if name:
+                parsed[name] = value.strip()
     return parsed
+
+
+def _chunked_cookie(parsed: dict[str, str], base: str) -> str:
+    if parsed.get(base):
+        return parsed[base]
+    chunks: list[tuple[int, str]] = []
+    prefix = f"{base}."
+    for name, value in parsed.items():
+        if not name.startswith(prefix) or not value:
+            continue
+        suffix = name[len(prefix):]
+        if suffix.isdigit():
+            chunks.append((int(suffix), value))
+    return "".join(value for _, value in sorted(chunks))
 
 
 def extract_session_token(session_token: str = "", cookies: str = "") -> str:
     token = (session_token or "").strip()
     if token:
         return token
-    return _parse_cookie_header(cookies).get("__Secure-next-auth.session-token", "")
+    parsed = _parse_cookie_header(cookies)
+    return _chunked_cookie(parsed, "__Secure-next-auth.session-token") or _chunked_cookie(parsed, "next-auth.session-token")
 
 
 def _get_codex_support_dir() -> str:
@@ -187,7 +242,12 @@ def switch_codex_account(session_token: str = "", cookies: str = "") -> tuple[bo
         return False, {"error": f"未找到 Codex Cookies 数据库: {cookies_path}"}
 
     cookie_map = _parse_cookie_header(cookies)
-    cookie_map["__Secure-next-auth.session-token"] = resolved_session
+    has_session_cookie = any(
+        name == "__Secure-next-auth.session-token" or name.startswith("__Secure-next-auth.session-token.")
+        for name in cookie_map
+    )
+    if not has_session_cookie:
+        cookie_map["__Secure-next-auth.session-token"] = resolved_session
 
     now = datetime.now(timezone.utc)
     creation_utc = _chromium_utc(now)

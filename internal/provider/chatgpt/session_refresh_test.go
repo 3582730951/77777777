@@ -409,6 +409,29 @@ func TestChatGPTCookieHeaderFromSecretParsesDevToolsCookieHeader(t *testing.T) {
 	}
 }
 
+func TestChatGPTCookieHeaderFromSecretParsesChromeApplicationCookieTable(t *testing.T) {
+	sec := store.AccountSecret{Cookies: []byte(strings.Join([]string{
+		"Name\tValue\tDomain\tPath\tExpires\tSize\tHttpOnly\tSecure\tSameSite\tPriority",
+		"__Secure-next-auth.session-token.0\tpart0\t.chatgpt.com\t/\t2026-08-24T05:54:55.225Z\t3967\t✓\t✓\tLax\tMedium",
+		"__Secure-next-auth.session-token.1\tpart1\t.chatgpt.com\t/\t2026-08-24T05:54:55.227Z\t77\t✓\t✓\tLax\tMedium",
+		"cf_clearance\tclear-token\t.chatgpt.com\t/\t2027-05-26T05:51:27.062Z\t417\t✓\t✓\tNone\tMedium",
+	}, "\n"))}
+
+	got := chatGPTCookieHeaderFromSecret(sec)
+	for _, want := range []string{
+		"__Secure-next-auth.session-token.0=part0",
+		"__Secure-next-auth.session-token.1=part1",
+		"cf_clearance=clear-token",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("cookie header = %q, missing %q", got, want)
+		}
+	}
+	if cookie := chatGPTNextAuthSessionCookie(sec); cookie != "part0part1" {
+		t.Fatalf("next-auth session cookie = %q, want concatenated chunks", cookie)
+	}
+}
+
 func TestForceRefreshNoRefreshTokenReturnsCookieRecoveryError(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
