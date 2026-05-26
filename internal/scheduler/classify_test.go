@@ -41,9 +41,17 @@ func TestClassifyTokenInvalidatedAsAuthFailed(t *testing.T) {
 	if got := ClassifyError(401, body, nil); got != domain.ErrAuthFailed {
 		t.Fatalf("token invalidated classified as %s", got)
 	}
+	unauthorized := `{"detail":"Unauthorized"}`
+	if got := ClassifyError(401, unauthorized, nil); got != domain.ErrAuthFailed {
+		t.Fatalf("plain unauthorized classified as %s", got)
+	}
 	err := errors.New("refresh after token_invalidated: invalid_grant")
 	if got := ClassifyError(0, "", err); got != domain.ErrAuthFailed {
 		t.Fatalf("refresh invalid_grant classified as %s", got)
+	}
+	err = errors.New(`upstream 401: {"detail":"Unauthorized"}`)
+	if got := ClassifyError(0, "", err); got != domain.ErrAuthFailed {
+		t.Fatalf("upstream unauthorized error classified as %s", got)
 	}
 }
 

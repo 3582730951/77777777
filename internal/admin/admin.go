@@ -76,14 +76,15 @@ const adminThemeScript = `<script>
 </script>`
 
 type Deps struct {
-	Cfg          *config.Root
-	Store        *store.Store
-	Sched        *scheduler.Scheduler
-	Logger       *slog.Logger
-	ProbeFunc    func(ctx context.Context, accountID string) error
-	DiscoverFunc func(ctx context.Context, accountID string) (*domain.QuotaState, error)
-	NetShaper    NetworkShaper
-	ProxyPool    *proxypool.Manager
+	Cfg             *config.Root
+	Store           *store.Store
+	Sched           *scheduler.Scheduler
+	Logger          *slog.Logger
+	ProbeFunc       func(ctx context.Context, accountID string) error
+	AccountTestFunc func(ctx context.Context, accountID string) error
+	DiscoverFunc    func(ctx context.Context, accountID string) (*domain.QuotaState, error)
+	NetShaper       NetworkShaper
+	ProxyPool       *proxypool.Manager
 }
 
 type NetworkShaper interface {

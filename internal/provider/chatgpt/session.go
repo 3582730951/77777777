@@ -11,9 +11,11 @@
 //     cookie set, parse the JSON, and use the accessToken returned.
 //
 //  3. other_codex/Codex CLI auth.json: top-level JSON containing
-//     tokens.access_token, tokens.refresh_token, tokens.id_token and optional
-//     tokens.account_id. This is normalized into the same sessionInfo shape so
-//     expiry and token_invalidated recovery use the OAuth refresh_token first.
+//     tokens.access_token, optional tokens.refresh_token, tokens.id_token and
+//     optional tokens.account_id. This is normalized into the same sessionInfo
+//     shape so expiry and token_invalidated recovery use the OAuth
+//     refresh_token first when it is present. Session-only auth JSON leaves
+//     refresh_token empty and is treated as a fixed access-token snapshot.
 //
 // The cache is keyed by account id. The provider persists refreshed sessions
 // after Resolve returns a rotated token.

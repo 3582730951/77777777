@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +138,73 @@ func TestOAuthWebSessionSubmitPersistsSessionAndCookies(t *testing.T) {
 	}
 	if sec.SessionToken != session || string(sec.Cookies) != "__Secure-next-auth.session-token=cookie-1; other=keep" {
 		t.Fatalf("unexpected secret: %+v", sec)
+	}
+}
+
+func TestOAuthWebSessionSubmitSessionOnlyJSONConvertsAuthJSONWithoutCookies(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "pool.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	s := &Server{
+		enroll: enrollment.New(),
+		deps: Deps{
+			Store: st,
+			Sched: scheduler.New(config.Scheduler{}),
+		},
+	}
+	pending := s.enroll.Create("default", "chatgpt", "", "session only")
+	session := `{"accessToken":"access-1","refreshToken":"rt-should-drop","idToken":"id-1","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"session-only@example.com"}}`
+	form := url.Values{}
+	form.Set("import_mode", "session_only_json")
+	form.Set("session", session)
+	form.Set("ua", "codex-session-only-test")
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/oauth/web-session/"+pending.ID+"/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", pending.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleOAuthWebSessionSubmit(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	got, ok := s.enroll.Get(pending.ID)
+	if !ok || got.State != enrollment.StateCompleted || got.AccountID == "" {
+		t.Fatalf("pending not completed: %+v ok=%v", got, ok)
+	}
+	acc, err := st.GetAccount(t.Context(), got.AccountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.Email != "session-only@example.com" || acc.UA != "codex-session-only-test" {
+		t.Fatalf("unexpected account: %+v", acc)
+	}
+	sec, err := st.GetAccountSecret(t.Context(), got.AccountID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "" || len(sec.Cookies) != 0 {
+		t.Fatalf("session-only secret stored refresh material: %+v", sec)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(sec.SessionToken), &raw); err != nil {
+		t.Fatalf("unmarshal session token: %v", err)
+	}
+	if raw["auth_mode"] != "chatgpt" || raw["refreshToken"] != "" || raw["refresh_token"] != "" {
+		t.Fatalf("unexpected auth json top-level fields: %#v", raw)
+	}
+	tokens, ok := raw["tokens"].(map[string]any)
+	if !ok {
+		t.Fatalf("tokens missing: %#v", raw["tokens"])
+	}
+	if tokens["access_token"] != "access-1" || tokens["refresh_token"] != "" || tokens["account_id"] != "chatgpt-account" {
+		t.Fatalf("unexpected tokens: %#v", tokens)
 	}
 }
 

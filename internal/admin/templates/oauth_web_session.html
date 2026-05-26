@@ -26,7 +26,7 @@
           <h1 class="hero-title">导入已登录 ChatGPT Web 会话</h1>
           <p class="hero-subtitle">
             适用于 Codex OAuth 页面要求手机号、但同浏览器里 ChatGPT Web 已经登录的账号。
-            导入后后台 token refresh runner 会周期性请求 <code>/api/auth/session</code>，自动更新 session JSON 和 Set-Cookie。
+            可选择保存完整 Web Session 自动刷新，或仅把 Session JSON 转成 CPA/Codex auth.json 快照且不使用 refresh_token。
           </p>
         </div>
         <div class="hero-metrics">
@@ -58,11 +58,11 @@
               <a href="https://chatgpt.com" target="_blank" rel="noopener noreferrer" class="btn ghost">→ 打开 chatgpt.com</a>
             </div>
             <div class="guide-step-card">
-              <h3>2. 获取 Session JSON 和 Cookie header</h3>
+              <h3>2. 选择导入模式并获取材料</h3>
               <p class="muted small">
                 在 DevTools Network 中找到 <code>/api/auth/session</code> 请求：Response 复制完整 JSON 到 Session；
-                Request Headers 复制完整 <code>Cookie</code> 到 Cookies；也可以从 Application → Cookies 复制多行表格。
-                Cookie 必须包含 <code>__Secure-next-auth.session-token</code> 或 <code>__Secure-next-auth.session-token.0/.1</code> 分片。
+                自动刷新模式还需要 Request Headers 的完整 <code>Cookie</code>；仅 Session JSON 模式会转换成 CPA/Codex auth.json 快照，
+                不保存 Cookie，也不会采用 refresh_token 刷新。
               </p>
             </div>
 
@@ -74,20 +74,28 @@
               </p>
               <form method="post" action="/accounts/oauth/web-session/{{.Pending.ID}}/submit" class="form">
                 <div class="field">
+                  <label for="web-session-import-mode">导入模式</label>
+                  <select id="web-session-import-mode" name="import_mode">
+                    <option value="web_session">Web Session + Cookie 自动刷新</option>
+                    <option value="session_only_json">仅 Session JSON → CPA/Codex Auth JSON（不刷新）</option>
+                  </select>
+                  <div class="tiny muted" id="web-session-mode-help">需要 Session JSON 和 Cookie；后台用 Cookie 请求 /api/auth/session 更新 accessToken 和 Set-Cookie。</div>
+                </div>
+                <div class="field">
                   <label for="web-session-json">Session JSON *</label>
                   <textarea id="web-session-json" name="session" rows="7" required placeholder='{"accessToken":"...","expires":"...","account":{"id":"...","planType":"plus"},"user":{"email":"..."}}'></textarea>
                 </div>
                 <div class="field">
-                  <label for="web-session-cookies">完整 Cookie header *</label>
+                  <label for="web-session-cookies" id="web-session-cookies-label">完整 Cookie header *</label>
                   <textarea id="web-session-cookies" name="cookies" rows="5" required placeholder="__Secure-next-auth.session-token.0=...; __Secure-next-auth.session-token.1=...; cf_clearance=...; ..."></textarea>
-                  <div class="tiny muted">支持 Cookie header、curl -H Cookie、Netscape cookies.txt、JSON cookie 导出、Chrome Application Cookies 表格；必须包含 session-token 或分片 cookie。</div>
+                  <div class="tiny muted" id="web-session-cookies-help">支持 Cookie header、curl -H Cookie、Netscape cookies.txt、JSON cookie 导出、Chrome Application Cookies 表格；必须包含 session-token 或分片 cookie。</div>
                 </div>
                 <div class="field">
                   <label for="web-session-ua">User-Agent（可选）</label>
                   <input id="web-session-ua" name="ua" placeholder="留空则使用 provider 默认 UA"/>
                 </div>
                 <div class="form-actions">
-                  <button class="btn primary w-full" type="submit">保存并启用自动刷新</button>
+                  <button class="btn primary w-full" id="web-session-submit" type="submit">保存并启用自动刷新</button>
                 </div>
               </form>
             </div>
@@ -102,8 +110,8 @@
             </div>
             <div class="assist-card-body decision-list">
               <div class="decision-item"><span>1</span><div><b>保存 session JSON</b><small>作为当前 accessToken 快照。</small></div></div>
-              <div class="decision-item"><span>2</span><div><b>保存完整 Cookie</b><small>用于后台访问 /api/auth/session 换新 accessToken。</small></div></div>
-              <div class="decision-item"><span>3</span><div><b>自动合并 Set-Cookie</b><small>服务端返回新 cookie 时写回账号密文凭据。</small></div></div>
+              <div class="decision-item"><span>2</span><div><b>自动刷新模式</b><small>保存 Cookie，用 /api/auth/session 换新 accessToken。</small></div></div>
+              <div class="decision-item"><span>3</span><div><b>仅 JSON 模式</b><small>输出 CPA/Codex auth.json 兼容结构，refresh_token 置空。</small></div></div>
             </div>
           </div>
 
@@ -128,6 +136,24 @@ const id="{{.Pending.ID}}";
 const bar=document.getElementById('status-bar');
 const txt=document.getElementById('status-txt');
 const stxt=document.getElementById('state-txt');
+const mode=document.getElementById('web-session-import-mode');
+const cookies=document.getElementById('web-session-cookies');
+const cookiesLabel=document.getElementById('web-session-cookies-label');
+const cookiesHelp=document.getElementById('web-session-cookies-help');
+const modeHelp=document.getElementById('web-session-mode-help');
+const submit=document.getElementById('web-session-submit');
+function syncImportMode(){
+  const sessionOnly=mode&&mode.value==='session_only_json';
+  if(cookies) cookies.required=!sessionOnly;
+  if(cookiesLabel) cookiesLabel.textContent=sessionOnly?'完整 Cookie header（此模式不保存）':'完整 Cookie header *';
+  if(cookiesHelp) cookiesHelp.textContent=sessionOnly?'此模式会忽略 Cookie，只把 Session JSON 转成 CPA/Codex Auth JSON，refresh_token 保持为空。':'支持 Cookie header、curl -H Cookie、Netscape cookies.txt、JSON cookie 导出、Chrome Application Cookies 表格；必须包含 session-token 或分片 cookie。';
+  if(modeHelp) modeHelp.textContent=sessionOnly?'只需要 /api/auth/session 响应 JSON；不保存 Cookie，不采用 refresh_token 刷新，accessToken 到期后需重新导入。':'需要 Session JSON 和 Cookie；后台用 Cookie 请求 /api/auth/session 更新 accessToken 和 Set-Cookie。';
+  if(submit) submit.textContent=sessionOnly?'转换为 Auth JSON 并保存':'保存并启用自动刷新';
+}
+if(mode){
+  mode.addEventListener('change',syncImportMode);
+  syncImportMode();
+}
 async function poll(){
   try{
     const j=await fetch('/accounts/oauth/web-session/'+id+'/status').then(r=>r.json());

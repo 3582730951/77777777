@@ -15,6 +15,7 @@ import (
 	"github.com/llm-pool/gateway/internal/domain"
 	"github.com/llm-pool/gateway/internal/enrollment"
 	"github.com/llm-pool/gateway/internal/oauth"
+	chatgptprovider "github.com/llm-pool/gateway/internal/provider/chatgpt"
 	"github.com/llm-pool/gateway/internal/store"
 )
 
@@ -397,7 +398,26 @@ func (s *Server) handleOAuthWebSessionSubmit(w http.ResponseWriter, r *http.Requ
 	sessionJSON := strings.TrimSpace(r.FormValue("session"))
 	cookies := strings.TrimSpace(r.FormValue("cookies"))
 	ua := strings.TrimSpace(r.FormValue("ua"))
-	accID, err := s.completeWebSessionEnrollment(r.Context(), p, sessionJSON, cookies, ua, true)
+	requireCookies := true
+	switch strings.TrimSpace(r.FormValue("import_mode")) {
+	case "", "web_session":
+	case "session_only_json", "session_only", "auth_json", "cpa_auth_json":
+		normalized, err := chatgptprovider.NormalizeSessionOnlyAuthJSON(sessionJSON)
+		if err != nil {
+			s.enroll.Fail(id, err.Error())
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		sessionJSON = normalized
+		cookies = ""
+		requireCookies = false
+	default:
+		err := fmt.Errorf("unknown web session import mode")
+		s.enroll.Fail(id, err.Error())
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	accID, err := s.completeWebSessionEnrollment(r.Context(), p, sessionJSON, cookies, ua, requireCookies)
 	if err != nil {
 		s.enroll.Fail(id, err.Error())
 		http.Error(w, err.Error(), 400)

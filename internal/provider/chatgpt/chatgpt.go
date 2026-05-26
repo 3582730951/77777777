@@ -485,11 +485,25 @@ func isChatGPTTokenInvalidatedError(err error) bool {
 	return isChatGPTTokenInvalidatedText(err.Error())
 }
 
+func isChatGPTRecoverableAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isChatGPTRecoverableAuthText(err.Error())
+}
+
 func isChatGPTTokenInvalidatedResponse(status int, body []byte) bool {
 	if status != http.StatusUnauthorized && status != http.StatusForbidden {
 		return false
 	}
 	return isChatGPTTokenInvalidatedText(string(body))
+}
+
+func isChatGPTRecoverableAuthResponse(status int, body []byte) bool {
+	if status != http.StatusUnauthorized && status != http.StatusForbidden {
+		return false
+	}
+	return isChatGPTRecoverableAuthText(string(body))
 }
 
 func isChatGPTTokenInvalidatedText(s string) bool {
@@ -500,6 +514,21 @@ func isChatGPTTokenInvalidatedText(s string) bool {
 	return strings.Contains(low, "token_invalidated") ||
 		strings.Contains(low, "authentication token has been invalidated") ||
 		strings.Contains(low, "access token has been invalidated")
+}
+
+func isChatGPTRecoverableAuthText(s string) bool {
+	low := strings.ToLower(s)
+	if isChatGPTTransientUpstreamText(low) {
+		return false
+	}
+	if isChatGPTTokenInvalidatedText(s) {
+		return true
+	}
+	return strings.Contains(low, "unauthorized") ||
+		strings.Contains(low, "unauthenticated") ||
+		strings.Contains(low, "invalid access token") ||
+		strings.Contains(low, "invalid bearer") ||
+		strings.Contains(low, "missing bearer")
 }
 
 func isChatGPTTransientUpstreamText(low string) bool {
@@ -1004,6 +1033,17 @@ func (p *Provider) persistPlanTier(ctx context.Context, acc *domain.Account, sec
 	return p.store.UpsertAccount(ctx, acc, sec)
 }
 
+func (p *Provider) latestAccountSecretOr(ctx context.Context, accountID string, fallback store.AccountSecret) store.AccountSecret {
+	if p.store == nil {
+		return fallback
+	}
+	latest, err := p.store.GetAccountSecret(ctx, accountID)
+	if err != nil {
+		return fallback
+	}
+	return latest
+}
+
 func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
 	trimmed := strings.TrimSpace(existing)
 	if trimmed == "" {
@@ -1062,6 +1102,92 @@ func buildChatGPTSessionJSON(info sessionInfo) string {
 	return string(b)
 }
 
+// NormalizeSessionOnlyAuthJSON converts a ChatGPT /api/auth/session response or
+// an existing auth.json-like blob into a Codex/CPA-compatible JSON snapshot.
+// This mode deliberately strips refresh_token material; callers should store no
+// cookies with it so background refresh falls back to the fixed access token
+// snapshot only.
+func NormalizeSessionOnlyAuthJSON(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("empty session")
+	}
+	if !strings.HasPrefix(raw, "{") {
+		return "", errors.New("session-only import requires /api/auth/session JSON or auth JSON")
+	}
+	info, err := parseSessionJSON([]byte(raw))
+	if err != nil {
+		return "", err
+	}
+	info.RefreshToken = ""
+	return buildChatGPTSessionOnlyAuthJSON(info, time.Now().UTC()), nil
+}
+
+func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
+	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
+	idToken := firstNonEmpty(info.IDToken, info.AccessToken)
+	expires := ""
+	if !info.Expires.IsZero() {
+		expires = info.Expires.UTC().Format(time.RFC3339)
+	}
+	out := map[string]any{
+		"auth_mode":    "chatgpt",
+		"last_refresh": now.UTC().Format(time.RFC3339),
+		"tokens": map[string]any{
+			"access_token":               info.AccessToken,
+			"refresh_token":              "",
+			"id_token":                   idToken,
+			"account_id":                 info.AccountID,
+			"chatgpt_account_id":         info.AccountID,
+			"chatgpt_plan_type":          info.PlanType,
+			"chatgpt_user_id":            info.ChatGPTUserID,
+			"chatgpt_account_is_fedramp": info.FedRAMP,
+			"chatgptAccountIsFedramp":    info.FedRAMP,
+			"chatgptAccountId":           info.AccountID,
+			"chatgptPlanType":            info.PlanType,
+			"chatgptUserId":              info.ChatGPTUserID,
+		},
+		"user": map[string]string{
+			"id":    userID,
+			"email": info.Email,
+		},
+		"account": map[string]any{
+			"id":                         info.AccountID,
+			"planType":                   info.PlanType,
+			"isFedramp":                  info.FedRAMP,
+			"is_fedramp":                 info.FedRAMP,
+			"chatgpt_account_is_fedramp": info.FedRAMP,
+			"chatgpt_account_id":         info.AccountID,
+			"chatgpt_plan_type":          info.PlanType,
+			"chatgpt_user_id":            info.ChatGPTUserID,
+			"chatgptAccountIsFedramp":    info.FedRAMP,
+			"chatgptAccountId":           info.AccountID,
+			"chatgptPlanType":            info.PlanType,
+			"chatgptUserId":              info.ChatGPTUserID,
+		},
+		"expires":                    expires,
+		"expired":                    expires,
+		"email":                      info.Email,
+		"type":                       "codex",
+		"accessToken":                info.AccessToken,
+		"access_token":               info.AccessToken,
+		"refreshToken":               "",
+		"refresh_token":              "",
+		"idToken":                    idToken,
+		"id_token":                   idToken,
+		"account_id":                 info.AccountID,
+		"chatgpt_user_id":            info.ChatGPTUserID,
+		"user_id":                    info.ChatGPTUserID,
+		"chatgpt_account_id":         info.AccountID,
+		"chatgpt_plan_type":          info.PlanType,
+		"chatgpt_account_is_fedramp": info.FedRAMP,
+		"chatgptAccountIsFedramp":    info.FedRAMP,
+		"session_import_mode":        "session_only_json",
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
 func (p *Provider) Invoke(ctx context.Context, acc *domain.Account, req *ir.Request) (<-chan ir.Event, error) {
 	switch p.Mode {
 	case ModeMock:
@@ -1087,13 +1213,13 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 	if err != nil {
 		return err
 	}
-	_, err = p.fetchWhamUsage(ctx, acc, info)
-	if isChatGPTTokenInvalidatedError(err) {
+	_, err = p.fetchWhamUsageWithSecret(ctx, acc, info, sec)
+	if isChatGPTRecoverableAuthError(err) {
 		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
 		if refreshErr != nil {
-			return fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+			return fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
 		}
-		_, err = p.fetchWhamUsage(ctx, acc, refreshed)
+		_, err = p.fetchWhamUsageWithSecret(ctx, acc, refreshed, p.latestAccountSecretOr(ctx, acc.ID, sec))
 	}
 	return err
 }
@@ -1148,15 +1274,15 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 	log.Printf("[chatgpt-discover] account=%s resolved: access_token_len=%d, account_id=%q, plan=%q, expires=%v",
 		acc.ID, len(info.AccessToken), info.AccountID, info.PlanType, info.Expires)
 
-	quotaState, err := p.fetchConversationLimit(ctx, acc, info)
-	if isChatGPTTokenInvalidatedError(err) {
-		log.Printf("[chatgpt-discover] account=%s token invalidated, refreshing session and retrying quota fetch", acc.ID)
+	quotaState, err := p.fetchConversationLimitWithSecret(ctx, acc, info, sec)
+	if isChatGPTRecoverableAuthError(err) {
+		log.Printf("[chatgpt-discover] account=%s upstream auth failed, refreshing session and retrying quota fetch", acc.ID)
 		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
 		if refreshErr != nil {
-			return nil, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+			return nil, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
 		}
 		info = refreshed
-		quotaState, err = p.fetchConversationLimit(ctx, acc, info)
+		quotaState, err = p.fetchConversationLimitWithSecret(ctx, acc, info, p.latestAccountSecretOr(ctx, acc.ID, sec))
 	}
 	if err != nil {
 		return nil, err
@@ -1191,13 +1317,17 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 //  1. /backend-api/wham/usage (Codex CLI style, current)
 //  2. /backend-api/conversation_limit (ChatGPT web style, legacy fallback)
 func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Account, info sessionInfo) (*domain.QuotaState, error) {
+	return p.fetchConversationLimitWithSecret(ctx, acc, info, store.AccountSecret{})
+}
+
+func (p *Provider) fetchConversationLimitWithSecret(ctx context.Context, acc *domain.Account, info sessionInfo, sec store.AccountSecret) (*domain.QuotaState, error) {
 	state := &domain.QuotaState{
 		ShortWindow: domain.QuotaWindow{ResetAt: time.Now().Add(5 * time.Hour), Confidence: 0.5},
 		LongWindow:  domain.QuotaWindow{ResetAt: time.Now().Add(7 * 24 * time.Hour), Confidence: 0.5},
 	}
 
 	// Try wham/usage first (Codex CLI endpoint)
-	whamState, err := p.fetchWhamUsage(ctx, acc, info)
+	whamState, err := p.fetchWhamUsageWithSecret(ctx, acc, info, sec)
 	if err == nil {
 		*state = *whamState
 		log.Printf("[chatgpt-quota] wham/usage ok: 5h=%.0f/%.0f 7d=%.0f/%.0f",
@@ -1205,7 +1335,7 @@ func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Accou
 			state.LongWindow.Used, state.LongWindow.Limit)
 		return state, nil
 	}
-	if isChatGPTTokenInvalidatedError(err) {
+	if isChatGPTRecoverableAuthError(err) {
 		return nil, err
 	}
 	if isBannedError(err) {
@@ -1213,7 +1343,7 @@ func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Accou
 	}
 	log.Printf("[chatgpt-quota] wham/usage failed, trying conversation_limit: %v", err)
 	// Fallback to conversation_limit (legacy ChatGPT web endpoint)
-	if err := p.fetchLegacyConversationLimit(ctx, state, acc, info); err != nil {
+	if err := p.fetchLegacyConversationLimitWithSecret(ctx, state, acc, info, sec); err != nil {
 		return nil, err
 	}
 	log.Printf("[chatgpt-quota] conversation_limit: 5h=%.0f/%.0f 7d=%.0f/%.0f",
@@ -1230,6 +1360,10 @@ func (p *Provider) fetchConversationLimit(ctx context.Context, acc *domain.Accou
 //	 "credits":{"has_credits":true,"unlimited":false,"balance":"$4.20"},
 //	 "plan_type":"plus"}
 func (p *Provider) fetchWhamUsage(ctx context.Context, acc *domain.Account, info sessionInfo) (*domain.QuotaState, error) {
+	return p.fetchWhamUsageWithSecret(ctx, acc, info, store.AccountSecret{})
+}
+
+func (p *Provider) fetchWhamUsageWithSecret(ctx context.Context, acc *domain.Account, info sessionInfo, sec store.AccountSecret) (*domain.QuotaState, error) {
 	state := &domain.QuotaState{
 		ShortWindow: domain.QuotaWindow{ResetAt: time.Now().Add(5 * time.Hour), Confidence: 0.5},
 		LongWindow:  domain.QuotaWindow{ResetAt: time.Now().Add(7 * 24 * time.Hour), Confidence: 0.5},
@@ -1247,6 +1381,7 @@ func (p *Provider) fetchWhamUsage(ctx context.Context, acc *domain.Account, info
 	req.Header.Set("Accept", "application/json")
 	req.Header["originator"] = []string{"codex_cli_rs"}
 	setChatGPTAccountHeaders(req.Header, info)
+	setChatGPTCookieHeader(req.Header, sec)
 
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
@@ -1486,6 +1621,10 @@ func windowSecsToTierName(secs int64) string {
 
 // fetchLegacyConversationLimit calls /backend-api/conversation_limit (legacy).
 func (p *Provider) fetchLegacyConversationLimit(ctx context.Context, state *domain.QuotaState, acc *domain.Account, info sessionInfo) error {
+	return p.fetchLegacyConversationLimitWithSecret(ctx, state, acc, info, store.AccountSecret{})
+}
+
+func (p *Provider) fetchLegacyConversationLimitWithSecret(ctx context.Context, state *domain.QuotaState, acc *domain.Account, info sessionInfo, sec store.AccountSecret) error {
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		"https://chatgpt.com/backend-api/conversation_limit", nil)
 	if err != nil {
@@ -1496,6 +1635,7 @@ func (p *Provider) fetchLegacyConversationLimit(ctx context.Context, state *doma
 	req.Header.Set("Accept", "application/json")
 	req.Header["originator"] = []string{"codex_cli_rs"}
 	setChatGPTAccountHeaders(req.Header, info)
+	setChatGPTCookieHeader(req.Header, sec)
 
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
@@ -1554,6 +1694,12 @@ func setChatGPTAccountHeaders(h http.Header, info sessionInfo) {
 	}
 	if info.FedRAMP {
 		h["X-OpenAI-Fedramp"] = []string{"true"}
+	}
+}
+
+func setChatGPTCookieHeader(h http.Header, sec store.AccountSecret) {
+	if cookieHeader := chatGPTCookieHeaderFromSecret(sec); cookieHeader != "" {
+		h.Set("Cookie", cookieHeader)
 	}
 }
 
@@ -1644,19 +1790,19 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 		return nil, err
 	}
 
-	resp, err := p.doCodexResponses(ctx, acc, info, body)
+	resp, err := p.doCodexResponsesWithSecret(ctx, acc, info, sec, body)
 	if err != nil {
 		return nil, fmt.Errorf("post codex/responses: %w", err)
 	}
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if isChatGPTTokenInvalidatedResponse(resp.StatusCode, b) {
+		if isChatGPTRecoverableAuthResponse(resp.StatusCode, b) {
 			refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
 			if refreshErr != nil {
-				return nil, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+				return nil, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
 			}
-			resp, err = p.doCodexResponses(ctx, acc, refreshed, body)
+			resp, err = p.doCodexResponsesWithSecret(ctx, acc, refreshed, p.latestAccountSecretOr(ctx, acc.ID, sec), body)
 			if err != nil {
 				return nil, fmt.Errorf("post codex/responses after refresh: %w", err)
 			}
@@ -1677,6 +1823,10 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 }
 
 func (p *Provider) doCodexResponses(ctx context.Context, acc *domain.Account, info sessionInfo, body []byte) (*http.Response, error) {
+	return p.doCodexResponsesWithSecret(ctx, acc, info, store.AccountSecret{}, body)
+}
+
+func (p *Provider) doCodexResponsesWithSecret(ctx context.Context, acc *domain.Account, info sessionInfo, sec store.AccountSecret, body []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		"https://chatgpt.com/backend-api/codex/responses",
 		bytes.NewReader(body))
@@ -1694,6 +1844,7 @@ func (p *Provider) doCodexResponses(ctx context.Context, acc *domain.Account, in
 	httpReq.Header["OpenAI-Beta"] = []string{"responses=experimental"}
 	httpReq.Header["originator"] = []string{"codex_cli_rs"}
 	setChatGPTAccountHeaders(httpReq.Header, info)
+	setChatGPTCookieHeader(httpReq.Header, sec)
 	setCodexSessionHeaders(httpReq.Header, body)
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
@@ -1732,19 +1883,19 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	body = normalizeCodexRawResponsesBody(body)
 
 	acc.UA = ua
-	resp, err := p.doCodexResponses(rctx, acc, info, body)
+	resp, err := p.doCodexResponsesWithSecret(rctx, acc, info, sec, body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("post codex/responses: %w", err)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 		resp.Body.Close()
-		if isChatGPTTokenInvalidatedResponse(resp.StatusCode, respBody) {
+		if isChatGPTRecoverableAuthResponse(resp.StatusCode, respBody) {
 			refreshed, refreshErr := p.forceRefreshSession(rctx, acc, sec)
 			if refreshErr != nil {
-				return nil, 0, fmt.Errorf("refresh after token_invalidated: %w", refreshErr)
+				return nil, 0, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
 			}
-			resp, err = p.doCodexResponses(rctx, acc, refreshed, body)
+			resp, err = p.doCodexResponsesWithSecret(rctx, acc, refreshed, p.latestAccountSecretOr(rctx, acc.ID, sec), body)
 			if err != nil {
 				return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
 			}

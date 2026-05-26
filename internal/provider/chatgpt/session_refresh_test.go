@@ -232,6 +232,119 @@ func TestParseSessionJSONExtractsOtherCodexAccountFeatures(t *testing.T) {
 	}
 }
 
+func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *testing.T) {
+	idToken := testJWTClaims(map[string]any{
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"email": "session@example.com",
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id":         "acct-session",
+			"chatgpt_plan_type":          "plus",
+			"chatgpt_user_id":            "user-session",
+			"chatgpt_account_is_fedramp": true,
+		},
+	})
+	accessToken := testJWTClaims(map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	rawSession := `{"accessToken":"` + accessToken + `","refreshToken":"rt-should-not-survive","idToken":"` + idToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-input","planType":"team"},"user":{"id":"user-input","email":"session@example.com"}}`
+
+	normalized, err := NormalizeSessionOnlyAuthJSON(rawSession)
+	if err != nil {
+		t.Fatalf("normalize session-only auth json: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(normalized), &raw); err != nil {
+		t.Fatalf("unmarshal normalized json: %v", err)
+	}
+	if raw["auth_mode"] != "chatgpt" {
+		t.Fatalf("auth_mode = %v, want chatgpt", raw["auth_mode"])
+	}
+	if raw["refreshToken"] != "" || raw["refresh_token"] != "" {
+		t.Fatalf("top-level refresh token survived: refreshToken=%v refresh_token=%v", raw["refreshToken"], raw["refresh_token"])
+	}
+	if _, ok := raw["last_refresh"].(string); !ok {
+		t.Fatalf("last_refresh missing or not string: %v", raw["last_refresh"])
+	}
+	tokens, ok := raw["tokens"].(map[string]any)
+	if !ok {
+		t.Fatalf("tokens missing: %#v", raw["tokens"])
+	}
+	if tokens["access_token"] != accessToken || tokens["id_token"] != idToken {
+		t.Fatalf("tokens did not preserve access/id token: %#v", tokens)
+	}
+	if tokens["refresh_token"] != "" {
+		t.Fatalf("tokens.refresh_token = %v, want empty", tokens["refresh_token"])
+	}
+	if tokens["account_id"] != "acct-input" || tokens["chatgpt_plan_type"] != "team" {
+		t.Fatalf("tokens account features = %#v", tokens)
+	}
+
+	parsed, err := parseSessionJSON([]byte(normalized))
+	if err != nil {
+		t.Fatalf("parse normalized session: %v", err)
+	}
+	if parsed.RefreshToken != "" {
+		t.Fatalf("parsed refresh token = %q, want empty", parsed.RefreshToken)
+	}
+	if parsed.Email != "session@example.com" || parsed.AccountID != "acct-input" || parsed.PlanType != "team" {
+		t.Fatalf("parsed features not preserved: %+v", parsed)
+	}
+	if !parsed.FedRAMP {
+		t.Fatal("fedramp flag was not preserved")
+	}
+}
+
+func TestRefreshCredentialDoesNotRefreshSessionOnlyAuthJSON(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{"accessToken":"` + expiredAccess + `","refreshToken":"rt-should-not-be-used","expires":"2000-01-01T00:00:00Z","account":{"id":"acct-session","planType":"plus"},"user":{"email":"session@example.com"}}`)
+	if err != nil {
+		t.Fatalf("normalize session-only auth json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-json",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	var calls atomic.Int32
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		calls.Add(1)
+		return testJWTExp(time.Now().Add(time.Hour)), "rt-new", "id-new", 3600, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err == nil {
+		t.Fatal("refresh credential succeeded with expired session-only token")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("refresh callback calls = %d, want 0", got)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.RefreshToken != "" || sec.RefreshToken != "" || len(sec.Cookies) != 0 {
+		t.Fatalf("session-only credentials gained refresh material: parsed_rt=%q top_rt=%q cookies=%q", parsed.RefreshToken, sec.RefreshToken, string(sec.Cookies))
+	}
+}
+
 func TestBuildChatGPTSessionJSONPreservesAccountFeatures(t *testing.T) {
 	sessionJSON := buildChatGPTSessionJSON(sessionInfo{
 		AccessToken:   testJWTExp(time.Now().Add(time.Hour)),
@@ -511,13 +624,23 @@ func TestTokenInvalidatedDetectionIgnoresTransientChallenge(t *testing.T) {
 	if isChatGPTTokenInvalidatedResponse(401, challengeBody) {
 		t.Fatal("challenge response must not trigger refresh_token rotation")
 	}
+	if isChatGPTRecoverableAuthResponse(401, challengeBody) {
+		t.Fatal("challenge response must not trigger auth recovery")
+	}
 	heavyLoadBody := []byte(`ChatGPT is under heavy load; token_invalidated`)
 	if isChatGPTTokenInvalidatedResponse(401, heavyLoadBody) {
 		t.Fatal("heavy-load response must not trigger refresh_token rotation")
 	}
+	if isChatGPTRecoverableAuthResponse(401, heavyLoadBody) {
+		t.Fatal("heavy-load response must not trigger auth recovery")
+	}
 	authBody := []byte(`{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","code":"token_invalidated"}}`)
 	if !isChatGPTTokenInvalidatedResponse(401, authBody) {
 		t.Fatal("real token invalidation should still trigger refresh")
+	}
+	unauthorizedBody := []byte(`{"detail":"Unauthorized"}`)
+	if !isChatGPTRecoverableAuthResponse(401, unauthorizedBody) {
+		t.Fatal("plain upstream Unauthorized should trigger web-session recovery")
 	}
 }
 

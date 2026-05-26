@@ -4,6 +4,7 @@ export const accountsAPI = {
   list: () => client.get('/accounts'),
   bulkImport: (accounts: any[]) => client.post('/accounts/bulk-import', accounts),
   probe: (id: string) => client.post(`/accounts/${id}/probe`),
+  testAll: (provider?: string) => client.post('/accounts/test-all', { provider: provider || '' }, { timeout: 600000 }),
   discover: (id: string) => client.post(`/accounts/${id}/discover`),
   delete: (id: string) => client.delete(`/accounts/${id}`),
 }

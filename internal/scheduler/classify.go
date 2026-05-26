@@ -88,6 +88,11 @@ func isAuthFailureSignal(s string) bool {
 	return strings.Contains(s, "token_invalidated") ||
 		strings.Contains(s, "authentication token has been invalidated") ||
 		strings.Contains(s, "access token has been invalidated") ||
+		strings.Contains(s, "unauthorized") ||
+		strings.Contains(s, "unauthenticated") ||
+		strings.Contains(s, "invalid access token") ||
+		strings.Contains(s, "invalid bearer") ||
+		strings.Contains(s, "missing bearer") ||
 		strings.Contains(s, "invalid_grant") ||
 		strings.Contains(s, "refresh_token_reused") ||
 		strings.Contains(s, "refresh token has already been used") ||

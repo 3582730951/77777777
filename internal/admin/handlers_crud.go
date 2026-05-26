@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +61,7 @@ func (s *Server) mountCrud(r chi.Router) {
 		r.Get("/api/admin/accounts", s.handleListAccountsAPI)
 		r.Get("/api/admin/accounts/export", s.handleExportAccountsAPI)
 		r.Post("/api/admin/accounts", s.handleCreateAccount)
+		r.Post("/api/admin/accounts/test-all", s.handleTestAllAccounts)
 		r.Patch("/api/admin/accounts/{id}", s.handleUpdateAccount)
 		r.Delete("/api/admin/accounts/{id}", s.handleDeleteAccount)
 		r.Post("/api/admin/accounts/{id}/probe", s.handleProbeAccount)
@@ -639,6 +643,168 @@ func (s *Server) handleDiscoverAccount(w http.ResponseWriter, r *http.Request) {
 	s.crud.Audit.Log("info", "discover", id, "",
 		fmt.Sprintf("models=%d 5h=%.0f%% 7d=%.0f%%", len(state.DiscoveredModels), state.ShortWindow.Used, state.LongWindow.Used))
 	writeJSONStatus(w, 200, state)
+}
+
+type testAllAccountsReq struct {
+	Provider       string `json:"provider"`
+	Concurrency    int    `json:"concurrency"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type testAllAccountsItem struct {
+	ID        string `json:"id"`
+	Provider  string `json:"provider"`
+	OK        bool   `json:"ok"`
+	Skipped   bool   `json:"skipped,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Class     string `json:"class,omitempty"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+}
+
+func (s *Server) handleTestAllAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Sched == nil {
+		errJSON(w, 500, "scheduler unavailable")
+		return
+	}
+	if s.deps.AccountTestFunc == nil {
+		errJSON(w, 500, "account test func unavailable")
+		return
+	}
+	var req testAllAccountsReq
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			errJSON(w, 400, "invalid json: "+err.Error())
+			return
+		}
+	}
+	req.Provider = strings.TrimSpace(req.Provider)
+	if req.Concurrency <= 0 {
+		req.Concurrency = 4
+	}
+	if req.Concurrency > 16 {
+		req.Concurrency = 16
+	}
+	if req.TimeoutSeconds <= 0 {
+		req.TimeoutSeconds = 30
+	}
+	if req.TimeoutSeconds > 120 {
+		req.TimeoutSeconds = 120
+	}
+
+	candidates := make([]scheduler.SlotView, 0)
+	skipped := make([]testAllAccountsItem, 0)
+	for _, sl := range s.deps.Sched.Snapshot() {
+		if req.Provider != "" && sl.Provider != req.Provider {
+			continue
+		}
+		switch {
+		case sl.StatusCategory == scheduler.SlotStatusNoQuota:
+			skipped = append(skipped, testAllAccountsItem{ID: sl.AccountID, Provider: sl.Provider, Skipped: true, Reason: "no_quota"})
+		case sl.StatusCategory == scheduler.SlotStatusBanned || sl.State == string(domain.StateBanned):
+			skipped = append(skipped, testAllAccountsItem{ID: sl.AccountID, Provider: sl.Provider, Skipped: true, Reason: "banned"})
+		case sl.State == string(domain.StateDisabled):
+			skipped = append(skipped, testAllAccountsItem{ID: sl.AccountID, Provider: sl.Provider, Skipped: true, Reason: "disabled"})
+		default:
+			candidates = append(candidates, sl)
+		}
+	}
+
+	jobs := make(chan scheduler.SlotView)
+	results := make([]testAllAccountsItem, 0, len(candidates))
+	var mu sync.Mutex
+	var okCount, failedCount int
+	var wg sync.WaitGroup
+	worker := func() {
+		defer wg.Done()
+		for sl := range jobs {
+			start := time.Now()
+			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutSeconds)*time.Second)
+			err := s.deps.AccountTestFunc(ctx, sl.AccountID)
+			cancel()
+			latency := time.Since(start).Milliseconds()
+			item := testAllAccountsItem{
+				ID:        sl.AccountID,
+				Provider:  sl.Provider,
+				OK:        err == nil,
+				LatencyMS: latency,
+			}
+			if err != nil {
+				class := accountPoolTestFailureClass(err)
+				s.deps.Sched.MarkFailure(sl.AccountID, class)
+				item.Error = err.Error()
+				item.Class = string(class)
+				if s.crud.Audit != nil {
+					s.crud.Audit.Log("warn", "account-test-all", sl.AccountID, "", "test message failed: "+err.Error())
+				}
+			} else {
+				s.deps.Sched.MarkSuccess(sl.AccountID, float64(latency))
+				if s.deps.DiscoverFunc != nil {
+					dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if state, derr := s.deps.DiscoverFunc(dctx, sl.AccountID); derr == nil && state != nil {
+						s.deps.Sched.UpdateQuota(sl.AccountID, state)
+					}
+					dcancel()
+				}
+				if s.crud.Audit != nil {
+					s.crud.Audit.Log("info", "account-test-all", sl.AccountID, "", "test message ok")
+				}
+			}
+			mu.Lock()
+			results = append(results, item)
+			if item.OK {
+				okCount++
+			} else {
+				failedCount++
+			}
+			mu.Unlock()
+		}
+	}
+	workers := req.Concurrency
+	if len(candidates) < workers {
+		workers = len(candidates)
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go worker()
+	}
+	for _, sl := range candidates {
+		jobs <- sl
+	}
+	close(jobs)
+	wg.Wait()
+
+	sort.Slice(results, func(i, j int) bool { return results[i].ID < results[j].ID })
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].ID < skipped[j].ID })
+	if s.crud.Audit != nil {
+		s.crud.Audit.Log("info", "account-test-all", "", "", fmt.Sprintf("tested=%d ok=%d failed=%d skipped=%d", len(results), okCount, failedCount, len(skipped)))
+	}
+	writeJSONStatus(w, 200, map[string]any{
+		"ok":           failedCount == 0,
+		"tested":       len(results),
+		"succeeded":    okCount,
+		"failed":       failedCount,
+		"skipped":      len(skipped),
+		"results":      results,
+		"skipped_list": skipped,
+	})
+}
+
+func accountPoolTestFailureClass(err error) domain.ErrorClass {
+	body := ""
+	if err != nil {
+		body = err.Error()
+	}
+	class := scheduler.ClassifyError(0, body, err)
+	switch class {
+	case domain.ErrBanned, domain.ErrQuotaExhausted, domain.ErrCFChallenge, domain.ErrAuthFailed:
+		return class
+	default:
+		// A one-click pool test is health-oriented: any non-quota, non-ban
+		// failure should move the account into the abnormal bucket for review
+		// after a single failed test message.
+		return domain.ErrAuthFailed
+	}
 }
 
 func (s *Server) handleAccountSeries(w http.ResponseWriter, r *http.Request) {

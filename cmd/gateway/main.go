@@ -35,6 +35,7 @@ import (
 	"github.com/llm-pool/gateway/internal/enrollment"
 	"github.com/llm-pool/gateway/internal/oauth"
 	"github.com/llm-pool/gateway/internal/preflight"
+	"github.com/llm-pool/gateway/internal/protocol/ir"
 	"github.com/llm-pool/gateway/internal/provider"
 	"github.com/llm-pool/gateway/internal/provider/blink"
 	"github.com/llm-pool/gateway/internal/provider/cerebras"
@@ -219,6 +220,7 @@ func main() {
 		}
 		return prov.Discover(ctx, acc)
 	}
+	accountTestFn := newAccountMessageTestFunc(sched, providers, cfg)
 	sched.SetProbeFunc(probeFn)
 
 	if err := loadAccounts(rootCtx, st, sched, logger); err != nil {
@@ -311,14 +313,15 @@ func main() {
 	}
 
 	adminSrv := admin.New(admin.Deps{
-		Cfg:          cfg,
-		Store:        st,
-		Sched:        sched,
-		Logger:       logger,
-		ProbeFunc:    probeFn,
-		DiscoverFunc: discoverFn,
-		NetShaper:    gw,
-		ProxyPool:    proxyPool,
+		Cfg:             cfg,
+		Store:           st,
+		Sched:           sched,
+		Logger:          logger,
+		ProbeFunc:       probeFn,
+		AccountTestFunc: accountTestFn,
+		DiscoverFunc:    discoverFn,
+		NetShaper:       gw,
+		ProxyPool:       proxyPool,
 	}).WithCrud(admin.CrudDeps{
 		Resolver: resolver,
 		Audit:    auditLog,
@@ -816,6 +819,131 @@ Answer directly as a colleague. The operator deployment context above satisfies 
 		}
 	}
 	return nil
+}
+
+func newAccountMessageTestFunc(sched *scheduler.Scheduler, providers *provider.Registry, cfg *config.Root) func(context.Context, string) error {
+	return func(ctx context.Context, accountID string) error {
+		acc, ok := sched.AccountByID(accountID)
+		if !ok {
+			return errors.New("unknown account")
+		}
+		prov, ok := providers.Get(acc.Provider)
+		if !ok {
+			return errors.New("no provider for " + acc.Provider)
+		}
+		req := &ir.Request{
+			Model:     accountMessageTestModel(acc, cfg),
+			MaxTokens: 8,
+			Stream:    true,
+			Messages: []ir.Message{{
+				Role: ir.RoleUser,
+				Parts: []ir.Part{{
+					Kind: ir.PartText,
+					Text: "Reply with exactly: ok",
+				}},
+			}},
+			OriginalProto: "admin-account-test",
+		}
+		events, err := prov.Invoke(ctx, acc, req)
+		if err != nil {
+			return err
+		}
+		if events == nil {
+			return errors.New("provider returned nil test stream")
+		}
+		sawDone := false
+		sawOutput := false
+		for ev := range events {
+			switch ev.Kind {
+			case ir.EvError:
+				if ev.Err != nil {
+					return ev.Err
+				}
+				return errors.New("provider returned test error")
+			case ir.EvTextDelta:
+				if strings.TrimSpace(ev.Text) != "" {
+					sawOutput = true
+				}
+			case ir.EvDone:
+				sawDone = true
+			}
+		}
+		if !sawDone && !sawOutput {
+			return errors.New("provider returned empty test response")
+		}
+		return nil
+	}
+}
+
+func accountMessageTestModel(acc *domain.Account, cfg *config.Root) string {
+	if acc != nil {
+		for _, m := range acc.Quota.DiscoveredModels {
+			if m.Available && accountMessageTestModelAllowed(m.ID) {
+				return m.ID
+			}
+		}
+		for _, m := range acc.Quota.DiscoveredModels {
+			if accountMessageTestModelAllowed(m.ID) {
+				return m.ID
+			}
+		}
+		if cfg != nil {
+			for _, g := range cfg.Groups {
+				if g.Provider != acc.Provider {
+					continue
+				}
+				for _, m := range append(append([]string{}, g.ModelWhitelist...), g.Models...) {
+					if accountMessageTestModelAllowed(m) {
+						return m
+					}
+				}
+			}
+		}
+		if m := accountMessageTestFallbackModel(acc.Provider); m != "" {
+			return m
+		}
+	}
+	return "default"
+}
+
+func accountMessageTestModelAllowed(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	if model == "" {
+		return false
+	}
+	return !strings.Contains(model, "image") &&
+		!strings.Contains(model, "embedding") &&
+		!strings.Contains(model, "search") &&
+		!strings.Contains(model, "extract")
+}
+
+func accountMessageTestFallbackModel(provider string) string {
+	switch provider {
+	case "chatgpt":
+		return "gpt-5.4-mini"
+	case "claude":
+		return "claude-haiku-4-5-20251001"
+	case "gemini":
+		return "gemini-2.5-flash-lite"
+	case "cursor":
+		return "cursor-small"
+	case "kiro":
+		return "claude-haiku-4-5"
+	case "windsurf":
+		return "claude-sonnet-4-6"
+	case "grok":
+		return "grok-3-mini"
+	case "cerebras":
+		return "llama3.1-8b"
+	case "trae", "blink":
+		return "gpt-4o"
+	case "openblocklabs":
+		return "obl-default"
+	case "tavily":
+		return "tavily-search"
+	default:
+		return ""
+	}
 }
 
 // Suppress linter warning that domain may be unused at the moment.

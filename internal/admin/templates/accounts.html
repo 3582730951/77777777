@@ -54,6 +54,7 @@
         <input id="accounts-import-file" type="file" accept=".json,application/json" hidden onchange="importAccountsFromFile(this)">
         <a href="/accounts/oauth" class="btn primary">⚡ OAuth 登录</a>
         <a href="/accounts/new" class="btn ghost">+ 手动添加</a>
+        <button type="button" id="accounts-test-all-btn" class="btn ghost" onclick="testAllAvailableAccounts()">一键测试可用账号</button>
         <details class="action-menu">
           <summary class="btn ghost">更多</summary>
           <div class="action-menu-panel">
@@ -361,6 +362,37 @@ async function importAccountsFromFile(input){
     if(btn){
       btn.disabled=false;
       btn.textContent='导入';
+    }
+  }
+}
+
+async function testAllAvailableAccounts(){
+  const btn=document.getElementById('accounts-test-all-btn');
+  if(btn){
+    btn.disabled=true;
+    btn.textContent='测试中...';
+  }
+  const provider=_provFilter&&_provFilter!=='all'?_provFilter:'';
+  setImportStatus((provider?provider+' ':'')+'可用账号测试中：会对非“没有额度”的账号各发送一条测试消息','ok');
+  try{
+    const resp=await fetch('/api/admin/accounts/test-all',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({provider})
+    });
+    let result={};
+    try{result=await resp.json();}catch(_){}
+    if(!resp.ok)throw new Error(result.error||'批量测试失败');
+    const failed=Number(result.failed||0);
+    const msg='测试完成：成功 '+Number(result.succeeded||0)+'，异常 '+failed+'，跳过 '+Number(result.skipped||0);
+    setImportStatus(msg,failed>0?'err':'ok');
+    setTimeout(()=>location.reload(),900);
+  }catch(err){
+    setImportStatus(err instanceof Error?err.message:'批量测试失败','err');
+  }finally{
+    if(btn){
+      btn.disabled=false;
+      btn.textContent='一键测试可用账号';
     }
   }
 }

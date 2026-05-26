@@ -21,6 +21,13 @@
         <input ref="importFileInput" type="file" accept=".json,application/json" class="hidden" @change="importAccountsFromFile" />
         <button @click="exportAccounts" class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg text-sm">Export</button>
         <button
+          @click="testAllAccounts"
+          :disabled="isTestingAll"
+          class="px-3 py-1.5 border border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-300 rounded-lg text-sm disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {{ isTestingAll ? '测试中...' : '一键测试可用' }}
+        </button>
+        <button
           @click="chooseImportFile"
           :disabled="isImporting"
           class="px-3 py-1.5 border border-gray-300 dark:border-gray-700 rounded-lg text-sm disabled:cursor-not-allowed disabled:opacity-60"
@@ -107,6 +114,7 @@ const filterProvider = ref('')
 const visibleEmails = ref<Record<string, boolean>>({})
 const importFileInput = ref<HTMLInputElement | null>(null)
 const isImporting = ref(false)
+const isTestingAll = ref(false)
 const importMessage = ref('')
 const importMessageType = ref<'success' | 'error'>('success')
 
@@ -354,6 +362,22 @@ async function refresh() {
 async function probe(id: string) {
   await accountsAPI.probe(id)
   refresh()
+}
+
+async function testAllAccounts() {
+  isTestingAll.value = true
+  importMessage.value = ''
+  try {
+    const result: any = await accountsAPI.testAll(filterProvider.value || '')
+    importMessageType.value = Number(result?.failed || 0) > 0 ? 'error' : 'success'
+    importMessage.value = `测试完成：成功 ${Number(result?.succeeded || 0)}，异常 ${Number(result?.failed || 0)}，跳过 ${Number(result?.skipped || 0)}`
+    await refresh()
+  } catch (err: unknown) {
+    importMessageType.value = 'error'
+    importMessage.value = err instanceof Error ? err.message : '批量测试失败'
+  } finally {
+    isTestingAll.value = false
+  }
 }
 
 async function discover(id: string) {

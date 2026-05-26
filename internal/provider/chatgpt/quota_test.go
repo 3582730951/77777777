@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -438,6 +439,47 @@ func TestDoCodexResponsesUsesAccountFeatureHeaders(t *testing.T) {
 
 	if gotAccount != "acct-1" || gotFedRAMP != "true" || gotOriginator != "codex_cli_rs" {
 		t.Fatalf("account feature headers = account:%q fedramp:%q originator:%q", gotAccount, gotFedRAMP, gotOriginator)
+	}
+}
+
+func TestDoCodexResponsesWithSecretSendsStoredWebCookies(t *testing.T) {
+	p := New(ModeReal)
+	var gotCookie string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		gotCookie = r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	resp, err := p.doCodexResponsesWithSecret(context.Background(), &domain.Account{UA: "codex-cli-test"}, sessionInfo{
+		AccessToken: "tok",
+		AccountID:   "acct-1",
+	}, store.AccountSecret{
+		Cookies: []byte(strings.Join([]string{
+			"Name\tValue\tDomain\tPath\tExpires\tSize\tHttpOnly\tSecure\tSameSite\tPriority",
+			"__Secure-next-auth.session-token.0\tpart0\t.chatgpt.com\t/\t2026-08-24T05:54:55.225Z\t3967\ttrue\ttrue\tLax\tMedium",
+			"__Secure-next-auth.session-token.1\tpart1\t.chatgpt.com\t/\t2026-08-24T05:54:55.227Z\t77\ttrue\ttrue\tLax\tMedium",
+			"cf_clearance\tclear-token\t.chatgpt.com\t/\t2027-05-26T05:51:27.062Z\t417\ttrue\ttrue\tNone\tMedium",
+		}, "\n")),
+	}, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("do codex responses: %v", err)
+	}
+	defer resp.Body.Close()
+
+	for _, want := range []string{
+		"__Secure-next-auth.session-token.0=part0",
+		"__Secure-next-auth.session-token.1=part1",
+		"cf_clearance=clear-token",
+	} {
+		if !strings.Contains(gotCookie, want) {
+			t.Fatalf("cookie header = %q, missing %q", gotCookie, want)
+		}
 	}
 }
 
@@ -908,6 +950,115 @@ func TestInvokeRawRecoversTokenInvalidatedViaStoredCookieWhenNoRefreshToken(t *t
 	}
 	if parsed.RefreshToken != "" || sec.RefreshToken != "" {
 		t.Fatalf("refresh token should remain empty when cookie session omits it: session=%q top=%q", parsed.RefreshToken, sec.RefreshToken)
+	}
+}
+
+func TestInvokeRawRecoversUnauthorizedViaStoredCookieWhenNoRefreshToken(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-unauthorized-cookie-no-refresh",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken: oldAccess,
+			Expires:     time.Now().Add(time.Hour),
+			AccountID:   "chatgpt-account",
+			PlanType:    "plus",
+			Email:       "user@example.com",
+			IDToken:     "id-old",
+		}),
+		Cookies: []byte(`__Secure-next-auth.session-token=old-cookie; cf_clearance=clear-token`),
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		t.Fatalf("refresh callback should not be called without a refresh_token; got %q", refreshToken)
+		return "", "", "", 0, nil
+	})
+
+	var codexCalls, sessionCalls int
+	var codexCookies []string
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/session":
+			sessionCalls++
+			if got := r.Header.Get("Cookie"); !strings.Contains(got, "__Secure-next-auth.session-token=old-cookie") || !strings.Contains(got, "cf_clearance=clear-token") {
+				t.Fatalf("session cookie = %q, want stored web cookies", got)
+			}
+			w.Header().Add("Set-Cookie", "__Secure-next-auth.session-token=new-cookie; Path=/; HttpOnly; Secure")
+			_, _ = w.Write([]byte(`{"accessToken":"` + newAccess + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"user@example.com"}}`))
+		case "/backend-api/codex/responses":
+			codexCalls++
+			auths = append(auths, r.Header.Get("Authorization"))
+			codexCookies = append(codexCookies, r.Header.Get("Cookie"))
+			if codexCalls == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer "+newAccess {
+				t.Fatalf("retry authorization = %q, want cookie-recovered token", r.Header.Get("Authorization"))
+			}
+			if !strings.Contains(r.Header.Get("Cookie"), "__Secure-next-auth.session-token=new-cookie") {
+				t.Fatalf("retry cookie = %q, want Set-Cookie merged value", r.Header.Get("Cookie"))
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := rewriteTransportClient(server.URL)
+	p.httpClient = client
+	p.resolver.httpClient = client
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		body, _ := io.ReadAll(rc)
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if sessionCalls != 1 || codexCalls != 2 {
+		t.Fatalf("calls session=%d codex=%d, want 1/2", sessionCalls, codexCalls)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer "+oldAccess || auths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", auths)
+	}
+	if len(codexCookies) != 2 || !strings.Contains(codexCookies[0], "__Secure-next-auth.session-token=old-cookie") || !strings.Contains(codexCookies[0], "cf_clearance=clear-token") {
+		t.Fatalf("initial codex cookie sequence = %#v, want stored web cookies first", codexCookies)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse session: %v", err)
+	}
+	if parsed.AccessToken != newAccess {
+		t.Fatalf("stored access token = %q, want cookie-recovered token", parsed.AccessToken)
+	}
+	if !strings.Contains(string(sec.Cookies), "__Secure-next-auth.session-token=new-cookie") || !strings.Contains(string(sec.Cookies), "cf_clearance=clear-token") {
+		t.Fatalf("stored cookies were not merged: %q", string(sec.Cookies))
 	}
 }
 
