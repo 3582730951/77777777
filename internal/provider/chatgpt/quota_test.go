@@ -1312,7 +1312,7 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	}
 }
 
-func TestInvokeRealSessionOnlyUnauthorizedDoesNotUseWebConversationFallback(t *testing.T) {
+func TestInvokeRealSessionOnlyUnauthorizedFallsBackToWebConversation(t *testing.T) {
 	ctx := context.Background()
 	p := New(ModeReal)
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
@@ -1354,10 +1354,27 @@ func TestInvokeRealSessionOnlyUnauthorizedDoesNotUseWebConversationFallback(t *t
 			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
 		case "/backend-api/sentinel/chat-requirements":
 			sentinelCalls++
-			t.Fatalf("session-only codex 401 must not call sentinel")
+			if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+				t.Fatalf("sentinel authorization = %q, want session-only bearer", got)
+			}
+			if got := r.Header.Get("Cookie"); got != "" {
+				t.Fatalf("sentinel cookie = %q, want no cookie for session-only JSON", got)
+			}
+			_, _ = w.Write([]byte(`{"token":"requirements-token"}`))
 		case "/backend-api/conversation":
 			conversationCalls++
-			t.Fatalf("session-only codex 401 must not call web conversation")
+			if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+				t.Fatalf("conversation authorization = %q, want session-only bearer", got)
+			}
+			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token"); got != "requirements-token" {
+				t.Fatalf("conversation requirements token = %q", got)
+			}
+			if got := r.Header.Get("Cookie"); got != "" {
+				t.Fatalf("conversation cookie = %q, want no cookie for session-only JSON", got)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"v\":{\"message\":{\"content\":{\"parts\":[\"web fallback ok\"]},\"status\":\"finished_successfully\"}}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -1365,7 +1382,7 @@ func TestInvokeRealSessionOnlyUnauthorizedDoesNotUseWebConversationFallback(t *t
 	defer server.Close()
 	p.httpClient = rewriteTransportClient(server.URL)
 
-	_, err = p.Invoke(ctx, acc, &ir.Request{
+	ch, err := p.Invoke(ctx, acc, &ir.Request{
 		Model: "gpt-5.5",
 		Messages: []ir.Message{{
 			Role:  ir.RoleUser,
@@ -1373,17 +1390,26 @@ func TestInvokeRealSessionOnlyUnauthorizedDoesNotUseWebConversationFallback(t *t
 		}},
 		Stream: true,
 	})
-	if err == nil {
-		t.Fatal("Invoke succeeded, want upstream 401")
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
 	}
-	if !strings.Contains(err.Error(), "upstream 401") || !strings.Contains(err.Error(), "Unauthorized") {
-		t.Fatalf("Invoke error = %v, want upstream Unauthorized passthrough", err)
+	var text string
+	for ev := range ch {
+		switch ev.Kind {
+		case ir.EvTextDelta:
+			text += ev.Text
+		case ir.EvError:
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+	}
+	if text != "web fallback ok" {
+		t.Fatalf("stream text = %q, want web fallback ok", text)
 	}
 	if codexUA != cpaCodexUserAgent || codexOriginator != cpaCodexOriginator {
 		t.Fatalf("codex headers = ua:%q originator:%q", codexUA, codexOriginator)
 	}
-	if codexCalls != 1 || sentinelCalls != 0 || conversationCalls != 0 {
-		t.Fatalf("calls codex/sentinel/conversation = %d/%d/%d, want 1/0/0", codexCalls, sentinelCalls, conversationCalls)
+	if codexCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
+		t.Fatalf("calls codex/sentinel/conversation = %d/%d/%d, want 1/1/1", codexCalls, sentinelCalls, conversationCalls)
 	}
 }
 

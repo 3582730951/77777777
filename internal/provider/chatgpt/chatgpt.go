@@ -2189,6 +2189,15 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 					}
 				}
 			}
+			if canUseChatGPTWebConversationFallback(req, sec) && isChatGPTPlainUnauthorizedResponse(resp.StatusCode, b) {
+				fallbackSec := p.latestAccountSecretOr(ctx, acc.ID, sec)
+				if ch, webErr := p.invokeWebConversationWithInfo(ctx, acc, req, info, fallbackSec); webErr == nil {
+					log.Printf("[chatgpt] account=%s codex/responses unauthorized; served via web conversation fallback", acc.ID)
+					return ch, nil
+				} else {
+					log.Printf("[chatgpt] account=%s web conversation fallback failed after codex 401: %v", acc.ID, webErr)
+				}
+			}
 		}
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
 	}
@@ -2233,7 +2242,10 @@ func canUseChatGPTWebConversationFallback(req *ir.Request, sec store.AccountSecr
 	if chatGPTRefreshTokenFromSecret(sec) != "" {
 		return false
 	}
-	return chatGPTCookieHeaderFromSecret(sec) != ""
+	if chatGPTCookieHeaderFromSecret(sec) != "" {
+		return true
+	}
+	return chatGPTFixedAccessTokenSnapshot(sec) && chatGPTAccessTokenFromSession(sec.SessionToken) != ""
 }
 
 func (p *Provider) invokeWebConversationWithInfo(ctx context.Context, acc *domain.Account, req *ir.Request, info sessionInfo, sec store.AccountSecret) (<-chan ir.Event, error) {
