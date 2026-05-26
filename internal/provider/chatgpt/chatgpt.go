@@ -520,6 +520,16 @@ func isChatGPTRecoverableAuthResponse(status int, body []byte) bool {
 	return isChatGPTRecoverableAuthText(string(body))
 }
 
+func isChatGPTPlainUnauthorizedResponse(status int, body []byte) bool {
+	if status != http.StatusUnauthorized && status != http.StatusForbidden {
+		return false
+	}
+	low := strings.ToLower(string(body))
+	return !isChatGPTTokenInvalidatedText(low) &&
+		!isChatGPTTransientUpstreamText(low) &&
+		strings.Contains(low, "unauthorized")
+}
+
 func isChatGPTTokenInvalidatedText(s string) bool {
 	low := strings.ToLower(s)
 	if isChatGPTTransientUpstreamText(low) {
@@ -1189,6 +1199,20 @@ func chatGPTSessionOnlySnapshotSecret(sec store.AccountSecret) store.AccountSecr
 	return sec
 }
 
+func chatGPTFixedAccessTokenSnapshot(sec store.AccountSecret) bool {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		return true
+	}
+	if strings.TrimSpace(sec.RefreshToken) != "" || chatGPTRefreshTokenFromSession(sec.SessionToken) != "" {
+		return false
+	}
+	if len(bytes.TrimSpace(sec.Cookies)) > 0 {
+		return false
+	}
+	info, ok := parseStoredSessionSecret(sec.SessionToken, "")
+	return ok && strings.TrimSpace(info.AccessToken) != "" && strings.TrimSpace(info.RefreshToken) == ""
+}
+
 func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
 	idToken := info.IDToken
@@ -1846,12 +1870,22 @@ func codexUA(acc *domain.Account) string {
 	return ua
 }
 
+func webSessionUA(acc *domain.Account) string {
+	if acc != nil && strings.TrimSpace(acc.UA) != "" {
+		ua := strings.TrimSpace(acc.UA)
+		if !looksLikeCodexUserAgent(ua) && looksLikeBrowserUserAgent(ua) {
+			return ua
+		}
+	}
+	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+}
+
 func codexHeaderProfile(acc *domain.Account, sec store.AccountSecret) (ua, originator string) {
 	if acc != nil && acc.UA != "" {
 		ua = acc.UA
 	}
 	if IsSessionOnlyAuthJSON(sec.SessionToken) {
-		if ua == "" {
+		if ua == "" || !looksLikeCodexUserAgent(ua) {
 			ua = cpaCodexUserAgent
 		}
 		return ua, cpaCodexOriginator
@@ -1860,6 +1894,20 @@ func codexHeaderProfile(acc *domain.Account, sec store.AccountSecret) (ua, origi
 		ua = defaultCodexUserAgent
 	}
 	return ua, defaultCodexOriginator
+}
+
+func looksLikeCodexUserAgent(ua string) bool {
+	ua = strings.ToLower(strings.TrimSpace(ua))
+	return strings.Contains(ua, "codex")
+}
+
+func looksLikeBrowserUserAgent(ua string) bool {
+	ua = strings.ToLower(strings.TrimSpace(ua))
+	return strings.Contains(ua, "mozilla/") &&
+		(strings.Contains(ua, "chrome/") ||
+			strings.Contains(ua, "firefox/") ||
+			strings.Contains(ua, "safari/") ||
+			strings.Contains(ua, "edg/"))
 }
 
 func schedulerClassifyBanned(status int, body []byte) bool {
@@ -1967,6 +2015,10 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 				b, _ = io.ReadAll(resp.Body)
 				resp.Body.Close()
 			}
+			if chatGPTFixedAccessTokenSnapshot(sec) && isChatGPTPlainUnauthorizedResponse(resp.StatusCode, b) {
+				log.Printf("[chatgpt-session] account=%s codex bearer rejected for session-only JSON; falling back to web conversation endpoint", acc.ID)
+				return p.invokeWebConversationWithInfo(ctx, acc, req, info, sec)
+			}
 		}
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet(b))
 	}
@@ -1997,6 +2049,61 @@ func (p *Provider) doCodexResponsesWithSecret(ctx context.Context, acc *domain.A
 	setChatGPTAccountHeaders(httpReq.Header, info)
 	setChatGPTCookieHeader(httpReq.Header, sec)
 	setCodexSessionHeaders(httpReq.Header, body)
+	client, err := p.httpClientForAccount(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(httpReq)
+}
+
+func (p *Provider) invokeWebConversationWithInfo(ctx context.Context, acc *domain.Account, req *ir.Request, info sessionInfo, sec store.AccountSecret) (<-chan ir.Event, error) {
+	body, err := buildConversationBody(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.doWebConversationWithSecret(ctx, acc, info, sec, body)
+	if err != nil {
+		return nil, fmt.Errorf("post web conversation: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+		resp.Body.Close()
+		return nil, fmt.Errorf("web conversation %d: %s", resp.StatusCode, snippet(b))
+	}
+	out := make(chan ir.Event, 32)
+	go streamSSE(ctx, resp.Body, out, req.Model)
+	return out, nil
+}
+
+func (p *Provider) doWebConversationWithSecret(ctx context.Context, acc *domain.Account, info sessionInfo, sec store.AccountSecret, body []byte) (*http.Response, error) {
+	ua := webSessionUA(acc)
+	cookieHeader := chatGPTCookieHeaderFromSecret(sec)
+	requirementsToken, proofToken, err := p.fetchChatRequirements(ctx, acc, info.AccessToken, ua, cookieHeader)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		"https://chatgpt.com/backend-api/conversation",
+		bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+info.AccessToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("User-Agent", ua)
+	httpReq.Header.Set("Origin", "https://chatgpt.com")
+	httpReq.Header.Set("Referer", "https://chatgpt.com/")
+	httpReq.Header.Set("OAI-Language", "en-US")
+	if requirementsToken != "" {
+		httpReq.Header.Set("OpenAI-Sentinel-Chat-Requirements-Token", requirementsToken)
+	}
+	if proofToken != "" {
+		httpReq.Header.Set("OpenAI-Sentinel-Proof-Token", proofToken)
+	}
+	if cookieHeader != "" {
+		httpReq.Header.Set("Cookie", cookieHeader)
+	}
 	client, err := p.httpClientForAccount(ctx, acc)
 	if err != nil {
 		return nil, err
@@ -2047,6 +2154,14 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 					return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
 				}
 				return resp.Body, resp.StatusCode, nil
+			}
+			if chatGPTFixedAccessTokenSnapshot(sec) && isChatGPTPlainUnauthorizedResponse(resp.StatusCode, respBody) {
+				log.Printf("[chatgpt-session] account=%s raw codex bearer rejected for session-only JSON; falling back to web conversation endpoint", acc.ID)
+				if fallbackBody, fallbackStatus, fallbackErr := p.doWebConversationResponsesFallback(rctx, acc, info, sec, body); fallbackErr == nil {
+					return fallbackBody, fallbackStatus, nil
+				} else {
+					log.Printf("[chatgpt-session] account=%s web conversation fallback unavailable: %v", acc.ID, fallbackErr)
+				}
 			}
 		}
 		return io.NopCloser(bytes.NewReader(respBody)), resp.StatusCode, nil

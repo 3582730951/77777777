@@ -1252,6 +1252,7 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 		TenantID: "default",
 		Provider: "chatgpt",
 		State:    domain.StateActive,
+		UA:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 	}
 	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
 		t.Fatalf("upsert account: %v", err)
@@ -1308,6 +1309,187 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	}
 	if gotSessionID == "" || gotCompatSessionID != gotSessionID {
 		t.Fatalf("session headers = session-id:%q session_id:%q", gotSessionID, gotCompatSessionID)
+	}
+}
+
+func TestInvokeRealSessionOnlyFallsBackToWebConversationOnCodexUnauthorized(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	accessToken := testJWTExp(time.Now().Add(time.Hour))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{"accessToken":"` + accessToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"session@example.com"}}`)
+	if err != nil {
+		t.Fatalf("normalize session-only json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-web-fallback",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 web-session-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+
+	var codexUA, codexOriginator, sentinelAuth, conversationAuth, conversationSentinel, conversationUA string
+	var conversationBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/codex/responses":
+			codexUA = r.Header.Get("User-Agent")
+			codexOriginator = r.Header.Get("Originator")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+		case "/backend-api/sentinel/chat-requirements":
+			sentinelAuth = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"token":"requirements-token","proofofwork":{"required":false}}`))
+		case "/backend-api/conversation":
+			conversationAuth = r.Header.Get("Authorization")
+			conversationSentinel = r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token")
+			conversationUA = r.Header.Get("User-Agent")
+			conversationBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"data: {\"v\":{\"message\":{\"content\":{\"parts\":[\"ok\"]},\"status\":\"finished_successfully\"}}}\n\n" +
+					"data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	ch, err := p.Invoke(ctx, acc, &ir.Request{
+		Model: "gpt-5.5",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello from web session"}},
+		}},
+		Stream: true,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		switch ev.Kind {
+		case ir.EvTextDelta:
+			text += ev.Text
+		case ir.EvError:
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+	}
+	if text != "ok" {
+		t.Fatalf("stream text = %q, want ok", text)
+	}
+	if codexUA != cpaCodexUserAgent || codexOriginator != cpaCodexOriginator {
+		t.Fatalf("codex fallback preflight headers = ua:%q originator:%q", codexUA, codexOriginator)
+	}
+	if sentinelAuth != "Bearer "+accessToken || conversationAuth != "Bearer "+accessToken {
+		t.Fatalf("fallback auth headers = sentinel:%q conversation:%q", sentinelAuth, conversationAuth)
+	}
+	if conversationSentinel != "requirements-token" {
+		t.Fatalf("conversation sentinel header = %q", conversationSentinel)
+	}
+	if conversationUA != "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 web-session-test" {
+		t.Fatalf("conversation UA = %q", conversationUA)
+	}
+	if gjson.GetBytes(conversationBody, "action").String() != "next" || gjson.GetBytes(conversationBody, "messages.0.content.parts.0").String() == "" {
+		t.Fatalf("conversation body was not ChatGPT web shape: %s", conversationBody)
+	}
+}
+
+func TestInvokeRawSessionOnlyFallsBackToWebConversationOnCodexUnauthorized(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	accessToken := testJWTExp(time.Now().Add(time.Hour))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{"accessToken":"` + accessToken + `","expires":"2099-01-01T00:00:00Z","account":{"id":"chatgpt-account","planType":"plus"},"user":{"email":"session@example.com"}}`)
+	if err != nil {
+		t.Fatalf("normalize session-only json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-raw-web-fallback",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-tui/0.118.0 test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+
+	var codexCalls, sentinelCalls, conversationCalls int
+	var conversationUA, conversationSentinel, conversationAuth string
+	var conversationBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/backend-api/codex/responses":
+			codexCalls++
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+		case "/backend-api/sentinel/chat-requirements":
+			sentinelCalls++
+			_, _ = w.Write([]byte(`{"token":"requirements-token","proofofwork":{"required":false}}`))
+		case "/backend-api/conversation":
+			conversationCalls++
+			conversationUA = r.Header.Get("User-Agent")
+			conversationSentinel = r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token")
+			conversationAuth = r.Header.Get("Authorization")
+			conversationBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"data: {\"v\":{\"message\":{\"content\":{\"parts\":[\"ok from web\"]},\"status\":\"finished_successfully\"}}}\n\n" +
+					"data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rawBody := []byte(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello raw"}]}],"stream":true}`)
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, rawBody)
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		got, _ := io.ReadAll(rc)
+		t.Fatalf("status = %d body=%s", status, got)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read fallback stream: %v", err)
+	}
+	if !strings.Contains(string(got), "response.output_text.delta") || !strings.Contains(string(got), "ok from web") || !strings.Contains(string(got), "response.completed") {
+		t.Fatalf("fallback stream was not Responses-compatible SSE: %s", got)
+	}
+	if codexCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
+		t.Fatalf("calls codex/sentinel/conversation = %d/%d/%d, want 1/1/1", codexCalls, sentinelCalls, conversationCalls)
+	}
+	if conversationAuth != "Bearer "+accessToken || conversationSentinel != "requirements-token" {
+		t.Fatalf("fallback headers auth=%q sentinel=%q", conversationAuth, conversationSentinel)
+	}
+	if strings.Contains(strings.ToLower(conversationUA), "codex") || !strings.Contains(conversationUA, "Mozilla/5.0") {
+		t.Fatalf("web fallback should use browser UA, got %q", conversationUA)
+	}
+	if gjson.GetBytes(conversationBody, "action").String() != "next" ||
+		gjson.GetBytes(conversationBody, "messages.0.content.parts.0").String() == "" {
+		t.Fatalf("conversation body was not ChatGPT web shape: %s", conversationBody)
 	}
 }
 
