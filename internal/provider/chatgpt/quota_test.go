@@ -380,13 +380,15 @@ func TestInvokeRawUsesPromptCacheKeyForCodexSessionHeaders(t *testing.T) {
 
 	wantBody := []byte(`{"model":"gpt-5.5","prompt_cache_key":"thread-stable-123","input":[],"reasoning":{"effort":"xhigh"},"store":false,"stream":true}`)
 	var gotBody []byte
-	var gotSessionID, gotThreadID, gotRequestID string
+	var gotSessionID, gotThreadID, gotHyphenSessionID, gotHyphenThreadID, gotRequestID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/codex/responses" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		gotSessionID = r.Header.Get("session_id")
 		gotThreadID = r.Header.Get("thread_id")
+		gotHyphenSessionID = r.Header.Get("session-id")
+		gotHyphenThreadID = r.Header.Get("thread-id")
 		gotRequestID = r.Header.Get("x-client-request-id")
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -405,6 +407,9 @@ func TestInvokeRawUsesPromptCacheKeyForCodexSessionHeaders(t *testing.T) {
 	}
 	if gotSessionID != "thread-stable-123" || gotThreadID != "thread-stable-123" || gotRequestID != "thread-stable-123" {
 		t.Fatalf("session headers not derived from prompt_cache_key: session=%q thread=%q request=%q", gotSessionID, gotThreadID, gotRequestID)
+	}
+	if gotHyphenSessionID != "thread-stable-123" || gotHyphenThreadID != "thread-stable-123" {
+		t.Fatalf("official hyphen session headers not derived from prompt_cache_key: session=%q thread=%q", gotHyphenSessionID, gotHyphenThreadID)
 	}
 	if !bytes.Equal(gotBody, wantBody) {
 		t.Fatalf("raw body changed:\n got %s\nwant %s", gotBody, wantBody)
@@ -487,10 +492,12 @@ func TestInvokeRawFallsBackToRandomSessionWithoutPromptCacheKey(t *testing.T) {
 	p, cleanup := newRawInvokeTestProvider(t)
 	defer cleanup()
 
-	var gotSessionID, gotThreadID, gotRequestID string
+	var gotSessionID, gotThreadID, gotHyphenSessionID, gotHyphenThreadID, gotRequestID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotSessionID = r.Header.Get("session_id")
 		gotThreadID = r.Header.Get("thread_id")
+		gotHyphenSessionID = r.Header.Get("session-id")
+		gotHyphenThreadID = r.Header.Get("thread-id")
 		gotRequestID = r.Header.Get("x-client-request-id")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
@@ -509,8 +516,11 @@ func TestInvokeRawFallsBackToRandomSessionWithoutPromptCacheKey(t *testing.T) {
 	if gotSessionID == "" {
 		t.Fatal("session_id fallback should be set")
 	}
-	if gotThreadID != "" || gotRequestID != "" {
-		t.Fatalf("thread headers should not be invented without prompt_cache_key: thread=%q request=%q", gotThreadID, gotRequestID)
+	if gotHyphenSessionID == "" || gotHyphenSessionID != gotSessionID {
+		t.Fatalf("session-id fallback = %q, want same non-empty value as session_id %q", gotHyphenSessionID, gotSessionID)
+	}
+	if gotThreadID != "" || gotHyphenThreadID != "" || gotRequestID != "" {
+		t.Fatalf("thread headers should not be invented without prompt_cache_key: thread=%q thread-hyphen=%q request=%q", gotThreadID, gotHyphenThreadID, gotRequestID)
 	}
 }
 
@@ -1212,6 +1222,92 @@ func TestInvokeRealRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	accessToken := testJWTExp(time.Now().Add(time.Hour))
+	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{
+		"type":"codex",
+		"token_data":{
+			"access_token":"` + accessToken + `",
+			"account_id":"chatgpt-account",
+			"email":"session@example.com",
+			"expired":"2099-01-01T00:00:00Z"
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("normalize session-only CPA json: %v", err)
+	}
+	acc := &domain.Account{
+		ID:       "acc-session-only-cpa-json-ir",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{SessionToken: sessionOnly}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+
+	var gotAuthorization, gotAccount, gotOriginator, gotUA, gotSessionID, gotCompatSessionID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		gotAuthorization = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		gotOriginator = r.Header.Get("Originator")
+		gotUA = r.Header.Get("User-Agent")
+		gotSessionID = r.Header.Get("session-id")
+		gotCompatSessionID = r.Header.Get("session_id")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	ch, err := p.Invoke(ctx, acc, &ir.Request{
+		Model: "gpt-5.5",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello"}},
+		}},
+		Stream: true,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		switch ev.Kind {
+		case ir.EvTextDelta:
+			text += ev.Text
+		case ir.EvError:
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+	}
+	if text != "ok" {
+		t.Fatalf("stream text = %q, want ok", text)
+	}
+	if gotAuthorization != "Bearer "+accessToken || gotAccount != "chatgpt-account" {
+		t.Fatalf("auth/account headers = %q / %q", gotAuthorization, gotAccount)
+	}
+	if gotOriginator != cpaCodexOriginator || gotUA != cpaCodexUserAgent {
+		t.Fatalf("CPA header profile = originator:%q ua:%q", gotOriginator, gotUA)
+	}
+	if gotSessionID == "" || gotCompatSessionID != gotSessionID {
+		t.Fatalf("session headers = session-id:%q session_id:%q", gotSessionID, gotCompatSessionID)
 	}
 }
 

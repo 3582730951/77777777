@@ -40,6 +40,11 @@ import (
 const (
 	ModeMock = "mock"
 	ModeReal = "real"
+
+	defaultCodexUserAgent  = "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
+	defaultCodexOriginator = "codex_cli_rs"
+	cpaCodexUserAgent      = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	cpaCodexOriginator     = "codex-tui"
 )
 
 type Provider struct {
@@ -1196,9 +1201,24 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 	if !info.Expires.IsZero() {
 		expires = info.Expires.UTC().Format(time.RFC3339)
 	}
+	tokenData := map[string]any{
+		"access_token":       info.AccessToken,
+		"refresh_token":      "",
+		"id_token":           idToken,
+		"account_id":         info.AccountID,
+		"chatgpt_plan_type":  info.PlanType,
+		"chatgpt_user_id":    info.ChatGPTUserID,
+		"chatgptAccountId":   info.AccountID,
+		"chatgptPlanType":    info.PlanType,
+		"chatgptUserId":      info.ChatGPTUserID,
+		"email":              info.Email,
+		"expired":            expires,
+		"id_token_synthetic": syntheticIDToken,
+	}
 	out := map[string]any{
 		"auth_mode":    "chatgpt",
 		"last_refresh": now.UTC().Format(time.RFC3339),
+		"token_data":   tokenData,
 		"tokens": map[string]any{
 			"access_token":               info.AccessToken,
 			"refresh_token":              "",
@@ -1243,6 +1263,9 @@ func buildChatGPTSessionOnlyAuthJSON(info sessionInfo, now time.Time) string {
 		"idToken":                    idToken,
 		"id_token":                   idToken,
 		"account_id":                 info.AccountID,
+		"accountId":                  info.AccountID,
+		"plan_type":                  info.PlanType,
+		"planType":                   info.PlanType,
 		"chatgpt_user_id":            info.ChatGPTUserID,
 		"user_id":                    info.ChatGPTUserID,
 		"chatgpt_account_id":         info.AccountID,
@@ -1483,7 +1506,7 @@ func (p *Provider) fetchWhamUsageWithSecret(ctx context.Context, acc *domain.Acc
 		LongWindow:  domain.QuotaWindow{ResetAt: time.Now().Add(7 * 24 * time.Hour), Confidence: 0.5},
 		TierWindows: make(map[string]domain.QuotaWindow),
 	}
-	ua := codexUA(acc)
+	ua, originator := codexHeaderProfile(acc, sec)
 	log.Printf("[chatgpt-quota] wham/usage: starting, account_id=%q, access_token_len=%d", info.AccountID, len(info.AccessToken))
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		"https://chatgpt.com/backend-api/wham/usage", nil)
@@ -1493,7 +1516,7 @@ func (p *Provider) fetchWhamUsageWithSecret(ctx context.Context, acc *domain.Acc
 	req.Header.Set("Authorization", "Bearer "+info.AccessToken)
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "application/json")
-	req.Header["originator"] = []string{"codex_cli_rs"}
+	req.Header.Set("Originator", originator)
 	setChatGPTAccountHeaders(req.Header, info)
 	setChatGPTCookieHeader(req.Header, sec)
 
@@ -1745,9 +1768,10 @@ func (p *Provider) fetchLegacyConversationLimitWithSecret(ctx context.Context, s
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+info.AccessToken)
-	req.Header.Set("User-Agent", codexUA(acc))
+	ua, originator := codexHeaderProfile(acc, sec)
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "application/json")
-	req.Header["originator"] = []string{"codex_cli_rs"}
+	req.Header.Set("Originator", originator)
 	setChatGPTAccountHeaders(req.Header, info)
 	setChatGPTCookieHeader(req.Header, sec)
 
@@ -1818,10 +1842,24 @@ func setChatGPTCookieHeader(h http.Header, sec store.AccountSecret) {
 }
 
 func codexUA(acc *domain.Account) string {
+	ua, _ := codexHeaderProfile(acc, store.AccountSecret{})
+	return ua
+}
+
+func codexHeaderProfile(acc *domain.Account, sec store.AccountSecret) (ua, originator string) {
 	if acc != nil && acc.UA != "" {
-		return acc.UA
+		ua = acc.UA
 	}
-	return "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
+		if ua == "" {
+			ua = cpaCodexUserAgent
+		}
+		return ua, cpaCodexOriginator
+	}
+	if ua == "" {
+		ua = defaultCodexUserAgent
+	}
+	return ua, defaultCodexOriginator
 }
 
 func schedulerClassifyBanned(status int, body []byte) bool {
@@ -1949,16 +1987,13 @@ func (p *Provider) doCodexResponsesWithSecret(ctx context.Context, acc *domain.A
 	if err != nil {
 		return nil, err
 	}
-	ua := acc.UA
-	if ua == "" {
-		ua = "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
-	}
+	ua, originator := codexHeaderProfile(acc, sec)
 	httpReq.Header.Set("Authorization", "Bearer "+info.AccessToken)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", ua)
 	httpReq.Header["OpenAI-Beta"] = []string{"responses=experimental"}
-	httpReq.Header["originator"] = []string{"codex_cli_rs"}
+	httpReq.Header.Set("Originator", originator)
 	setChatGPTAccountHeaders(httpReq.Header, info)
 	setChatGPTCookieHeader(httpReq.Header, sec)
 	setCodexSessionHeaders(httpReq.Header, body)
@@ -1987,18 +2022,13 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	if err != nil {
 		return nil, 0, fmt.Errorf("get account: %w", err)
 	}
-	ua := acc.UA
 	info, err := p.resolveSession(rctx, acc, sec)
 	if err != nil {
 		return nil, 0, fmt.Errorf("resolve session: %w", err)
 	}
 
-	if ua == "" {
-		ua = "codex_cli_rs/0.45.0 (Linux; x86_64) Codex/1.0"
-	}
 	body = normalizeCodexRawResponsesBody(body)
 
-	acc.UA = ua
 	resp, err := p.doCodexResponsesWithSecret(rctx, acc, info, sec, body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("post codex/responses: %w", err)
@@ -2349,10 +2379,12 @@ const maxCodexSessionHeaderLen = 512
 
 func setCodexSessionHeaders(h http.Header, responsesBody []byte) {
 	sessionID, threadID := codexSessionHeadersFromResponsesBody(responsesBody)
-	h["session_id"] = []string{sessionID}
+	h.Set("session-id", sessionID)
+	h.Set("session_id", sessionID)
 	if threadID != "" {
-		h["thread_id"] = []string{threadID}
-		h["x-client-request-id"] = []string{threadID}
+		h.Set("thread-id", threadID)
+		h.Set("thread_id", threadID)
+		h.Set("x-client-request-id", threadID)
 	}
 }
 

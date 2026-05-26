@@ -279,6 +279,13 @@ func TestNormalizeSessionOnlyAuthJSONStripsRefreshTokenAndMatchesCodexShape(t *t
 	if tokens["account_id"] != "acct-input" || tokens["chatgpt_plan_type"] != "team" {
 		t.Fatalf("tokens account features = %#v", tokens)
 	}
+	tokenData, ok := raw["token_data"].(map[string]any)
+	if !ok {
+		t.Fatalf("token_data missing: %#v", raw["token_data"])
+	}
+	if tokenData["access_token"] != accessToken || tokenData["account_id"] != "acct-input" || tokenData["refresh_token"] != "" {
+		t.Fatalf("token_data not CPA-compatible: %#v", tokenData)
+	}
 
 	parsed, err := parseSessionJSON([]byte(normalized))
 	if err != nil {
@@ -327,6 +334,44 @@ func TestNormalizeSessionOnlyAuthJSONBuildsSyntheticIDTokenForCPA(t *testing.T) 
 	}
 	if parsed.IDToken != idToken || parsed.RefreshToken != "" || parsed.AccountID != "acct-cpa" || parsed.PlanType != "plus" {
 		t.Fatalf("parsed synthetic session mismatch: %+v", parsed)
+	}
+}
+
+func TestNormalizeSessionOnlyAuthJSONAcceptsCPAAuthBundleTokenData(t *testing.T) {
+	accessToken := testJWTClaims(map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	rawSession := `{
+		"type":"codex",
+		"last_refresh":"2026-05-26T00:00:00Z",
+		"token_data":{
+			"access_token":"` + accessToken + `",
+			"refresh_token":"rt-should-not-survive",
+			"account_id":"acct-token-data",
+			"email":"cpa-token-data@example.com",
+			"expired":"2099-01-01T00:00:00Z"
+		}
+	}`
+
+	normalized, err := NormalizeSessionOnlyAuthJSON(rawSession)
+	if err != nil {
+		t.Fatalf("normalize CPA token_data auth json: %v", err)
+	}
+	if !IsSessionOnlyAuthJSON(normalized) {
+		t.Fatal("normalized CPA token_data auth json was not marked session-only")
+	}
+	parsed, err := parseSessionJSON([]byte(normalized))
+	if err != nil {
+		t.Fatalf("parse normalized CPA token_data auth json: %v", err)
+	}
+	if parsed.AccessToken != accessToken || parsed.RefreshToken != "" || parsed.AccountID != "acct-token-data" {
+		t.Fatalf("parsed token_data session mismatch: %+v", parsed)
+	}
+	if parsed.Email != "cpa-token-data@example.com" {
+		t.Fatalf("email = %q, want cpa-token-data@example.com", parsed.Email)
+	}
+	if parsed.IDToken == "" {
+		t.Fatal("synthetic id_token should be generated from token_data.account_id")
 	}
 }
 
