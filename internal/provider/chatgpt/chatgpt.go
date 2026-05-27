@@ -840,7 +840,7 @@ func chatGPTCookiePairsFromSetCookieHeaderValue(value string) []chatGPTCookiePai
 }
 
 func chatGPTCookieHeaderFromSecret(sec store.AccountSecret) string {
-	if IsSessionOnlyAuthJSON(sec.SessionToken) && chatGPTSessionTokenFromJSON(sec.SessionToken) == "" {
+	if IsSessionOnlyAuthJSON(sec.SessionToken) {
 		return ""
 	}
 	pairs := chatGPTCookiePairsFromBytes(sec.Cookies)
@@ -1204,9 +1204,6 @@ func IsSessionOnlyAuthJSON(raw string) bool {
 	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return false
 	}
-	if chatGPTJSONSessionToken(obj) != "" {
-		return false
-	}
 	if mode, _ := obj["session_import_mode"].(string); strings.EqualFold(strings.TrimSpace(mode), "session_only_json") {
 		return true
 	}
@@ -1222,6 +1219,12 @@ func IsSessionOnlyAuthJSON(raw string) bool {
 		chatGPTJSONAccessToken(obj) != "" &&
 		chatGPTJSONRefreshToken(obj) == "" {
 		return true
+	}
+	// Raw web sessions can carry sessionToken and cookies for /api/auth/session.
+	// CPA-style snapshots may also keep session_token, but Codex forwarding only
+	// uses access_token; using that value as a Cookie changes the auth path.
+	if chatGPTJSONSessionToken(obj) != "" {
+		return false
 	}
 	return false
 }
@@ -2271,13 +2274,13 @@ func canUseChatGPTWebConversationFallback(req *ir.Request, sec store.AccountSecr
 	if req != nil && len(req.Tools) > 0 {
 		return false
 	}
+	if IsSessionOnlyAuthJSON(sec.SessionToken) || chatGPTFixedAccessTokenSnapshot(sec) {
+		return false
+	}
 	if chatGPTRefreshTokenFromSecret(sec) != "" {
 		return false
 	}
-	if chatGPTCookieHeaderFromSecret(sec) != "" {
-		return true
-	}
-	return chatGPTFixedAccessTokenSnapshot(sec) && chatGPTAccessTokenFromSession(sec.SessionToken) != ""
+	return chatGPTCookieHeaderFromSecret(sec) != ""
 }
 
 func shouldPreferChatGPTWebConversation(req *ir.Request, sec store.AccountSecret) bool {

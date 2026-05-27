@@ -1234,6 +1234,7 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	accessToken := testJWTExp(time.Now().Add(time.Hour))
 	sessionOnly, err := NormalizeSessionOnlyAuthJSON(`{
 		"type":"codex",
+		"session_token":"next-auth-cpa-snapshot",
 		"token_data":{
 			"access_token":"` + accessToken + `",
 			"account_id":"chatgpt-account",
@@ -1256,7 +1257,7 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	}
 	p.SetStore(st)
 
-	var gotAuthorization, gotAccount, gotOriginator, gotUA, gotSessionID, gotLegacySessionID, gotBeta, gotConnection string
+	var gotAuthorization, gotAccount, gotOriginator, gotUA, gotSessionID, gotLegacySessionID, gotBeta, gotConnection, gotCookie string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/codex/responses" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -1269,6 +1270,7 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 		gotLegacySessionID = r.Header.Get("session-id")
 		gotBeta = r.Header.Get("OpenAI-Beta")
 		gotConnection = r.Header.Get("Connection")
+		gotCookie = r.Header.Get("Cookie")
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(
 			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
@@ -1312,9 +1314,12 @@ func TestInvokeRealSessionOnlyCPAJSONSendsCPACompatibleHeaders(t *testing.T) {
 	if gotBeta != "" || gotConnection != "Keep-Alive" {
 		t.Fatalf("CPA transport headers = OpenAI-Beta:%q Connection:%q", gotBeta, gotConnection)
 	}
+	if gotCookie != "" {
+		t.Fatalf("CPA/session-only snapshot sent Cookie header %q; CPA forwards access_token only", gotCookie)
+	}
 }
 
-func TestInvokeRealSessionOnlyUnauthorizedFallsBackToWebConversation(t *testing.T) {
+func TestInvokeRealSessionOnlyUnauthorizedDoesNotUseWebConversationFallback(t *testing.T) {
 	ctx := context.Background()
 	p := New(ModeReal)
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
@@ -1356,27 +1361,10 @@ func TestInvokeRealSessionOnlyUnauthorizedFallsBackToWebConversation(t *testing.
 			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
 		case "/backend-api/sentinel/chat-requirements":
 			sentinelCalls++
-			if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
-				t.Fatalf("sentinel authorization = %q, want session-only bearer", got)
-			}
-			if got := r.Header.Get("Cookie"); got != "" {
-				t.Fatalf("sentinel cookie = %q, want no cookie for session-only JSON", got)
-			}
-			_, _ = w.Write([]byte(`{"token":"requirements-token"}`))
+			t.Fatalf("session-only codex 401 must not call sentinel")
 		case "/backend-api/conversation":
 			conversationCalls++
-			if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
-				t.Fatalf("conversation authorization = %q, want session-only bearer", got)
-			}
-			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token"); got != "requirements-token" {
-				t.Fatalf("conversation requirements token = %q", got)
-			}
-			if got := r.Header.Get("Cookie"); got != "" {
-				t.Fatalf("conversation cookie = %q, want no cookie for session-only JSON", got)
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"v\":{\"message\":{\"content\":{\"parts\":[\"web fallback ok\"]},\"status\":\"finished_successfully\"}}}\n\n"))
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			t.Fatalf("session-only codex 401 must not call web conversation")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -1392,26 +1380,21 @@ func TestInvokeRealSessionOnlyUnauthorizedFallsBackToWebConversation(t *testing.
 		}},
 		Stream: true,
 	})
-	if err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	var text string
-	for ev := range ch {
-		switch ev.Kind {
-		case ir.EvTextDelta:
-			text += ev.Text
-		case ir.EvError:
-			t.Fatalf("stream error: %v", ev.Err)
+	if err == nil {
+		if ch != nil {
+			for range ch {
+			}
 		}
+		t.Fatal("Invoke succeeded; want direct upstream 401")
 	}
-	if text != "web fallback ok" {
-		t.Fatalf("stream text = %q, want web fallback ok", text)
+	if !strings.Contains(err.Error(), "upstream 401") {
+		t.Fatalf("error = %v, want direct upstream 401", err)
 	}
 	if codexUA != cpaCodexUserAgent || codexOriginator != cpaCodexOriginator {
 		t.Fatalf("codex headers = ua:%q originator:%q", codexUA, codexOriginator)
 	}
-	if codexCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
-		t.Fatalf("calls codex/sentinel/conversation = %d/%d/%d, want 1/1/1", codexCalls, sentinelCalls, conversationCalls)
+	if codexCalls != 1 || sentinelCalls != 0 || conversationCalls != 0 {
+		t.Fatalf("calls codex/sentinel/conversation = %d/%d/%d, want 1/0/0", codexCalls, sentinelCalls, conversationCalls)
 	}
 }
 

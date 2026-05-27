@@ -354,7 +354,7 @@ func TestNormalizeSessionOnlyAuthJSONBuildsSyntheticIDTokenForCPA(t *testing.T) 
 	}
 }
 
-func TestFlatCPAWithSessionTokenIsRecoverableWebSession(t *testing.T) {
+func TestFlatCPAWithSessionTokenIsFixedSnapshot(t *testing.T) {
 	accessToken := testJWTExp(time.Now().Add(time.Hour))
 	idToken := testJWTClaims(map[string]any{
 		"exp":   time.Now().Add(time.Hour).Unix(),
@@ -367,8 +367,8 @@ func TestFlatCPAWithSessionTokenIsRecoverableWebSession(t *testing.T) {
 	})
 	rawSession := `{"type":"codex","email":"flat@example.com","account_id":"acct-flat","plan_type":"plus","access_token":"` + accessToken + `","id_token":"` + idToken + `","refresh_token":"","session_token":"next-auth-flat","expired":"2099-01-01T00:00:00Z"}`
 
-	if IsSessionOnlyAuthJSON(rawSession) {
-		t.Fatal("flat CPA auth JSON with session_token should be treated as a recoverable web session")
+	if !IsSessionOnlyAuthJSON(rawSession) {
+		t.Fatal("flat CPA auth JSON with empty refresh_token should stay a fixed access-token snapshot even when session_token is present")
 	}
 	parsed, err := parseSessionJSON([]byte(rawSession))
 	if err != nil {
@@ -378,8 +378,8 @@ func TestFlatCPAWithSessionTokenIsRecoverableWebSession(t *testing.T) {
 		t.Fatalf("parsed flat CPA auth JSON mismatch: %+v", parsed)
 	}
 	sec := store.AccountSecret{SessionToken: rawSession}
-	if got := chatGPTCookieHeaderFromSecret(sec); got != "__Secure-next-auth.session-token=next-auth-flat" {
-		t.Fatalf("cookie header = %q, want next-auth session cookie from CPA JSON", got)
+	if got := chatGPTCookieHeaderFromSecret(sec); got != "" {
+		t.Fatalf("cookie header = %q, want no cookie for CPA/session-only snapshot", got)
 	}
 }
 
@@ -531,7 +531,7 @@ func TestRefreshCredentialTreatsTaggedSessionOnlyAsNonRecoverableSnapshot(t *tes
 	}
 }
 
-func TestResolveSessionRefreshesCPAAuthJSONFromSessionTokenWhenExpired(t *testing.T) {
+func TestResolveSessionOnlyCPAAuthJSONDoesNotUseSessionTokenCookieWhenExpired(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
 	if err != nil {
@@ -577,32 +577,32 @@ func TestResolveSessionRefreshesCPAAuthJSONFromSessionTokenWhenExpired(t *testin
 	p.resolver.httpClient = client
 
 	info, err := p.resolveSession(ctx, acc, originalSecret)
-	if err != nil {
-		t.Fatalf("resolve session: %v", err)
+	if err == nil {
+		t.Fatalf("resolve session succeeded with access token %q; want fixed snapshot expiry error", info.AccessToken)
 	}
-	if info.AccessToken != newAccess {
-		t.Fatalf("resolved access token = %q, want refreshed token", info.AccessToken)
+	if !strings.Contains(err.Error(), "no refresh_token available") {
+		t.Fatalf("resolve error = %v, want no refresh_token available", err)
 	}
-	if sessionCalls != 1 {
-		t.Fatalf("session calls = %d, want 1", sessionCalls)
+	if sessionCalls != 0 {
+		t.Fatalf("session calls = %d, want 0; CPA session_token must not be used as a cookie", sessionCalls)
 	}
 	sec, err := st.GetAccountSecret(ctx, acc.ID)
 	if err != nil {
 		t.Fatalf("get stored secret: %v", err)
 	}
-	if IsSessionOnlyAuthJSON(sec.SessionToken) {
-		t.Fatal("persisted CPA session should remain recoverable while sessionToken is present")
+	if !IsSessionOnlyAuthJSON(sec.SessionToken) {
+		t.Fatal("persisted CPA session should remain a fixed session-only snapshot")
 	}
 	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
 	if err != nil {
 		t.Fatalf("parse persisted session: %v", err)
 	}
-	if parsed.AccessToken != newAccess || parsed.SessionToken != "next-auth-cpa-new" {
+	if parsed.AccessToken != expiredAccess || parsed.SessionToken != "next-auth-cpa" {
 		t.Fatalf("persisted session mismatch: %+v", parsed)
 	}
 }
 
-func TestInvokeRawRecoversCPAAuthJSONWithSessionTokenAfter401(t *testing.T) {
+func TestInvokeRawSessionOnlyCPAAuthJSONDoesNotRecoverWithSessionTokenAfter401(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
 	if err != nil {
@@ -634,17 +634,10 @@ func TestInvokeRawRecoversCPAAuthJSONWithSessionTokenAfter401(t *testing.T) {
 				_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
 				return
 			}
-			if got := r.Header.Get("Authorization"); got != "Bearer "+newAccess {
-				t.Fatalf("authorization = %q, want refreshed bearer", got)
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"))
+			t.Fatalf("session-only CPA auth JSON retried codex/responses with session cookie recovery")
 		case "/api/auth/session":
 			sessionCalls++
-			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa" {
-				t.Fatalf("cookie header = %q, want CPA session token cookie", got)
-			}
-			_, _ = w.Write([]byte(`{"accessToken":"` + newAccess + `","sessionToken":"next-auth-cpa-new","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-cpa","planType":"plus"},"user":{"email":"cpa@example.com"}}`))
+			t.Fatalf("session-only CPA auth JSON must not call /api/auth/session")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -662,16 +655,17 @@ func TestInvokeRawRecoversCPAAuthJSONWithSessionTokenAfter401(t *testing.T) {
 		t.Fatalf("invoke raw: %v", err)
 	}
 	defer body.Close()
-	_, _ = io.ReadAll(body)
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", status)
+	got, _ := io.ReadAll(body)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s, want 401 passthrough", status, got)
 	}
-	if responseCalls != 2 || sessionCalls != 1 {
-		t.Fatalf("calls: responses=%d session=%d, want 2/1", responseCalls, sessionCalls)
+	if responseCalls != 1 || sessionCalls != 0 {
+		t.Fatalf("calls: responses=%d session=%d, want 1/0", responseCalls, sessionCalls)
 	}
+	_ = newAccess
 }
 
-func TestInvokeRealFallsBackToWebConversationForCPAWithoutRefreshToken(t *testing.T) {
+func TestInvokeRealSessionOnlyCPAAuthJSONDoesNotUseWebConversationFallback(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
 	if err != nil {
@@ -702,30 +696,13 @@ func TestInvokeRealFallsBackToWebConversationForCPAWithoutRefreshToken(t *testin
 			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
 		case "/api/auth/session":
 			sessionCalls++
-			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa" {
-				t.Fatalf("auth/session cookie = %q, want CPA session token cookie", got)
-			}
-			_, _ = w.Write([]byte(`{"accessToken":"` + webAccess + `","sessionToken":"next-auth-cpa-new","expires":"2099-01-01T00:00:00Z","account":{"id":"acct-cpa","planType":"plus"},"user":{"email":"cpa@example.com"}}`))
+			t.Fatalf("session-only CPA auth JSON must not call /api/auth/session")
 		case "/backend-api/sentinel/chat-requirements":
 			sentinelCalls++
-			if got := r.Header.Get("Authorization"); got != "Bearer "+webAccess {
-				t.Fatalf("sentinel authorization = %q, want refreshed web bearer", got)
-			}
-			if got := r.Header.Get("Cookie"); got != "__Secure-next-auth.session-token=next-auth-cpa-new" {
-				t.Fatalf("sentinel cookie = %q, want refreshed session cookie", got)
-			}
-			_, _ = w.Write([]byte(`{"token":"requirements-token"}`))
+			t.Fatalf("session-only CPA auth JSON must not call sentinel")
 		case "/backend-api/conversation":
 			conversationCalls++
-			if got := r.Header.Get("Authorization"); got != "Bearer "+webAccess {
-				t.Fatalf("conversation authorization = %q, want refreshed web bearer", got)
-			}
-			if got := r.Header.Get("OpenAI-Sentinel-Chat-Requirements-Token"); got != "requirements-token" {
-				t.Fatalf("conversation requirements token = %q", got)
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"v\":{\"message\":{\"content\":{\"parts\":[\"web ok\"]},\"status\":\"finished_successfully\"}}}\n\n"))
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			t.Fatalf("session-only CPA auth JSON must not call web conversation")
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -746,24 +723,20 @@ func TestInvokeRealFallsBackToWebConversationForCPAWithoutRefreshToken(t *testin
 		}},
 		Stream: true,
 	})
-	if err != nil {
-		t.Fatalf("invoke: %v", err)
-	}
-	var text string
-	for ev := range ch {
-		if ev.Kind == ir.EvError {
-			t.Fatalf("stream error: %v", ev.Err)
+	if err == nil {
+		if ch != nil {
+			for range ch {
+			}
 		}
-		if ev.Kind == ir.EvTextDelta {
-			text += ev.Text
-		}
+		t.Fatal("invoke succeeded; want direct upstream 401")
 	}
-	if text != "web ok" {
-		t.Fatalf("fallback stream text = %q, want web ok", text)
+	if !strings.Contains(err.Error(), "upstream 401") {
+		t.Fatalf("invoke error = %v, want upstream 401", err)
 	}
-	if codexCalls != 0 || sessionCalls != 1 || sentinelCalls != 1 || conversationCalls != 1 {
-		t.Fatalf("calls codex/session/sentinel/conversation = %d/%d/%d/%d, want 0/1/1/1", codexCalls, sessionCalls, sentinelCalls, conversationCalls)
+	if codexCalls != 1 || sessionCalls != 0 || sentinelCalls != 0 || conversationCalls != 0 {
+		t.Fatalf("calls codex/session/sentinel/conversation = %d/%d/%d/%d, want 1/0/0/0", codexCalls, sessionCalls, sentinelCalls, conversationCalls)
 	}
+	_ = webAccess
 }
 
 func TestBuildChatGPTSessionJSONPreservesAccountFeatures(t *testing.T) {
