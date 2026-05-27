@@ -45,6 +45,13 @@ const (
 	defaultCodexOriginator = "codex_cli_rs"
 	cpaCodexUserAgent      = defaultCodexUserAgent
 	cpaCodexOriginator     = defaultCodexOriginator
+
+	credentialPersistTimeout = 5 * time.Second
+	refreshRaceRecoveryWait  = 2 * time.Second
+	refreshRaceRecoveryPoll  = 50 * time.Millisecond
+
+	codexResponsesAuthInspectMaxBytes = 256 << 10
+	codexResponsesStreamAuthRetries   = 1
 )
 
 type Provider struct {
@@ -62,12 +69,23 @@ type Provider struct {
 	// flow and prevents Resolve and ForceRefresh from consuming the same
 	// one-time refresh_token concurrently.
 	sessionLocks sync.Map // accountID -> *sync.Mutex
+	// refreshGates pause per-account work while credentials are being refreshed.
+	// Readers represent active tasks; a refresher blocks new readers, waits for
+	// current readers to leave, persists fresh credentials, then lets tasks
+	// resume with the updated auth snapshot.
+	refreshGates sync.Map // accountID -> *accountRefreshGate
 }
 
 type sessionResolveCall struct {
 	done chan struct{}
 	info sessionInfo
 	err  error
+}
+
+type accountRefreshGate struct {
+	mu         sync.Mutex
+	active     int
+	refreshing bool
 }
 
 // SetStore wires the credential store. Required for ModeReal; harmless in mock.
@@ -96,7 +114,26 @@ func (p *Provider) RefreshCredential(ctx context.Context, acc *domain.Account) e
 	if p.store == nil {
 		return errors.New("store not wired")
 	}
+	useRelease, err := p.beginAccountUse(ctx, acc.ID)
+	if err != nil {
+		return err
+	}
 	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		useRelease()
+		return fmt.Errorf("get secret: %w", err)
+	}
+	if !chatGPTCredentialRefreshLikely(sec, time.Now()) {
+		defer useRelease()
+		_, err = p.resolveSession(ctx, acc, sec)
+		return err
+	}
+	refreshRelease, err := p.beginAccountRefreshAfterUse(ctx, acc.ID, useRelease)
+	if err != nil {
+		return err
+	}
+	defer refreshRelease()
+	sec, err = p.store.GetAccountSecret(ctx, acc.ID)
 	if err != nil {
 		return fmt.Errorf("get secret: %w", err)
 	}
@@ -173,6 +210,454 @@ func (p *Provider) httpClientForProxy(proxyURL string) (*http.Client, error) {
 	return client, nil
 }
 
+func (p *Provider) accountRefreshGate(accountID string) *accountRefreshGate {
+	actual, _ := p.refreshGates.LoadOrStore(accountID, &accountRefreshGate{})
+	if gate, ok := actual.(*accountRefreshGate); ok {
+		return gate
+	}
+	gate := &accountRefreshGate{}
+	p.refreshGates.Store(accountID, gate)
+	return gate
+}
+
+func (p *Provider) beginAccountUse(ctx context.Context, accountID string) (func(), error) {
+	if accountID == "" {
+		return func() {}, nil
+	}
+	return p.accountRefreshGate(accountID).beginUse(ctx)
+}
+
+func (p *Provider) beginAccountRefresh(ctx context.Context, accountID string) (func(), error) {
+	if accountID == "" {
+		return func() {}, nil
+	}
+	return p.accountRefreshGate(accountID).beginRefresh(ctx)
+}
+
+func (p *Provider) beginAccountRefreshAfterUse(ctx context.Context, accountID string, releaseUse func()) (func(), error) {
+	if accountID == "" {
+		if releaseUse != nil {
+			releaseUse()
+		}
+		return func() {}, nil
+	}
+	return p.accountRefreshGate(accountID).beginRefreshAfterUse(ctx, releaseUse)
+}
+
+func (g *accountRefreshGate) beginUse(ctx context.Context) (func(), error) {
+	for {
+		g.mu.Lock()
+		if !g.refreshing {
+			g.active++
+			g.mu.Unlock()
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					g.mu.Lock()
+					if g.active > 0 {
+						g.active--
+					}
+					g.mu.Unlock()
+				})
+			}, nil
+		}
+		g.mu.Unlock()
+		if err := sleepWithContext(ctx, 10*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (g *accountRefreshGate) beginRefresh(ctx context.Context) (func(), error) {
+	return g.beginRefreshAfterUse(ctx, nil)
+}
+
+func (g *accountRefreshGate) beginRefreshAfterUse(ctx context.Context, releaseUse func()) (func(), error) {
+	releasePending := releaseUse
+	for {
+		g.mu.Lock()
+		if !g.refreshing {
+			g.refreshing = true
+			g.mu.Unlock()
+			if releasePending != nil {
+				releasePending()
+				releasePending = nil
+			}
+			break
+		}
+		g.mu.Unlock()
+		if releasePending != nil {
+			releasePending()
+			releasePending = nil
+		}
+		if err := sleepWithContext(ctx, 10*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+
+	for {
+		g.mu.Lock()
+		active := g.active
+		g.mu.Unlock()
+		if active == 0 {
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					g.mu.Lock()
+					g.refreshing = false
+					g.mu.Unlock()
+				})
+			}, nil
+		}
+		if err := sleepWithContext(ctx, 10*time.Millisecond); err != nil {
+			g.mu.Lock()
+			g.refreshing = false
+			g.mu.Unlock()
+			return nil, err
+		}
+	}
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func releaseOnEventChannel(ch <-chan ir.Event, release func()) <-chan ir.Event {
+	if release == nil {
+		return ch
+	}
+	out := make(chan ir.Event, 32)
+	go func() {
+		defer release()
+		defer close(out)
+		for ev := range ch {
+			out <- ev
+		}
+	}()
+	return out
+}
+
+type releaseReadCloser struct {
+	io.ReadCloser
+	release func()
+	once    sync.Once
+}
+
+func (r *releaseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.once.Do(func() {
+		if r.release != nil {
+			r.release()
+		}
+	})
+	return err
+}
+
+func readCloserWithRelease(rc io.ReadCloser, release func()) io.ReadCloser {
+	if release == nil {
+		return rc
+	}
+	return &releaseReadCloser{ReadCloser: rc, release: release}
+}
+
+type codexResponsesEarlyAuthDecision int
+
+const (
+	codexResponsesEarlyAuthNone codexResponsesEarlyAuthDecision = iota
+	codexResponsesEarlyAuthRetry
+	codexResponsesEarlyAuthPass
+)
+
+type codexResponsesEarlyAuthInspector struct {
+	lineBuf      []byte
+	currentEvent string
+	authText     string
+}
+
+func (p *Provider) codexResponsesAuthRetryReadCloser(ctx context.Context, acc *domain.Account, sec store.AccountSecret, requestBody []byte, rc io.ReadCloser, releaseUse func()) io.ReadCloser {
+	if rc == nil {
+		return nil
+	}
+	if acc == nil || !chatGPTCanRecoverAuthFailure(sec) {
+		return readCloserWithRelease(rc, releaseUse)
+	}
+	return &codexResponsesAuthRetryReadCloser{
+		ctx:         ctx,
+		provider:    p,
+		account:     acc,
+		secret:      sec,
+		requestBody: append([]byte(nil), requestBody...),
+		current:     rc,
+		releaseUse:  releaseUse,
+		inspecting:  true,
+		maxRetries:  codexResponsesStreamAuthRetries,
+	}
+}
+
+type codexResponsesAuthRetryReadCloser struct {
+	ctx         context.Context
+	provider    *Provider
+	account     *domain.Account
+	secret      store.AccountSecret
+	requestBody []byte
+
+	current    io.ReadCloser
+	releaseUse func()
+
+	inspecting bool
+	inspector  codexResponsesEarlyAuthInspector
+	inspectBuf bytes.Buffer
+	pending    []byte
+	pendingErr error
+
+	retries    int
+	maxRetries int
+	closed     bool
+}
+
+func (r *codexResponsesAuthRetryReadCloser) Read(p []byte) (int, error) {
+	if r.closed {
+		return 0, io.ErrClosedPipe
+	}
+	for {
+		if len(r.pending) > 0 {
+			n := copy(p, r.pending)
+			r.pending = r.pending[n:]
+			return n, nil
+		}
+		if r.pendingErr != nil {
+			err := r.pendingErr
+			r.pendingErr = nil
+			return 0, err
+		}
+		if !r.inspecting {
+			return r.current.Read(p)
+		}
+		if err := r.readUntilEarlyAuthDecision(); err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (r *codexResponsesAuthRetryReadCloser) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	var err error
+	if r.current != nil {
+		err = r.current.Close()
+		r.current = nil
+	}
+	r.releaseCurrentUse()
+	return err
+}
+
+func (r *codexResponsesAuthRetryReadCloser) readUntilEarlyAuthDecision() error {
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.current.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			_, _ = r.inspectBuf.Write(chunk)
+			switch r.inspector.Feed(chunk) {
+			case codexResponsesEarlyAuthRetry:
+				if err := r.retryAfterEarlyAuth(); err != nil {
+					return err
+				}
+				continue
+			case codexResponsesEarlyAuthPass:
+				r.flushInspection(err)
+				return nil
+			}
+			if r.inspectBuf.Len() >= codexResponsesAuthInspectMaxBytes {
+				r.flushInspection(err)
+				return nil
+			}
+		}
+		if err != nil {
+			r.flushInspection(err)
+			return nil
+		}
+	}
+}
+
+func (r *codexResponsesAuthRetryReadCloser) flushInspection(err error) {
+	if r.inspectBuf.Len() > 0 {
+		r.pending = append(r.pending[:0], r.inspectBuf.Bytes()...)
+		r.inspectBuf.Reset()
+	}
+	r.pendingErr = err
+	r.inspecting = false
+}
+
+func (r *codexResponsesAuthRetryReadCloser) retryAfterEarlyAuth() error {
+	if r.retries >= r.maxRetries {
+		authText := strings.TrimSpace(r.inspector.authText)
+		if authText == "" {
+			authText = "upstream stream auth failure"
+		}
+		_ = r.current.Close()
+		r.current = nil
+		r.releaseCurrentUse()
+		return fmt.Errorf("chatgpt: upstream stream auth failure after refresh: %s", authText)
+	}
+	r.retries++
+	_ = r.current.Close()
+	r.current = nil
+	releaseUse := r.releaseUse
+	r.releaseUse = nil
+
+	refreshed, refreshErr := r.provider.forceRefreshSessionAfterUse(r.ctx, r.account, r.secret, releaseUse)
+	if refreshErr != nil {
+		return fmt.Errorf("refresh after upstream stream auth failure: %w", refreshErr)
+	}
+	releaseUse, err := r.provider.beginAccountUse(r.ctx, r.account.ID)
+	if err != nil {
+		return err
+	}
+	latestSec := r.provider.latestAccountSecretOr(r.ctx, r.account.ID, r.secret)
+	resp, err := r.provider.doCodexResponsesWithSecret(r.ctx, r.account, refreshed, latestSec, r.requestBody)
+	if err != nil {
+		releaseUse()
+		return fmt.Errorf("post codex/responses after stream refresh: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+		resp.Body.Close()
+		releaseUse()
+		return fmt.Errorf("upstream %d after stream auth refresh: %s", resp.StatusCode, snippet(respBody))
+	}
+
+	r.secret = latestSec
+	r.current = resp.Body
+	r.releaseUse = releaseUse
+	r.inspector = codexResponsesEarlyAuthInspector{}
+	r.inspectBuf.Reset()
+	r.pending = nil
+	r.pendingErr = nil
+	r.inspecting = true
+	return nil
+}
+
+func (r *codexResponsesAuthRetryReadCloser) releaseCurrentUse() {
+	if r.releaseUse == nil {
+		return
+	}
+	release := r.releaseUse
+	r.releaseUse = nil
+	release()
+}
+
+func (i *codexResponsesEarlyAuthInspector) Feed(data []byte) codexResponsesEarlyAuthDecision {
+	i.lineBuf = append(i.lineBuf, data...)
+	var decision codexResponsesEarlyAuthDecision
+	for {
+		idx := bytes.IndexByte(i.lineBuf, '\n')
+		if idx < 0 {
+			if len(i.lineBuf) > codexResponsesAuthInspectMaxBytes && bytes.IndexByte(i.lineBuf, '\n') < 0 {
+				i.lineBuf = i.lineBuf[len(i.lineBuf)-4096:]
+				return codexResponsesEarlyAuthPass
+			}
+			break
+		}
+		line := string(bytes.TrimRight(i.lineBuf[:idx], "\r"))
+		i.lineBuf = i.lineBuf[idx+1:]
+		if line == "" {
+			i.currentEvent = ""
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "event: ") {
+			i.currentEvent = strings.TrimSpace(line[7:])
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		if d := i.inspectData(strings.TrimSpace(line[6:])); d != codexResponsesEarlyAuthNone {
+			decision = d
+			break
+		}
+	}
+	return decision
+}
+
+func (i *codexResponsesEarlyAuthInspector) inspectData(data string) codexResponsesEarlyAuthDecision {
+	if data == "" {
+		return codexResponsesEarlyAuthNone
+	}
+	if data == "[DONE]" {
+		return codexResponsesEarlyAuthPass
+	}
+	var evt struct {
+		Type  string `json:"type"`
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+		Response struct {
+			Status string `json:"status"`
+			Error  struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &evt); err != nil {
+		return codexResponsesEarlyAuthPass
+	}
+	eventType := firstNonEmpty(evt.Type, i.currentEvent)
+	errorText := strings.TrimSpace(strings.Join([]string{
+		evt.Error.Message,
+		evt.Error.Type,
+		evt.Error.Code,
+		evt.Response.Error.Message,
+		evt.Response.Error.Type,
+		evt.Response.Error.Code,
+		data,
+	}, " "))
+	if codexResponsesEventCarriesError(eventType, evt.Error.Message, evt.Response.Error.Message) {
+		if isChatGPTRecoverableAuthText(errorText) {
+			i.authText = errorText
+			return codexResponsesEarlyAuthRetry
+		}
+		return codexResponsesEarlyAuthPass
+	}
+	if codexResponsesInformationalEvent(eventType) {
+		return codexResponsesEarlyAuthNone
+	}
+	return codexResponsesEarlyAuthPass
+}
+
+func codexResponsesEventCarriesError(eventType, topMessage, responseMessage string) bool {
+	switch eventType {
+	case "response.error", "error", "response.failed":
+		return true
+	}
+	return strings.TrimSpace(topMessage) != "" || strings.TrimSpace(responseMessage) != ""
+}
+
+func codexResponsesInformationalEvent(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.in_progress", "response.queued",
+		"response.content_part.added", "response.content_part.done":
+		return true
+	}
+	return false
+}
+
 func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
 	if acc == nil {
 		return sessionInfo{}, errors.New("nil account")
@@ -183,9 +668,33 @@ func (p *Provider) resolveSession(ctx context.Context, acc *domain.Account, sec 
 }
 
 func (p *Provider) forceRefreshSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret) (sessionInfo, error) {
+	return p.forceRefreshSessionWithGate(ctx, acc, sec, nil)
+}
+
+func (p *Provider) forceRefreshSessionAfterUse(ctx context.Context, acc *domain.Account, sec store.AccountSecret, releaseUse func()) (sessionInfo, error) {
+	return p.forceRefreshSessionWithGate(ctx, acc, sec, releaseUse)
+}
+
+func (p *Provider) forceRefreshSessionWithGate(ctx context.Context, acc *domain.Account, sec store.AccountSecret, releaseUse func()) (sessionInfo, error) {
 	if acc == nil {
+		if releaseUse != nil {
+			releaseUse()
+		}
 		return sessionInfo{}, errors.New("nil account")
 	}
+	var (
+		releaseRefresh func()
+		err            error
+	)
+	if releaseUse != nil {
+		releaseRefresh, err = p.beginAccountRefreshAfterUse(ctx, acc.ID, releaseUse)
+	} else {
+		releaseRefresh, err = p.beginAccountRefresh(ctx, acc.ID)
+	}
+	if err != nil {
+		return sessionInfo{}, err
+	}
+	defer releaseRefresh()
 	return p.runSessionCall(ctx, acc.ID+"\x00force-refresh", func() (sessionInfo, error) {
 		return p.forceRefreshSessionOnce(ctx, acc, sec)
 	})
@@ -370,25 +879,38 @@ func (p *Provider) recoverResolvedSessionRace(ctx context.Context, acc *domain.A
 	if p.store == nil || !isChatGPTRecoverableRefreshError(refreshErr) {
 		return sessionInfo{}, false
 	}
-	latest, err := p.store.GetAccountSecret(ctx, acc.ID)
-	if err != nil {
-		return sessionInfo{}, false
+	readCtx, cancel := credentialStoreContext()
+	defer cancel()
+	deadline := time.Now().Add(refreshRaceRecoveryWait)
+	for {
+		latest, err := p.store.GetAccountSecret(readCtx, acc.ID)
+		if err == nil && chatGPTSessionMaterialChanged(used, latest) {
+			if info, ok := parseStoredSessionSecret(latest.SessionToken, latest.RefreshToken); ok && info.AccessToken != "" && time.Until(info.Expires) > 0 {
+				p.resolver.cache.Store(acc.ID, info)
+				return info, true
+			}
+			if ctx.Err() == nil {
+				client, clientErr := p.httpClientForAccount(ctx, acc)
+				if clientErr == nil {
+					info, resolveErr := p.resolver.Resolve(ctx, acc.ID, latest.SessionToken, latest.RefreshToken, acc.UA, client)
+					if resolveErr == nil {
+						if err := p.persistResolvedSession(ctx, acc, latest, info); err != nil {
+							log.Printf("[chatgpt-session] account=%s persist race-recovered session: %v", acc.ID, err)
+						}
+						return info, true
+					}
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return sessionInfo{}, false
+		}
+		select {
+		case <-readCtx.Done():
+			return sessionInfo{}, false
+		case <-time.After(refreshRaceRecoveryPoll):
+		}
 	}
-	if !chatGPTSessionMaterialChanged(used, latest) {
-		return sessionInfo{}, false
-	}
-	client, clientErr := p.httpClientForAccount(ctx, acc)
-	if clientErr != nil {
-		return sessionInfo{}, false
-	}
-	info, err := p.resolver.Resolve(ctx, acc.ID, latest.SessionToken, latest.RefreshToken, acc.UA, client)
-	if err != nil {
-		return sessionInfo{}, false
-	}
-	if err := p.persistResolvedSession(ctx, acc, latest, info); err != nil {
-		log.Printf("[chatgpt-session] account=%s persist race-recovered session: %v", acc.ID, err)
-	}
-	return info, true
 }
 
 func (p *Provider) clearStaleRefreshTokenAfterFailure(ctx context.Context, acc *domain.Account, used store.AccountSecret, refreshErr error) {
@@ -409,7 +931,9 @@ func (p *Provider) clearStaleRefreshTokenAfterFailure(ctx context.Context, acc *
 	}
 
 	latest := used
-	if fresh, err := p.store.GetAccountSecret(ctx, acc.ID); err == nil {
+	readCtx, cancel := credentialStoreContext()
+	defer cancel()
+	if fresh, err := p.store.GetAccountSecret(readCtx, acc.ID); err == nil {
 		latest = fresh
 	}
 	next, changed := chatGPTClearMatchingRefreshTokens(latest, staleTokens)
@@ -418,11 +942,10 @@ func (p *Provider) clearStaleRefreshTokenAfterFailure(ctx context.Context, acc *
 	}
 
 	writeAcc := acc
-	if freshAcc, err := p.store.GetAccount(ctx, acc.ID); err == nil {
+	if freshAcc, err := p.store.GetAccount(readCtx, acc.ID); err == nil {
 		writeAcc = freshAcc
 	}
-	writeAcc.UpdatedAt = time.Now()
-	if err := p.store.UpsertAccount(ctx, writeAcc, next); err != nil {
+	if err := p.persistAccountSecret(ctx, writeAcc, latest, next); err != nil {
 		log.Printf("[chatgpt-session] account=%s clear reused refresh token failed: %v", acc.ID, err)
 		return
 	}
@@ -469,6 +992,11 @@ func isChatGPTRefreshReuseError(err error) bool {
 	return strings.Contains(s, "refresh token has already been used") ||
 		strings.Contains(s, "already been used to generate") ||
 		strings.Contains(s, "refresh_token_reused") ||
+		strings.Contains(s, "refresh_token_invalidated") ||
+		strings.Contains(s, "refresh_token_expired") ||
+		strings.Contains(s, "refresh token expired") ||
+		strings.Contains(s, "refresh token has expired") ||
+		strings.Contains(s, "refresh token was revoked") ||
 		strings.Contains(s, "invalid_grant")
 }
 
@@ -884,6 +1412,15 @@ func chatGPTCookieHeaderFromPairs(pairs []chatGPTCookiePair) string {
 	return strings.Join(parts, "; ")
 }
 
+func chatGPTMergeCookieBytes(base, overlay []byte) []byte {
+	pairs := append(chatGPTCookiePairsFromBytes(base), chatGPTCookiePairsFromBytes(overlay)...)
+	header := chatGPTCookieHeaderFromPairs(pairs)
+	if header == "" {
+		return nil
+	}
+	return []byte(header)
+}
+
 func chatGPTMergeSetCookieHeaders(existing []byte, setCookies []string) []byte {
 	if len(setCookies) == 0 {
 		return existing
@@ -982,6 +1519,22 @@ func chatGPTWebSessionRefreshDue(sec store.AccountSecret, now time.Time) bool {
 	return info.Expires.Sub(now) <= 30*time.Minute
 }
 
+func chatGPTCredentialRefreshLikely(sec store.AccountSecret, now time.Time) bool {
+	sec = chatGPTSessionOnlySnapshotSecret(sec)
+	if chatGPTWebSessionRefreshDue(sec, now) {
+		return true
+	}
+	refreshToken := chatGPTRefreshTokenFromSecret(sec)
+	if refreshToken == "" {
+		return false
+	}
+	info, ok := parseStoredSessionSecret(sec.SessionToken, sec.RefreshToken)
+	if !ok || info.AccessToken == "" {
+		return strings.TrimSpace(sec.SessionToken) == ""
+	}
+	return info.Expires.IsZero() || info.Expires.Sub(now) <= 2*time.Minute
+}
+
 func chatGPTStoredAccessTokenUsable(sec store.AccountSecret, until time.Time) bool {
 	sec = chatGPTSessionOnlySnapshotSecret(sec)
 	info, ok := parseStoredSessionSecret(sec.SessionToken, sec.RefreshToken)
@@ -1025,8 +1578,7 @@ func (p *Provider) persistResolvedSession(ctx context.Context, acc *domain.Accou
 	if !changed {
 		return nil
 	}
-	acc.UpdatedAt = time.Now()
-	return p.store.UpsertAccount(ctx, acc, next)
+	return p.persistAccountSecret(ctx, acc, sec, next)
 }
 
 func (p *Provider) persistCookieResolvedSession(ctx context.Context, acc *domain.Account, sec store.AccountSecret, info sessionInfo, setCookies []string, clearRefreshToken bool) error {
@@ -1072,8 +1624,7 @@ func (p *Provider) persistCookieResolvedSession(ctx context.Context, acc *domain
 	if !changed {
 		return nil
 	}
-	acc.UpdatedAt = time.Now()
-	return p.store.UpsertAccount(ctx, acc, next)
+	return p.persistAccountSecret(ctx, acc, sec, next)
 }
 
 func (p *Provider) persistPlanTier(ctx context.Context, acc *domain.Account, sec store.AccountSecret, tier string) error {
@@ -1081,8 +1632,63 @@ func (p *Provider) persistPlanTier(ctx context.Context, acc *domain.Account, sec
 		return nil
 	}
 	acc.PlanTier = tier
-	acc.UpdatedAt = time.Now()
-	return p.store.UpsertAccount(ctx, acc, sec)
+	return p.persistAccountSecretWithOptions(ctx, acc, sec, sec, true)
+}
+
+func credentialStoreContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), credentialPersistTimeout)
+}
+
+func (p *Provider) persistAccountSecret(_ context.Context, acc *domain.Account, previous, next store.AccountSecret) error {
+	return p.persistAccountSecretWithOptions(context.Background(), acc, previous, next, false)
+}
+
+func (p *Provider) persistAccountSecretWithOptions(_ context.Context, acc *domain.Account, previous, next store.AccountSecret, forcePlanTier bool) error {
+	if p.store == nil || acc == nil {
+		return nil
+	}
+	writeCtx, cancel := credentialStoreContext()
+	defer cancel()
+
+	writeAcc := acc
+	if freshAcc, err := p.store.GetAccount(writeCtx, acc.ID); err == nil && freshAcc != nil {
+		if acc.Email != "" && freshAcc.Email == "" {
+			freshAcc.Email = acc.Email
+		}
+		if acc.PlanTier != "" && (freshAcc.PlanTier == "" || forcePlanTier) {
+			freshAcc.PlanTier = acc.PlanTier
+		}
+		writeAcc = freshAcc
+	}
+	if latest, err := p.store.GetAccountSecret(writeCtx, acc.ID); err == nil {
+		next = mergeLatestCredentialSecret(previous, next, latest)
+	}
+	writeAcc.UpdatedAt = time.Now()
+	return p.store.UpsertAccount(writeCtx, writeAcc, next)
+}
+
+func mergeLatestCredentialSecret(previous, next, latest store.AccountSecret) store.AccountSecret {
+	if string(latest.Cookies) != string(previous.Cookies) {
+		switch {
+		case len(next.Cookies) == 0 || string(next.Cookies) == string(previous.Cookies):
+			next.Cookies = latest.Cookies
+		default:
+			next.Cookies = chatGPTMergeCookieBytes(latest.Cookies, next.Cookies)
+		}
+	}
+
+	latestTopRefresh := strings.TrimSpace(latest.RefreshToken)
+	previousTopRefresh := strings.TrimSpace(previous.RefreshToken)
+	nextTopRefresh := strings.TrimSpace(next.RefreshToken)
+	if latestTopRefresh != "" && latestTopRefresh != previousTopRefresh &&
+		(nextTopRefresh == "" || nextTopRefresh == previousTopRefresh) {
+		next.RefreshToken = latest.RefreshToken
+	}
+
+	if chatGPTSessionMaterialChanged(previous, latest) && !chatGPTSessionMaterialChanged(previous, next) {
+		next.SessionToken = latest.SessionToken
+	}
+	return next
 }
 
 func (p *Provider) latestAccountSecretOr(ctx context.Context, accountID string, fallback store.AccountSecret) store.AccountSecret {
@@ -1126,19 +1732,50 @@ func shouldPersistChatGPTSession(existing string, info sessionInfo) bool {
 
 func buildChatGPTSessionJSON(info sessionInfo) string {
 	userID := firstNonEmpty(info.ChatGPTUserID, info.AccountID)
+	accountUserID := chatGPTAccountUserID(info.ChatGPTUserID, info.AccountID)
 	expires := info.Expires
 	if displayExpires := chatGPTSessionDisplayExpiry(info); !displayExpires.IsZero() {
 		expires = displayExpires
 	}
+	expiresText := ""
+	if !expires.IsZero() {
+		expiresText = expires.Format(time.RFC3339)
+	}
+	tokenData := map[string]any{
+		"access_token":               info.AccessToken,
+		"refresh_token":              info.RefreshToken,
+		"id_token":                   info.IDToken,
+		"session_token":              info.SessionToken,
+		"account_id":                 info.AccountID,
+		"chatgpt_account_id":         info.AccountID,
+		"plan_type":                  info.PlanType,
+		"chatgpt_plan_type":          info.PlanType,
+		"chatgpt_user_id":            info.ChatGPTUserID,
+		"user_id":                    info.ChatGPTUserID,
+		"chatgpt_account_user_id":    accountUserID,
+		"chatgpt_account_is_fedramp": info.FedRAMP,
+		"chatgptAccountIsFedramp":    info.FedRAMP,
+		"chatgptAccountId":           info.AccountID,
+		"chatgptPlanType":            info.PlanType,
+		"chatgptUserId":              info.ChatGPTUserID,
+		"expires":                    expiresText,
+		"expired":                    expiresText,
+	}
 	out := map[string]any{
+		"auth_mode":    "chatgpt",
+		"last_refresh": time.Now().UTC().Format(time.RFC3339),
+		"token_data":   tokenData,
+		"tokens":       tokenData,
 		"user": map[string]string{
 			"id":    userID,
 			"email": info.Email,
 		},
-		"expires": expires.Format(time.RFC3339),
+		"expires": expiresText,
+		"expired": expiresText,
 		"account": map[string]any{
 			"id":                         info.AccountID,
 			"planType":                   info.PlanType,
+			"plan_type":                  info.PlanType,
 			"isFedramp":                  info.FedRAMP,
 			"is_fedramp":                 info.FedRAMP,
 			"chatgpt_account_is_fedramp": info.FedRAMP,
@@ -1151,12 +1788,20 @@ func buildChatGPTSessionJSON(info sessionInfo) string {
 			"chatgptUserId":              info.ChatGPTUserID,
 		},
 		"accessToken":                info.AccessToken,
+		"access_token":               info.AccessToken,
 		"refreshToken":               info.RefreshToken,
+		"refresh_token":              info.RefreshToken,
 		"idToken":                    info.IDToken,
+		"id_token":                   info.IDToken,
+		"account_id":                 info.AccountID,
+		"accountId":                  info.AccountID,
 		"chatgpt_user_id":            info.ChatGPTUserID,
 		"user_id":                    info.ChatGPTUserID,
+		"chatgpt_account_user_id":    accountUserID,
 		"chatgpt_account_id":         info.AccountID,
 		"chatgpt_plan_type":          info.PlanType,
+		"plan_type":                  info.PlanType,
+		"planType":                   info.PlanType,
 		"chatgpt_account_is_fedramp": info.FedRAMP,
 		"chatgptAccountIsFedramp":    info.FedRAMP,
 	}
@@ -1523,9 +2168,30 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 	if p.store == nil {
 		return errors.New("store not wired")
 	}
+	releaseUse, err := p.beginAccountUse(ctx, acc.ID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseUse != nil {
+			releaseUse()
+		}
+	}()
 	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
 	if err != nil {
 		return fmt.Errorf("get secret: %w", err)
+	}
+	if chatGPTCredentialRefreshLikely(sec, time.Now()) {
+		releaseUse()
+		releaseUse = nil
+		if err := p.RefreshCredential(ctx, acc); err != nil {
+			return err
+		}
+		releaseUse, err = p.beginAccountUse(ctx, acc.ID)
+		if err != nil {
+			return err
+		}
+		sec = p.latestAccountSecretOr(ctx, acc.ID, sec)
 	}
 	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
@@ -1533,9 +2199,14 @@ func (p *Provider) Probe(ctx context.Context, acc *domain.Account) error {
 	}
 	_, err = p.fetchWhamUsageWithSecret(ctx, acc, info, sec)
 	if isChatGPTRecoverableAuthError(err) && chatGPTCanRecoverAuthFailure(sec) {
-		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+		refreshed, refreshErr := p.forceRefreshSessionAfterUse(ctx, acc, sec, releaseUse)
+		releaseUse = nil
 		if refreshErr != nil {
 			return fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+		}
+		releaseUse, err = p.beginAccountUse(ctx, acc.ID)
+		if err != nil {
+			return err
 		}
 		_, err = p.fetchWhamUsageWithSecret(ctx, acc, refreshed, p.latestAccountSecretOr(ctx, acc.ID, sec))
 	}
@@ -1571,11 +2242,32 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 	if p.store == nil {
 		return nil, errors.New("store not wired")
 	}
+	releaseUse, err := p.beginAccountUse(ctx, acc.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if releaseUse != nil {
+			releaseUse()
+		}
+	}()
 	log.Printf("[chatgpt-discover] account=%s starting discover", acc.ID)
 	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
 	if err != nil {
 		log.Printf("[chatgpt-discover] account=%s GetAccountSecret error: %v", acc.ID, err)
 		return nil, err
+	}
+	if chatGPTCredentialRefreshLikely(sec, time.Now()) {
+		releaseUse()
+		releaseUse = nil
+		if err := p.RefreshCredential(ctx, acc); err != nil {
+			return nil, err
+		}
+		releaseUse, err = p.beginAccountUse(ctx, acc.ID)
+		if err != nil {
+			return nil, err
+		}
+		sec = p.latestAccountSecretOr(ctx, acc.ID, sec)
 	}
 	log.Printf("[chatgpt-discover] account=%s secret loaded, session_token_len=%d, ua=%q", acc.ID, len(sec.SessionToken), acc.UA)
 	info, err := p.resolveSession(ctx, acc, sec)
@@ -1595,9 +2287,14 @@ func (p *Provider) Discover(ctx context.Context, acc *domain.Account) (*domain.Q
 	quotaState, err := p.fetchConversationLimitWithSecret(ctx, acc, info, sec)
 	if isChatGPTRecoverableAuthError(err) && chatGPTCanRecoverAuthFailure(sec) {
 		log.Printf("[chatgpt-discover] account=%s upstream auth failed, refreshing session and retrying quota fetch", acc.ID)
-		refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+		refreshed, refreshErr := p.forceRefreshSessionAfterUse(ctx, acc, sec, releaseUse)
+		releaseUse = nil
 		if refreshErr != nil {
 			return nil, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+		}
+		releaseUse, err = p.beginAccountUse(ctx, acc.ID)
+		if err != nil {
+			return nil, err
 		}
 		info = refreshed
 		quotaState, err = p.fetchConversationLimitWithSecret(ctx, acc, info, p.latestAccountSecretOr(ctx, acc.ID, sec))
@@ -2148,9 +2845,30 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	if p.store == nil {
 		return nil, errors.New("chatgpt: store not wired")
 	}
+	releaseUse, err := p.beginAccountUse(ctx, acc.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if releaseUse != nil {
+			releaseUse()
+		}
+	}()
 	sec, err := p.store.GetAccountSecret(ctx, acc.ID)
 	if err != nil {
 		return nil, fmt.Errorf("get secret: %w", err)
+	}
+	if chatGPTCredentialRefreshLikely(sec, time.Now()) {
+		releaseUse()
+		releaseUse = nil
+		if err := p.RefreshCredential(ctx, acc); err != nil {
+			return nil, err
+		}
+		releaseUse, err = p.beginAccountUse(ctx, acc.ID)
+		if err != nil {
+			return nil, err
+		}
+		sec = p.latestAccountSecretOr(ctx, acc.ID, sec)
 	}
 	info, err := p.resolveSession(ctx, acc, sec)
 	if err != nil {
@@ -2171,7 +2889,9 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 		}
 		if ch, webErr := p.invokeWebConversationWithInfo(ctx, acc, req, webInfo, webSec); webErr == nil {
 			log.Printf("[chatgpt] account=%s served via web conversation primary path", acc.ID)
-			return ch, nil
+			out := releaseOnEventChannel(ch, releaseUse)
+			releaseUse = nil
+			return out, nil
 		} else {
 			primaryWebErr = webErr
 			log.Printf("[chatgpt] account=%s web conversation primary path failed; trying codex/responses: %v", acc.ID, webErr)
@@ -2194,17 +2914,25 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 		fallbackErr := primaryWebErr
 		if isChatGPTRecoverableAuthResponse(resp.StatusCode, b) {
 			if chatGPTCanRecoverAuthFailure(sec) {
-				refreshed, refreshErr := p.forceRefreshSession(ctx, acc, sec)
+				refreshed, refreshErr := p.forceRefreshSessionAfterUse(ctx, acc, sec, releaseUse)
+				releaseUse = nil
 				if refreshErr != nil {
 					return nil, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
 				}
-				resp, err = p.doCodexResponsesWithSecret(ctx, acc, refreshed, p.latestAccountSecretOr(ctx, acc.ID, sec), body)
+				releaseUse, err = p.beginAccountUse(ctx, acc.ID)
+				if err != nil {
+					return nil, err
+				}
+				latestSec := p.latestAccountSecretOr(ctx, acc.ID, sec)
+				resp, err = p.doCodexResponsesWithSecret(ctx, acc, refreshed, latestSec, body)
 				if err != nil {
 					return nil, fmt.Errorf("post codex/responses after refresh: %w", err)
 				}
 				if resp.StatusCode == 200 {
 					out := make(chan ir.Event, 32)
-					go streamResponsesSSE(ctx, resp.Body, out)
+					rc := p.codexResponsesAuthRetryReadCloser(ctx, acc, latestSec, body, resp.Body, releaseUse)
+					go streamResponsesSSE(ctx, rc, out)
+					releaseUse = nil
 					return out, nil
 				}
 				b, _ = io.ReadAll(resp.Body)
@@ -2213,7 +2941,9 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 					fallbackSec := p.latestAccountSecretOr(ctx, acc.ID, sec)
 					if ch, webErr := p.invokeWebConversationWithInfo(ctx, acc, req, refreshed, fallbackSec); webErr == nil {
 						log.Printf("[chatgpt] account=%s codex/responses unauthorized after session recovery; served via web conversation fallback", acc.ID)
-						return ch, nil
+						out := releaseOnEventChannel(ch, releaseUse)
+						releaseUse = nil
+						return out, nil
 					} else {
 						fallbackErr = webErr
 						log.Printf("[chatgpt] account=%s web conversation fallback failed after codex 401: %v", acc.ID, webErr)
@@ -2224,7 +2954,9 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 				fallbackSec := p.latestAccountSecretOr(ctx, acc.ID, sec)
 				if ch, webErr := p.invokeWebConversationWithInfo(ctx, acc, req, info, fallbackSec); webErr == nil {
 					log.Printf("[chatgpt] account=%s codex/responses unauthorized; served via web conversation fallback", acc.ID)
-					return ch, nil
+					out := releaseOnEventChannel(ch, releaseUse)
+					releaseUse = nil
+					return out, nil
 				} else {
 					fallbackErr = webErr
 					log.Printf("[chatgpt] account=%s web conversation fallback failed after codex 401: %v", acc.ID, webErr)
@@ -2238,7 +2970,9 @@ func (p *Provider) invokeReal(ctx context.Context, acc *domain.Account, req *ir.
 	}
 
 	out := make(chan ir.Event, 32)
-	go streamResponsesSSE(ctx, resp.Body, out)
+	rc := p.codexResponsesAuthRetryReadCloser(ctx, acc, sec, body, resp.Body, releaseUse)
+	go streamResponsesSSE(ctx, rc, out)
+	releaseUse = nil
 	return out, nil
 }
 
@@ -2358,6 +3092,15 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	if p.store == nil {
 		return nil, 0, errors.New("chatgpt: store not wired")
 	}
+	releaseUse, err := p.beginAccountUse(rctx, accountID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() {
+		if releaseUse != nil {
+			releaseUse()
+		}
+	}()
 	sec, err := p.store.GetAccountSecret(rctx, accountID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get secret: %w", err)
@@ -2365,6 +3108,18 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 	acc, err := p.store.GetAccount(rctx, accountID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get account: %w", err)
+	}
+	if chatGPTCredentialRefreshLikely(sec, time.Now()) {
+		releaseUse()
+		releaseUse = nil
+		if err := p.RefreshCredential(rctx, acc); err != nil {
+			return nil, 0, err
+		}
+		releaseUse, err = p.beginAccountUse(rctx, accountID)
+		if err != nil {
+			return nil, 0, err
+		}
+		sec = p.latestAccountSecretOr(rctx, accountID, sec)
 	}
 	info, err := p.resolveSession(rctx, acc, sec)
 	if err != nil {
@@ -2382,20 +3137,41 @@ func (p *Provider) InvokeRaw(ctx interface{}, accountID string, body []byte) (io
 		resp.Body.Close()
 		if isChatGPTRecoverableAuthResponse(resp.StatusCode, respBody) {
 			if chatGPTCanRecoverAuthFailure(sec) {
-				refreshed, refreshErr := p.forceRefreshSession(rctx, acc, sec)
+				refreshed, refreshErr := p.forceRefreshSessionAfterUse(rctx, acc, sec, releaseUse)
+				releaseUse = nil
 				if refreshErr != nil {
 					return nil, 0, fmt.Errorf("refresh after upstream auth failure: %w", refreshErr)
+				}
+				releaseUse, err = p.beginAccountUse(rctx, accountID)
+				if err != nil {
+					return nil, 0, err
 				}
 				resp, err = p.doCodexResponsesWithSecret(rctx, acc, refreshed, p.latestAccountSecretOr(rctx, acc.ID, sec), body)
 				if err != nil {
 					return nil, 0, fmt.Errorf("post codex/responses after refresh: %w", err)
 				}
-				return resp.Body, resp.StatusCode, nil
+				if resp.StatusCode == http.StatusOK {
+					rc := p.codexResponsesAuthRetryReadCloser(rctx, acc, p.latestAccountSecretOr(rctx, acc.ID, sec), body, resp.Body, releaseUse)
+					releaseUse = nil
+					return rc, resp.StatusCode, nil
+				}
+				rc := readCloserWithRelease(resp.Body, releaseUse)
+				releaseUse = nil
+				return rc, resp.StatusCode, nil
 			}
 		}
-		return io.NopCloser(bytes.NewReader(respBody)), resp.StatusCode, nil
+		rc := readCloserWithRelease(io.NopCloser(bytes.NewReader(respBody)), releaseUse)
+		releaseUse = nil
+		return rc, resp.StatusCode, nil
 	}
-	return resp.Body, resp.StatusCode, nil
+	if resp.StatusCode == http.StatusOK {
+		rc := p.codexResponsesAuthRetryReadCloser(rctx, acc, sec, body, resp.Body, releaseUse)
+		releaseUse = nil
+		return rc, resp.StatusCode, nil
+	}
+	rc := readCloserWithRelease(resp.Body, releaseUse)
+	releaseUse = nil
+	return rc, resp.StatusCode, nil
 }
 
 // buildResponsesBody renders an IR request into the Responses API JSON shape.

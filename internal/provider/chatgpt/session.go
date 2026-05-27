@@ -144,6 +144,11 @@ func (r *sessionResolver) Resolve(ctx context.Context, accountID, secret, refres
 			return info, nil
 		}
 	}
+	if fresh, ok := parseStoredSessionSecret(secret, refreshToken); ok && time.Until(fresh.Expires) > 2*time.Minute {
+		log.Printf("[chatgpt-session] account=%s using fresh stored session over stale cache", accountID)
+		r.cache.Store(accountID, fresh)
+		return fresh, nil
+	}
 	// Try refresh first if we have a refresh_token from a previous fetch.
 	if cached, ok := r.cache.Load(accountID); ok && r.refreshFn != nil {
 		if info, ok := cached.(sessionInfo); ok && info.RefreshToken != "" {

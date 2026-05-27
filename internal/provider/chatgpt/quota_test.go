@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -664,6 +665,297 @@ func TestInvokeRawRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 }
 
+func TestInvokeRawRefreshesAndReplaysSSETokenInvalidatedWithoutLeakingError(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-raw-sse",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		close(refreshStarted)
+		<-allowRefresh
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var mu sync.Mutex
+	var calls int
+	var auths []string
+	requests := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		requests <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-stale\"}}\n\n" +
+					"data: {\"type\":\"response.error\",\"error\":{\"message\":\"Your authentication token has been invalidated. Please try signing in again.\",\"type\":\"invalid_request_error\",\"code\":\"token_invalidated\"}}\n\n"))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("retry authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-new\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if auth := <-requests; auth != "Bearer "+oldAccess {
+		t.Fatalf("initial authorization = %q, want old token", auth)
+	}
+
+	readDone := make(chan []byte, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		body, err := io.ReadAll(rc)
+		if err != nil {
+			readErr <- err
+			return
+		}
+		readDone <- body
+	}()
+
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream auth error did not trigger refresh")
+	}
+	select {
+	case body := <-readDone:
+		t.Fatalf("downstream read completed before refresh finished: %s", body)
+	case err := <-readErr:
+		t.Fatalf("downstream received error before refresh finished: %v", err)
+	case auth := <-requests:
+		t.Fatalf("retry reached upstream before refresh completed with auth %q", auth)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowRefresh)
+
+	var body []byte
+	select {
+	case body = <-readDone:
+	case err := <-readErr:
+		t.Fatalf("read after refresh: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("downstream did not resume after refresh")
+	}
+	if strings.Contains(string(body), "token_invalidated") {
+		t.Fatalf("downstream saw stale auth error SSE: %s", body)
+	}
+	if !strings.Contains(string(body), "resp-new") || !strings.Contains(string(body), "ok") {
+		t.Fatalf("downstream body = %s, want retried successful stream", body)
+	}
+	mu.Lock()
+	gotCalls := calls
+	gotAuths := append([]string(nil), auths...)
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", gotCalls)
+	}
+	if len(gotAuths) != 2 || gotAuths[0] != "Bearer "+oldAccess || gotAuths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", gotAuths)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
+func TestInvokeRawStreamRefreshPausesConcurrentAccountUse(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-raw-sse-gate",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		close(refreshStarted)
+		<-allowRefresh
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var mu sync.Mutex
+	var calls int
+	requests := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		requests <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			_, _ = w.Write([]byte("data: {\"type\":\"response.error\",\"error\":{\"message\":\"Your authentication token has been invalidated. Please try signing in again.\",\"type\":\"invalid_request_error\",\"code\":\"token_invalidated\"}}\n\n"))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-ok\",\"status\":\"completed\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	defer rc.Close()
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if auth := <-requests; auth != "Bearer "+oldAccess {
+		t.Fatalf("initial authorization = %q, want old token", auth)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(rc)
+		firstDone <- err
+	}()
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream auth error did not start refresh")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		rc2, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+		if err != nil {
+			secondDone <- err
+			return
+		}
+		defer rc2.Close()
+		if status != http.StatusOK {
+			body, _ := io.ReadAll(rc2)
+			secondDone <- errors.New("unexpected status " + string(body))
+			return
+		}
+		_, err = io.ReadAll(rc2)
+		secondDone <- err
+	}()
+
+	select {
+	case auth := <-requests:
+		t.Fatalf("concurrent account request reached upstream during refresh with auth %q", auth)
+	case err := <-secondDone:
+		t.Fatalf("concurrent InvokeRaw completed during refresh: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowRefresh)
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first read after refresh: %v", err)
+	}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second InvokeRaw after refresh: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second InvokeRaw did not resume after refresh")
+	}
+	var refreshedRequests int
+	timeout := time.After(2 * time.Second)
+	for refreshedRequests < 2 {
+		select {
+		case auth := <-requests:
+			if auth != "Bearer "+newAccess {
+				t.Fatalf("post-refresh authorization = %q, want new token", auth)
+			}
+			refreshedRequests++
+		case <-timeout:
+			t.Fatalf("saw %d post-refresh upstream requests, want 2", refreshedRequests)
+		}
+	}
+}
+
 func TestInvokeRawSessionOnlyUnauthorizedDoesNotAttemptRefresh(t *testing.T) {
 	ctx := context.Background()
 	p := New(ModeReal)
@@ -1219,6 +1511,117 @@ func TestInvokeRealRefreshesAndRetriesTokenInvalidated(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestInvokeRealRefreshesAndReplaysSSETokenInvalidatedWithoutEvError(t *testing.T) {
+	ctx := context.Background()
+	p := New(ModeReal)
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-token-invalidated-ir-sse",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	var mu sync.Mutex
+	var calls int
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp-stale\"}}\n\n" +
+					"data: {\"type\":\"response.error\",\"error\":{\"message\":\"Your authentication token has been invalidated. Please try signing in again.\",\"type\":\"invalid_request_error\",\"code\":\"token_invalidated\"}}\n\n"))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+newAccess {
+			t.Fatalf("retry authorization = %q, want refreshed token", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	ch, err := p.Invoke(ctx, acc, &ir.Request{
+		Model: "gpt-5.5",
+		Messages: []ir.Message{{
+			Role:  ir.RoleUser,
+			Parts: []ir.Part{{Kind: ir.PartText, Text: "hello"}},
+		}},
+		Stream: true,
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		switch ev.Kind {
+		case ir.EvTextDelta:
+			text += ev.Text
+		case ir.EvError:
+			t.Fatalf("stream error leaked to downstream: %v", ev.Err)
+		}
+	}
+	if text != "ok" {
+		t.Fatalf("stream text = %q, want ok", text)
+	}
+	mu.Lock()
+	gotCalls := calls
+	gotAuths := append([]string(nil), auths...)
+	mu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", gotCalls)
+	}
+	if len(gotAuths) != 2 || gotAuths[0] != "Bearer "+oldAccess || gotAuths[1] != "Bearer "+newAccess {
+		t.Fatalf("authorization sequence = %#v", gotAuths)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
 	}
 }
 

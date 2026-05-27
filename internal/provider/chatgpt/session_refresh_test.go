@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -85,6 +86,18 @@ func TestRefreshCredentialPersistsRefreshedSession(t *testing.T) {
 	}
 	if parsed.RefreshToken != "rt-new" {
 		t.Fatalf("stored session refresh token = %q, want rt-new", parsed.RefreshToken)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(sec.SessionToken), &raw); err != nil {
+		t.Fatalf("unmarshal persisted session json: %v", err)
+	}
+	if raw["refresh_token"] != "rt-new" || raw["refreshToken"] != "rt-new" {
+		t.Fatalf("persisted session did not update both refresh token spellings: refresh_token=%v refreshToken=%v", raw["refresh_token"], raw["refreshToken"])
+	}
+	tokens, _ := raw["tokens"].(map[string]any)
+	tokenData, _ := raw["token_data"].(map[string]any)
+	if tokens["refresh_token"] != "rt-new" || tokenData["refresh_token"] != "rt-new" {
+		t.Fatalf("persisted auth-json token blocks were not refreshed: tokens=%v token_data=%v", tokens["refresh_token"], tokenData["refresh_token"])
 	}
 	if parsed.Email != "user@example.com" {
 		t.Fatalf("stored email = %q, want user@example.com", parsed.Email)
@@ -1264,6 +1277,346 @@ func TestForceRefreshSharesCredentialRefreshLock(t *testing.T) {
 	}
 	if sec.RefreshToken != "rt-new" {
 		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+}
+
+func TestForceRefreshWaitsForActiveInvokeRawToClose(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-refresh-waits-active",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	originalSecret, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get original secret: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	refreshCalled := make(chan struct{})
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		close(refreshCalled)
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-releaseResponse
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+	if err != nil {
+		t.Fatalf("InvokeRaw: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.forceRefreshSession(ctx, acc, originalSecret)
+		done <- err
+	}()
+
+	select {
+	case <-refreshCalled:
+		t.Fatal("refresh started while account request body was still active")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseResponse)
+	if err := rc.Close(); err != nil {
+		t.Fatalf("close response body: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("force refresh: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("force refresh did not resume after active response closed")
+	}
+}
+
+func TestInvokeRawWaitsForInProgressRefreshAndUsesNewToken(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	oldAccess := testJWTExp(time.Now().Add(time.Hour))
+	newAccess := testJWTExp(time.Now().Add(2 * time.Hour))
+	acc := &domain.Account{
+		ID:       "acc-waits-refresh",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+		UA:       "codex-cli-test",
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: buildChatGPTSessionJSON(sessionInfo{
+			AccessToken:  oldAccess,
+			RefreshToken: "rt-old",
+			Expires:      time.Now().Add(time.Hour),
+			AccountID:    "chatgpt-account",
+			PlanType:     "plus",
+			Email:        "user@example.com",
+			IDToken:      "id-old",
+		}),
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	originalSecret, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get original secret: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		close(refreshStarted)
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		<-allowRefresh
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	requests := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		requests <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"))
+	}))
+	defer server.Close()
+	p.httpClient = rewriteTransportClient(server.URL)
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := p.forceRefreshSession(ctx, acc, originalSecret)
+		refreshDone <- err
+	}()
+	<-refreshStarted
+
+	invokeDone := make(chan error, 1)
+	go func() {
+		rc, status, err := p.InvokeRaw(ctx, acc.ID, []byte(`{"model":"gpt-5.5","input":[]}`))
+		if err != nil {
+			invokeDone <- err
+			return
+		}
+		defer rc.Close()
+		if status != http.StatusOK {
+			invokeDone <- fmt.Errorf("status = %d", status)
+			return
+		}
+		invokeDone <- nil
+	}()
+
+	select {
+	case auth := <-requests:
+		t.Fatalf("request reached upstream before refresh completed with auth %q", auth)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowRefresh)
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("force refresh: %v", err)
+	}
+	select {
+	case err := <-invokeDone:
+		if err != nil {
+			t.Fatalf("InvokeRaw: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("InvokeRaw did not resume after refresh")
+	}
+	if auth := <-requests; auth != "Bearer "+newAccess {
+		t.Fatalf("authorization = %q, want refreshed token", auth)
+	}
+}
+
+func TestRefreshCredentialPersistsAfterRequestContextCanceled(t *testing.T) {
+	baseCtx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	oldSession := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-old",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-old",
+	})
+	acc := &domain.Account{
+		ID:       "acc-canceled-persist",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(baseCtx, acc, store.AccountSecret{
+		SessionToken: oldSession,
+		RefreshToken: "rt-old",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(baseCtx)
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-old" {
+			t.Fatalf("refresh token = %q, want rt-old", refreshToken)
+		}
+		cancel()
+		return newAccess, "rt-new", "id-new", 3600, nil
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential should persist after request ctx cancellation: %v", err)
+	}
+	sec, err := st.GetAccountSecret(baseCtx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != newAccess || parsed.RefreshToken != "rt-new" {
+		t.Fatalf("persisted session was not durably refreshed after cancel: %+v", parsed)
+	}
+}
+
+func TestRefreshCredentialWaitsForDelayedConcurrentPersistAfterRefreshReused(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "store.db"), "")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	expiredAccess := testJWTExp(time.Now().Add(-time.Minute))
+	newAccess := testJWTExp(time.Now().Add(time.Hour))
+	oldSession := buildChatGPTSessionJSON(sessionInfo{
+		AccessToken:  expiredAccess,
+		RefreshToken: "rt-used",
+		Expires:      time.Now().Add(-time.Minute),
+		AccountID:    "chatgpt-account",
+		PlanType:     "plus",
+		Email:        "user@example.com",
+		IDToken:      "id-old",
+	})
+	acc := &domain.Account{
+		ID:       "acc-delayed-race",
+		TenantID: "default",
+		Provider: "chatgpt",
+		State:    domain.StateActive,
+	}
+	if err := st.UpsertAccount(ctx, acc, store.AccountSecret{
+		SessionToken: oldSession,
+		RefreshToken: "rt-used",
+	}); err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+
+	p := New(ModeReal)
+	p.SetStore(st)
+	p.SetRefreshFunc(func(ctx context.Context, refreshToken string) (string, string, string, int, error) {
+		if refreshToken != "rt-used" {
+			t.Fatalf("refresh token = %q, want rt-used", refreshToken)
+		}
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			err := st.UpsertAccount(context.Background(), acc, store.AccountSecret{
+				SessionToken: buildChatGPTSessionJSON(sessionInfo{
+					AccessToken:  newAccess,
+					RefreshToken: "rt-new",
+					Expires:      time.Now().Add(time.Hour),
+					AccountID:    "chatgpt-account",
+					PlanType:     "plus",
+					Email:        "user@example.com",
+					IDToken:      "id-new",
+				}),
+				RefreshToken: "rt-new",
+			})
+			if err != nil {
+				t.Errorf("delayed persist: %v", err)
+			}
+		}()
+		return "", "", "", 0, errors.New("refresh 401: refresh_token_reused")
+	})
+
+	if err := p.RefreshCredential(ctx, acc); err != nil {
+		t.Fatalf("refresh credential should recover delayed persisted rotation: %v", err)
+	}
+	sec, err := st.GetAccountSecret(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if sec.RefreshToken != "rt-new" {
+		t.Fatalf("stored refresh token = %q, want rt-new", sec.RefreshToken)
+	}
+	parsed, err := parseSessionJSON([]byte(sec.SessionToken))
+	if err != nil {
+		t.Fatalf("parse persisted session: %v", err)
+	}
+	if parsed.AccessToken != newAccess || parsed.RefreshToken != "rt-new" {
+		t.Fatalf("stored session did not use delayed concurrent rotation: %+v", parsed)
 	}
 }
 
